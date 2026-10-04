@@ -1,0 +1,15 @@
+/protocol-core/target/
+/gateway/target/
+/zed-source/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.ipa
+*.xcarchive/
+DerivedData/
+.build/

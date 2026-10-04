@@ -1,0 +1,190 @@
+# Validation report
+
+## Current status
+
+An initial, transport-independent Rust protocol core, opt-in Unix socket probe in a pinned Zed source checkout, and authenticated TLS gateway are implemented. Four protocol-core unit tests passed. The source `agent` and patched `agent_ui` crates passed `cargo check`, and the patched Zed binary built on Linux. An isolated Zed process listed and snapshotted a desktop-created native Agent thread, then sent harmless local probe prompts into that same native thread through `ThreadView`. Snapshots showed one matching user entry and a following assistant entry. The native Agent composer `/remote-control` command explicitly exposes a thread; activation and revocation passed in the isolated UI, and a terminal watch received ordered native entry/status events through turn stop. A cancellation bridge guard stopped visible text growth after one in-flight update in one live test; provider-side cancellation and race coverage remain unverified. The gateway's pairing, TLS, authorization, request scoping, and revocation passed a transport fixture, and a paired gateway request reached a real isolated Zed instance with no exposed thread. There is no installable extension or iOS app. The local same-thread check passed; a same-thread gateway prompt, authoritative acceptance linkage, model-origin verification, iOS, and route tests remain NOT RUN.
+
+Document package creation and link/archive checks are separate from product validation.
+
+## Build identity — populate during implementation
+
+| Item | Value |
+| --- | --- |
+| Zed source commit | Sparse nested checkout `zed-source/` at `76659a55a8c10ed355a070f8764a0b1733e3c115`; matches installed Zed 1.22.0 binary |
+| ZedLink commit | No repository: `.git` is empty in this workspace |
+| Packaging | Stock extension insufficient at pinned revision; opt-in source patch with native `/remote-control` built, earlier local same-thread send/snapshot checked |
+| Workstation OS and desktop | Kali GNU/Linux 2026.3, Linux x86_64; isolated patched Zed window ran on the active desktop |
+| Rust/toolchain | `rustc 1.98.1`, `cargo 1.98.1` |
+| macOS/Xcode | Linux host; `xcodebuild` and `swift` not found in PATH |
+| iOS deployment target/device | Not selected |
+| Local provider/model | User reports the isolated Zed Agent uses their configured local LLM; origin has not been independently verified |
+| TLS/pairing mechanism | Gateway accepts supplied PEM certificate/key, restricts binding to loopback/private addresses, issues one-use five-minute pairing codes through a private admin socket, stores device-token digests, and supports revocation; fixture tested, not released |
+
+## Phase status
+
+| Gate | Status | Evidence/blocker |
+| --- | --- | --- |
+| Source/API feasibility | PASS for local proof | Pinned source and exact symbols inspected; native thread and slash-command extension gaps established; patched binary and earlier live same-thread local send/snapshot passed. See FEASIBILITY.md |
+| Provisional protocol core | PARTIAL | Four offline Rust tests passed; separate local native probe exists but is not wired to this core |
+| Real native thread control | PARTIAL | Desktop-created native thread received local probe prompts with assistant entries and idle status; activation/revocation and bounded local events passed. An initial active cancellation leaked visible text, then a bridge guard stabilized visible text in a repeat test. Authoritative acceptance, busy queueing, approvals, provider-side cancellation, and remote gateway remain unverified |
+| Permissions and recovery | PARTIAL | Exact pending-tool option mapping compiled; Zed's existing permission test passed, but mobile resolution and deterministic live approval races are NOT RUN. Request-status and bounded replay remain provisional |
+| Authenticated gateway | PARTIAL | TLS pairing/revocation and WSS fixture passed; paired gateway read real Zed instance identity and empty exposed-thread list. Same-thread gateway send, route tests, and release trust bootstrap remain NOT RUN |
+| SwiftUI/simulator | NOT RUN | App and macOS/Xcode required |
+| Physical iPhone/local LLM | NOT RUN | Real stack, device, and provider required |
+| Reproducible release | NOT RUN | Implementation and acceptance evidence required |
+
+## Commands and observed results — 2026-10-03
+
+Run from `/home/you/Documents/projects/zedlink` unless a directory is stated.
+
+| Command | Result |
+| --- | --- |
+| `rg --files /home/you/Documents/projects -g 'Cargo.toml' -g 'AGENTS.md'` | Only this project's `AGENTS.md`; no Zed source checkout under that tree |
+| `git status --short` | Failed: `not a git repository`; `.git` exists as an empty directory |
+| `zed --version` | `Zed 1.22.0 76659a55a8c10ed355a070f8764a0b1733e3c115` |
+| `zed --help` | Documents `--user-data-dir <DIR>` for isolated user data; no Agent API assertion |
+| `git ls-remote https://github.com/zed-industries/zed.git HEAD` | Failed: `Could not resolve host: github.com` |
+| Same `git ls-remote` with permitted external network access | Succeeded; public repository HEAD was `a84689073d296dfd39987bc7dd478e43ef76d83a` at the time; implementation checkout was pinned separately to installed revision |
+| `git -C zed-source fetch --filter=blob:none --depth=1 origin 76659a55a8c10ed355a070f8764a0b1733e3c115` | Succeeded |
+| `git -C zed-source rev-parse HEAD` | `76659a55a8c10ed355a070f8764a0b1733e3c115` |
+| `git -C zed-source status --short` | Clean before source changes; no source code edits made |
+| `RUSTUP_TOOLCHAIN=stable cargo metadata --offline --no-deps --format-version 1 >/tmp/zedlink-zed-metadata.json` (in `zed-source/`) | Succeeded after sparse checkout included workspace crates and tooling |
+| `RUSTUP_TOOLCHAIN=stable cargo test -p agent --no-run --offline` (in `zed-source/`) | Stopped: pinned Git dependency `zed-industries/async-process` is not cached offline; no compile result |
+| `RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=/tmp/zedlink-zed-target cargo check -p agent` (in `zed-source/`, external network access) | PASS: `agent` crate checked at pinned commit in 5m 17s |
+| `RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=/tmp/zedlink-zed-target cargo check -p agent_ui --offline` (in `zed-source/`) | Initially stopped at uncached `betlang`; after fetching it, stopped with `No space left on device` because `/tmp` is a 5.9 GB tmpfs |
+| `mv /tmp/zedlink-zed-target zed-source/target` | Succeeded; build artifacts now on workspace filesystem and ignored by nested checkout |
+| `RUSTUP_TOOLCHAIN=stable cargo check -p agent_ui --offline` (in `zed-source/`) | PASS: `agent_ui` crate checked at pinned commit in 33.66s |
+| Same `cargo check -p agent_ui --offline` after read-only probe source addition | PASS; `agent_ui` compiled with local probe module |
+| `RUSTUP_TOOLCHAIN=stable cargo fmt --package agent_ui -- --check` (in `zed-source/`) | PASS after formatting probe source |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (in `zed-source/`) | Initially stopped at missing `alsa.pc`; later stopped at WebRTC archive DNS failure under network-restricted sandbox |
+| `apt-get -s install libasound2-dev libva-dev libx11-xcb-dev libxkbcommon-x11-dev` | Only new packages, no upgrades/removals; installation then passed for eight new packages including dependencies |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed` (in `zed-source/`, external access) | PASS; patched binary at `zed-source/target/debug/zed` |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (in `zed-source/`, after send addition) | PASS in 1m 04s; binary rebuilt with local send path |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (in `zed-source/`, after `/remote-control` addition) | PASS in 39.97s; binary rebuilt with explicit thread exposure |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (in `zed-source/`, after event feed addition) | PASS in 39.03s; binary rebuilt with bounded local events |
+| `RUSTUP_TOOLCHAIN=stable cargo check -p agent_ui --offline` and `cargo fmt --package acp_thread --package agent_ui -- --check` (in `zed-source/`, after provisional cancel addition) | PASS |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (in `zed-source/`, after provisional cancel addition) | PASS in 38.74s; binary rebuilt for isolated cancellation test |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (in `zed-source/`, after bridge scheduling fix) | PASS in 34.36s; corrected build exercised in the isolated cancellation test below |
+| `python3 tools/zedlink_probe_client.py --help` | PASS; list, snapshot, and send arguments displayed |
+| `python3 -m py_compile tools/zedlink_probe_client.py` | PASS |
+| `git -C zed-source apply --reverse --check ../patches/zed-1.22.0-local-probe.patch` | PASS after the corrected cancellation bridge; exported patch matches local source changes |
+| `rustc --version` / `cargo --version` | 1.98.1 / 1.98.1 |
+| `cd protocol-core && cargo test --offline` | Four unit tests passed; no doc tests, rerun after the cancellation change |
+
+### Isolated running-Zed probe
+
+Disposable Git fixture `/tmp/zedlink-fixture.KvjUfz` contains the `calculator.py` and `test_calculator.py` from TEST_PLAN.md. `python3 -m unittest -v` returned the expected three failures before repair. The patched binary was launched with `--user-data-dir /tmp/zedlink-run.iuKxga/profile`, `ZEDLINK_PROBE_DIR=/tmp/zedlink-run.iuKxga/probe`, and `ZEDLINK_PROBE_PROJECT_ROOT=/tmp/zedlink-fixture.KvjUfz`. The ordinary sandbox could not connect to X11; the permitted external environment launched it. The private directory was mode 0700 and `zedlink.sock` was mode 0600.
+
+| Command / action | Observed result |
+| --- | --- |
+| `python3 tools/zedlink_probe_client.py --socket /tmp/zedlink-run.iuKxga/probe/zedlink.sock list` before desktop action | PASS: version 1 result, instance and epoch UUIDs, empty `threads` array |
+| Same client with `snapshot not-a-real-thread` | PASS: `THREAD_NOT_EXPOSED`, no metadata |
+| Send 5000 bytes plus newline to the Unix socket | PASS: `PAYLOAD_TOO_LARGE`; process continued answering requests |
+
+The user created a native Agent thread and sent a desktop prompt in the isolated Zed window. A later `thread.list` contained thread `312dda8b-2c50-4eda-bcd3-7e85fcd36bd7` in instance `79867c43-0197-4edd-aec7-8851082af37b`, epoch `295ddece-65b8-4ee6-a009-33dae59dcf4d`. A `thread.snapshot` for that same ID returned 15 native Agent entries while status was `Generating`, with `truncated: false` and `provisional: true`. The probe projects the in-process `AcpThread.entries()` from an `AgentPanel` conversation backed by a native `agent::Thread`. The user reports the Zed Agent uses their configured local LLM; model origin was not independently measured.
+
+After rebuilding and restarting the isolated Zed process with the same disposable profile, `thread.list` exposed desktop-created thread `daebd781-e95b-44e2-9454-0b6beb279247` in instance `3fc7d52a-f908-4000-bcd9-676d60d22e25`, epoch `c8d0cea5-3b79-4dda-a797-d14797425636`. The exact local request was `thread.send` with request ID `716431a3-454b-4782-bae9-729113a55140` and harmless text `Reply with the word hello.`. It returned provisional `outcome: unknown`, because `ThreadView::send_content` schedules a task. A subsequent `thread.snapshot` for the same thread returned `Idle`, 9 entries, exactly one native user entry matching that prompt, and a following assistant entry. Repeating the same request ID and text returned the prior `unknown` outcome without another matching user entry. Changing text with that ID returned `REQUEST_CONFLICT`; an old epoch returned `INSTANCE_UNAVAILABLE`.
+
+The final source adjustment added a guard for desktop content loading and honored existing queued messages. After `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` passed again, the isolated Zed instance restarted with ID `586d33aa-10e6-4f81-92a5-353d701dc3fa` and epoch `e0fd6017-9a96-4338-981a-564677cead6c`. The same persisted native thread was loaded. `thread.send` request `8a7a4325-bc09-4d21-8a23-0ca8989ab399` with `Answer with OK.` returned provisional `unknown`; a later snapshot showed `Idle`, 11 entries, and exactly one native user entry matching that prompt. Retrying the earlier request with its actual previous instance/epoch returned `INSTANCE_UNAVAILABLE`, preventing a silent resubmission after restart. These observations establish a local same-thread native turn in the final build and simple in-process duplicate protection. Busy queueing, approval, cancellation, durable replay, TLS, pairing, and phone behavior were not exercised.
+
+After the user requested `/remote-control` as the Zed-side activation step, source inspection found that stock extension slash commands receive only command arguments and an optional worktree, while the native Agent composer uses separate local commands. The pinned `crates/extension_cli/src/main.rs::validate_extension_features` also rejects slash-command extensions as deprecated. The patched build now registers a native composer `Remote Control` local command that toggles exposure of the selected eligible thread. `RUSTUP_TOOLCHAIN=stable cargo check -p agent_ui --offline`, `cargo fmt --package agent_ui -- --check`, and `cargo build -p zed --offline` passed. In a new isolated process before command invocation, `thread.list` returned `threads: []`; `thread.snapshot` for previously known native thread `daebd781-e95b-44e2-9454-0b6beb279247` returned `THREAD_NOT_EXPOSED`. The user selected `/remote-control` in that native Agent composer and reported the “Thread exposed to ZedLink locally” toast. A new `thread.list` returned exactly that thread in instance `19fa43ae-9c41-41ac-9777-f4aa69facd17`, epoch `7a12468a-17da-42bc-8b16-ef935a2cd9d9`; its snapshot returned 11 entries, `Idle`, and `truncated: false`. `thread.send` request `b8098323-eed9-4644-8b78-693b4f4c1db8` with `Reply with one short sentence about ZedLink.` returned provisional `unknown`. A later snapshot showed 13 entries, exactly one matching native user entry, a following assistant entry, and status progressing from `Generating` to `Idle`.
+
+The user selected `/remote-control` again and reported the “ZedLink exposure stopped” toast. `thread.list` returned `threads: []` in the same instance/epoch. `thread.snapshot`, a new `thread.send`, and retry of the earlier request ID all returned `THREAD_NOT_EXPOSED`. This verifies local revocation is applied before ledger replay; it does not yet test active-stream closure because subscription is unimplemented.
+
+The event-feed build started in another isolated process with instance `027ce6ec-8cb7-4151-bb32-f66ecc27502d`, epoch `f815ed95-d6f1-492e-8512-f530d129fe32`. Before exposure, `thread.events` for the known native thread returned `THREAD_NOT_EXPOSED`. The user selected `/remote-control` in two different native threads and confirmed that choice; the socket listed those two IDs. For known thread `daebd781-e95b-44e2-9454-0b6beb279247`, `thread.events` with `after_sequence: 9` initially returned an empty event list and `last_sequence: 9`. The terminal `watch` then received events 10 through 27 during `thread.send` request `5e9557c7-7646-4e03-bb21-512c028a313d` with `Say event feed ready in one sentence.`. The observed kinds included `status.changed`, `entry.added`, `entry.updated`, and `turn.stopped`. A final snapshot returned `Idle`, 15 entries, sequence 27, exactly one matching native user entry, and a following assistant entry. A later event poll returned a metadata event at sequence 28; cursor `999999` returned `RESYNC_REQUIRED`. The feed contains sanitized event kinds, not full response chunks; the terminal can fetch a snapshot to read the current conversation. Event-buffer overflow, reconnect replay, and active-stream revocation were not tested.
+
+The provisional cancel build started in the same disposable profile with instance `7d33d12a-ddd5-43fa-b086-c93a08ce92ef` and epoch `89a40dc9-fdfb-4c39-a77a-e79bd58eb857`. The user exposed the existing native thread with `/remote-control`. An idle `thread.cancel` for turn ID 1 returned `STALE_TURN`. A local test script then sent a harmless long enumeration prompt with request ID `0119092c-864f-4723-b852-0648373e3afd`, observed `Generating` and `current_turn_id: 1`, and requested `thread.cancel` for that ID with request ID `18f6e7e6-1128-42a7-acfb-c1e6d0f0162a`. The probe returned `outcome: requested`; the immediate wrapper snapshot became `Idle` and `current_turn_id: null`. **FAIL:** subsequent event polls still delivered hundreds of `entry.updated` events, and the assistant entry grew from approximately 7,638 to 7,946 characters while the wrapper was idle. The disposable Zed process was stopped to end the test. This does not prove that the model kept generating after cancellation: queued bridge events could also explain the observation. It does prove the local cancellation contract cannot currently treat wrapper `Idle` as settled completion. The experimental method is not an advertised client capability.
+
+The first attempt to guard the bridge read `AcpThread` synchronously from `NativeAgentConnection::run_turn` while Zed was already updating that entity. A subsequent isolated test prompt caused a GPUI `cannot read acp_thread::AcpThread while it is already being updated` panic and closed only the disposable window. This source change was corrected by reading the turn ID inside the spawned bridge task. `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` passed again in 34.36s. This crash remains an explicit failed test of the intermediate build.
+
+In the corrected isolated build, the user exposed the same desktop native thread in instance `dc5a93c4-3c04-471f-a670-58e61966ef75`, epoch `45a2b13b-0b85-4cc6-a859-8949f5cf1490`. A first immediate cancel for turn ID 1 returned `requested` and no assistant entry appeared; sequence stabilized at 7. A second prompt started turn ID 2 and produced a streamed assistant entry of 102 characters before cancellation. `thread.cancel` request `b2415a55-ebac-4cae-9a43-1e36128501ae` returned `requested`. One in-flight update brought the entry to 156 characters; later snapshots at 0.1, 0.3, 0.7, 1.5, and 2 seconds showed no further text growth and sequence 23. The wrapper stayed `Idle`, and the isolated process exited cleanly by Ctrl-C. **PASS for visible stream stabilization in this one live run.** Provider-side computation/egress, queued work, tool cancellation, and approval races were not measured; cancellation remains an experimental, unadvertised capability.
+
+After the cancellation runtime check, `instance.info` and `request.status` were added to the local probe. `RUSTUP_TOOLCHAIN=stable cargo check -p agent_ui --offline`, `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` (32.85s), and `python3 -m py_compile tools/zedlink_probe_client.py` passed. In a fresh isolated process, `python3 tools/zedlink_probe_client.py --socket /tmp/zedlink-run.iuKxga/probe-status/zedlink.sock info` returned instance `41f4ee56-5896-4ce0-b251-01d529348b1c`, epoch `70f52fe1-23f2-44c3-af8a-aa52e74c02de`, and a capability list that excludes experimental cancellation. The client `status` command for `absent-fixture-request` with that current instance and epoch returned `known: false`, `outcome: unknown`, and did not submit a prompt. Known-request lookup and revoked-exposure handling have not been exercised. `request.status` can only report whether its bounded in-process send ledger contains the original request ID; it cannot turn an asynchronous `unknown` send into an authoritative acceptance receipt.
+
+The protocol-core tests cover request size/version validation, response outcome shape, submission ledger conflict/eviction semantics, and event replay deduplication/gap/epoch detection. These are pure fixture tests and do not establish native queueing, approval, authoritative acceptance, or replay correctness in Zed. The in-memory ledger is intentionally non-durable; its `Unknown` result after eviction/restart must be reconciled by the future adapter.
+
+## Next steps and unavailable checks
+
+Link local request IDs to authoritative native turn IDs and completion, replace the local polled event feed with authenticated bounded streaming, test real busy-queue, permission, and cancellation behavior, and reconcile the provisional protocol core with verified native behavior. A narrow extension-facing native command API and packaging support are needed before this can be a functional installable extension; the pinned extension CLI rejects legacy slash-command packages. macOS/Xcode, iOS signing, a simulator, and a physical iPhone are unavailable; the configured local model was reported by the user but not independently verified. Corresponding model/device tests remain NOT RUN. Tailscale and WireGuard executables exist, but no route or provider test was run and no provider compatibility is claimed.
+
+## Per-test record template
+
+- Test ID:
+- Date/environment/build identity:
+- Command or exact UI steps:
+- Expected assertion:
+- Observed authoritative state/filesystem outcome:
+- Status: PASS / FAIL / BLOCKED / NOT RUN
+- Sanitized evidence location:
+- Limitations or follow-up:
+
+Do not include secrets or unredacted sensitive transcripts. A simulator result must not be listed as a physical-device pass. Fixture tests must not be listed as real-local-model validation.
+
+## Required final summary
+
+List what is implemented, how it was tested, exact reproducible commands, supported configurations, unperformed checks, source compatibility limitations, unresolved defects, and remaining release gates. Link to actual evidence without inventing it.
+
+## Revision 2 coverage
+
+Modern SwiftUI acceptance and provider-independent profiles added as specifications. Tailscale, WireGuard, other routed VPN, LAN HTTPS, proxy/tunnel, provider-switch, and UI tests are all NOT RUN. External iOS VPN apps are the baseline; embedded WireGuard/Tailscale research is not implementation evidence.
+
+Record each tested network category, provider/version, route/DNS setup, server-trust method, simulator versus physical status, proxy trust boundary, and UI screenshot evidence. Mark any untested provider as unvalidated.
+
+## Continuation — 2026-10-04
+
+The patched native probe now includes `thread.approvals` and `approval.respond`. Source inspection confirmed `AcpThread::request_tool_call_authorization`, `AcpThread::tool_call`, `ToolCallStatus::WaitingForConfirmation`, `PermissionOptions::first_option_of_kind`, and `AcpThread::authorize_tool_call`. The new operation requires current instance, epoch, exposed thread, matching turn ID, exact pending tool-call ID, and an actual native allow-once or deny-once option. It rejects action-choice prompts and other options. **This adapter path compiled but has not been exercised against a live deterministic permission prompt.** It is excluded from `instance.info` capabilities and the gateway allowlist. The existing Zed unit test below validates the underlying pending-request behavior; it does not validate this adapter operation.
+
+| Command / test | Observed result |
+| --- | --- |
+| `RUSTUP_TOOLCHAIN=stable cargo check -p agent_ui --offline` in `zed-source/` after approval addition | PASS |
+| `RUSTUP_TOOLCHAIN=stable cargo test -p acp_thread test_duplicate_tool_call_update_preserves_open_permission_request_until_authorized --offline -- --nocapture` in `zed-source/` | PASS: one existing Zed test, 161 filtered out; 3m 17s build and run |
+| `RUSTUP_TOOLCHAIN=stable cargo test -p acp_thread test_permission_request_tracks_agent_status_until_resolved --offline` | PASS: one existing Zed test, 161 filtered out |
+| `RUSTUP_TOOLCHAIN=stable cargo test -p acp_thread test_terminal_tool_call_update_closes_open_permission_request --offline` | PASS: one existing Zed test, 161 filtered out |
+| `RUSTUP_TOOLCHAIN=stable cargo build -p zed --offline` in `zed-source/` after approval addition | PASS in 33.07s |
+| `cargo check --offline`, `cargo build --offline`, `cargo fmt --check` in `gateway/` | PASS; gateway is a new standalone Rust binary |
+| `python3 tools/test_gateway_transport.py` with loopback fixture and a self-signed localhost certificate trusted only for the test | PASS after the final gateway changes; tests proper TLS hostname verification, unauthenticated denial, one-use pairing, device-scoped send/status IDs, stable gateway identity and token persistence across a gateway restart, same-ID retry without a second fixture acceptance, method allowlist, WSS event delivery and revocation, and revoked credential denial. The backend in this test is explicitly synthetic |
+| `git -C zed-source apply --reverse --check ../patches/zed-1.22.0-local-probe.patch` | PASS after patch export with approval changes |
+| `python3 -m py_compile tools/zedlink_probe_client.py tools/test_gateway_transport.py` | PASS |
+| `tools/check_linux.sh` | PASS in 11.23s; checks pinned Zed revision, formatting, adapter compile, patch reverse-apply, four protocol-core tests, gateway compile, and Python syntax. This does not run the live desktop or transport fixture |
+
+For a real IPC boundary check, the patched Zed binary was launched against the isolated fixture `/tmp/zedlink-fixture.KvjUfz` and profile `/tmp/zedlink-run.iuKxga/profile`, using `/tmp/zedlink-run.iuKxga/probe-gateway/zedlink.sock`. The gateway was launched on `127.0.0.1:44679` with a disposable localhost certificate, private state directory, and that socket. The terminal client verified TLS with the exact test certificate, paired using the private admin socket, called gateway `/v1/rpc` methods `instance.info`, `thread.list`, and `request.status`, then revoked its device credential. Results: HTTPS/pairing/RPC returned 200, gateway ID `1605bb22-c6b9-49a7-bb55-bdbe8b790d27`, real Zed instance `ce9cbb2d-3012-44ce-9b9f-d3865c2b0587`, epoch `aa81658c-092d-48f8-b075-a3feefd88b2e`, zero exposed threads, absent request `known: false`, experimental `approval.respond` denied with HTTP 403, and revoked token denied with HTTP 401. Both disposable processes were stopped. **No prompt was sent through this gateway run** because no thread was exposed after the Zed restart; it is not a same-thread gateway demonstration.
+
+The gateway currently supports supplied TLS certificates, binding to a specific loopback/RFC1918/CGNAT/ULA address, a five-minute single-use pairing code, up to 32 saved device credentials, private admin socket revocation, bounded RPC and probe responses, 16 concurrent probe calls, and a bounded polling WSS stream. It has no automatic certificate issuance, no verified Tailscale/WireGuard/other-VPN/custom-proxy route, no device-specific thread exposure, and no iOS client. The native send receipt remains provisional `unknown`; the gateway does not upgrade it to an accepted receipt. No model keys were placed in the gateway. The fixture test does not prove native queueing, permission resolution, or model execution. The Linux host still lacks `swift`, `xcodebuild`, signing, simulator, and a physical iPhone; all corresponding tests are NOT RUN.
+
+The TLS terminal client in `tools/zedlink_gateway_client.py` now validates the HTTPS certificate and stable gateway ID before using its saved token, refuses redirects, uses a private token file, and supports pairing, RPC, and event polling. The gateway fixture exercised its authenticated `thread.list` call and verified that a mismatched expected gateway ID exits before the token is used. A direct loopback request to `tools/deterministic_model_fixture.py --port 54259` returned valid Chat Completions SSE chunks, `[DONE]`, the expected concatenated text, and a single sanitized case count. This only verifies the fixture's wire format. An isolated copy of the disposable Zed profile was configured to use `http://127.0.0.1:54259/v1` and a dummy `OPENAI_API_KEY`; the patched Zed process started with instance `3c874eaa-78df-422c-aee3-73af5172feb7`, epoch `e34a3038-2e94-4c2e-8c9b-1728caea9b3d`. A real native fixture prompt and approval scenario are pending explicit thread exposure in that desktop window. No production Zed profile was edited.
+
+The gateway now rejects a TLS private key readable by other users; the transport fixture explicitly attempted mode 0644 and observed startup rejection, then restored mode 0600 and passed. This file-mode check does not replace trusted certificate provisioning for a phone.
+
+`tools/check_linux.sh` passed again after adding the TLS terminal client and deterministic fixture. It checks source revision, patch export, formatting, adapter compilation, four protocol-core tests, gateway compilation, and Python syntax. `python3 tools/test_gateway_transport.py` passed again after the client was added; its output includes terminal client RPC, TLS identity, one-use pairing, per-device identity, gateway restart persistence, WSS revocation, and credential revocation. These remain **gateway fixture** results, separate from native Zed model behavior.
+
+The gateway fixture was extended to make five incorrect pairing attempts and then try the original correct code. `python3 tools/test_gateway_transport.py` passed: all five incorrect attempts returned HTTP 403, and the correct code was rejected after lockout. This is a synthetic local transport test. The ordinary shell process listing did not show the prior isolated processes, but an authorized private-socket query confirmed the deterministic Zed instance is still live with instance `3c874eaa-78df-422c-aee3-73af5172feb7` and epoch `e34a3038-2e94-4c2e-8c9b-1728caea9b3d`. `thread.list` returned zero exposed threads. The loopback fixture counter endpoint also remained reachable; its `approval: 1` and `approval_followup: 1` counts came from the earlier direct HTTP wire-format test, not from a native Zed thread. A native fixture prompt still awaits desktop `/remote-control` exposure.
+
+Added `tools/test_native_fixture.py` as a guarded real-Zed check. It requires exactly one exposed idle native thread and checks same-request retry, one native user entry, one matching assistant entry, native events, and a model fixture call. `tools/check_linux.sh` passed with its syntax check. An authorized preflight command, `python3 tools/test_native_fixture.py --socket /tmp/zedlink-deterministic-profile/probe/zedlink.sock`, exited 3 before sending with `NOT RUN: expected exactly one explicitly exposed native thread, found 0; no prompt sent`. Thus the native fixture gate remains BLOCKED by desktop exposure, rather than passed or failed. The updated gateway fixture passed again with the pairing lockout assertion.
+
+The same gateway fixture now also attempts `serve 0.0.0.0:PORT` and `serve 8.8.8.8:PORT`; both fail before listening with the private-bind error. It asserts mode 0700 or stricter on the state directory and mode 0600 or stricter on `state.json` and `admin.sock`. `python3 tools/test_gateway_transport.py` passed with these additional assertions. It still does not validate any actual VPN or public reverse-proxy route.
+
+## Browser addition — 2026-10-04
+
+The gateway now embeds `/`, `/app.js`, and `/style.css` on the same HTTPS origin as its paired API. The page pairs only after the user enters an expected gateway UUID matching `/v1/gateway`; keeps its device token in tab `sessionStorage`; lists explicitly exposed native threads; renders plain-text snapshots; polls `thread.events`; and sends with a stable request ID. A timeout or reload does not automatically resubmit. The provisional native outcome is shown as uncertain. The page intentionally has no approval, cancel, diff, or model API controls while those native capabilities remain unverified. Static responses set `Content-Security-Policy`, `no-store`, `nosniff`, `DENY` framing, and `no-referrer` headers.
+
+| Command/check | Observed result | Scope |
+| --- | --- | --- |
+| `node --check gateway/web/app.js` | PASS | JavaScript syntax only |
+| `cargo fmt -- --check`, `cargo check --offline`, `cargo build --offline` in `gateway/` | PASS after browser routes | Native binary builds; no real-thread browser result |
+| `python3 tools/test_gateway_transport.py` with loopback permission | PASS after browser addition | Disposable self-signed localhost TLS, **synthetic probe**, and headless Firefox |
+| Headless Firefox fixture checks | PASS: wrong gateway UUID blocked before code transmission; browser paired, selected synthetic thread, displayed synthetic text without executing HTML-like content, sent one prompt, retried same ID with one fixture acceptance, reloaded without resending, and reacted to device revocation | Browser/gateway behavior, not native Zed |
+| Desktop and narrow browser screenshots | Viewed at `/tmp/zedlink-browser-fixture.png` (1366×682) and `/tmp/zedlink-browser-fixture-mobile.png` (450×758 actual Firefox screenshot after requesting a 390×844 outer window); composer visible after a layout adjustment | Synthetic content only; 390px content width and real phone remain untested |
+
+The first headless browser run exposed a disabled composer after thread selection; the button-state fix was retested successfully. An installed Python Playwright wrapper failed because its Node driver file was absent; the verified browser test uses installed Selenium, Firefox, and geckodriver instead. `tailscale status --json` showed the host's Tailscale backend running, but no ZedLink certificate was issued, no tailnet policy changed, and no remote Tailscale device connected to this browser UI. Moshi's official Browser Preview and agent-tier documentation were inspected. No Moshi binary, hook, or native Zed integration was installed; compatibility with Moshi's HTTPS preview is NOT RUN. A real browser prompt to the existing native Zed thread is still blocked until that thread is exposed in the isolated desktop window.
+
+The narrow Firefox fixture also asserted no horizontal document overflow and that the composer bottom remained inside the viewport. `python3 tools/test_gateway_transport.py` passed after these layout assertions. Firefox's actual narrow screenshot was 450×758 despite a 390×844 outer-window request, so this is a narrow desktop-browser check, not proof for a 390-point iPhone layout.
+
+`moshi --version` and `moshi-hook --version` both reported 0.3.27. `moshi-hook servers --help` showed server discovery but no single-port targeting option, so its scanner was not run against unrelated listeners. No Moshi configuration, hooks, sessions, or daemon state were changed. The official Browser Preview documentation describes SSH forwarding for host web servers, but does not establish that this installed version discovers ZedLink's HTTPS listener or provides native Zed Agent Chat View access.
+
+Final local rerun after the narrow-layout spacing change: `cargo build --offline` in `gateway/`, `python3 tools/test_gateway_transport.py`, and `tools/check_linux.sh` all passed. The final synthetic narrow screenshot shows the composer and both uncertain-delivery actions within the visible 450×758 Firefox viewport. `python3 tools/test_tailnet_bind.py` passed against the same gateway implementation. These checks do not establish a live native-thread browser round trip.
+
+`python3 tools/test_tailnet_bind.py` passed with a disposable synthetic probe and a self-signed localhost certificate. The test bound the gateway to the host's active Tailscale IPv4 address and made a TLS-verified request from that **same host** to `/v1/gateway` using an explicit localhost DNS override. It stopped the temporary gateway and changed no Tailscale setting. This proves local interface binding only; no other tailnet device, MagicDNS, production certificate, ACL, iPhone browser, or model operation was tested. A later private-socket query to the isolated deterministic Zed profile returned `Connection refused`, so the previously live disposable instance was no longer available for a browser-to-real-Zed check.
+
+## Installed Moshi discovery check
+
+`moshi-hook set scan-ports` reported the user's current setting as `all` without changing it. With a disposable `XDG_CONFIG_HOME`, `python3 tools/test_moshi_discovery.py` configured only one ephemeral port and passed: installed `moshi-hook version 0.3.27` discovered a plain-HTTP control on that port, then did **not** discover the ZedLink HTTPS listener on that same port with the disposable certificate supplied as `SSL_CERT_FILE`. The script printed `global_moshi_config_changed: false`. This is a negative compatibility result for the installed version/test certificate, not proof about all Moshi versions or certificates. Moshi native Zed Agent Chat View is still unsupported by the inspected published tiers, and no Moshi hook was installed into Zed.

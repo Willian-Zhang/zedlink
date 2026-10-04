@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101827">
+  <title>ZedLink · Remote Agent</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to conversation</a>
+  <header class="topbar">
+    <div class="brand"><span class="mark" aria-hidden="true">Z</span><div><strong>ZedLink</strong><small>Native Zed Agent, remotely</small></div></div>
+    <div id="connection" class="connection" role="status" aria-live="polite">Checking gateway…</div>
+  </header>
+  <main id="main" class="layout">
+    <aside class="sidebar">
+      <section class="panel" id="pair-panel">
+        <h1>Connect to Zed</h1>
+        <p class="muted">Use the HTTPS address you trust. Pair this browser with a code from the workstation.</p>
+        <div class="identity"><span>Gateway identity</span><code id="gateway-id">Checking…</code></div>
+        <form id="pair-form">
+          <label for="expected-id">Expected gateway ID</label>
+          <input id="expected-id" name="expected-id" autocomplete="off" spellcheck="false" required placeholder="UUID shown by gateway admin">
+          <label for="pair-code">One-time pairing code</label>
+          <input id="pair-code" name="pair-code" autocomplete="off" spellcheck="false" required maxlength="64" placeholder="64 hexadecimal characters">
+          <label for="device-name">Device name</label>
+          <input id="device-name" name="device-name" maxlength="64" required value="Browser">
+          <button id="pair-button" class="primary" type="submit">Pair browser</button>
+        </form>
+        <p class="note">The code comes from <code>zedlink-gateway admin STATE_DIR pair-code</code>. The browser keeps its device token only for this tab session.</p>
+      </section>
+      <section class="panel hidden" id="sessions-panel">
+        <div class="section-head"><div><h1>Sessions</h1><p id="host-label" class="muted"></p></div><button id="refresh" type="button" class="quiet">Refresh</button></div>
+        <div id="thread-list" class="thread-list" aria-label="Exposed Zed threads"></div>
+        <button id="forget" type="button" class="quiet danger">Forget this browser token</button>
+      </section>
+    </aside>
+    <section class="workspace" aria-label="Native Zed conversation">
+      <div class="conversation-head"><div><p class="eyebrow">EXPOSED NATIVE THREAD</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span></div>
+      <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <div id="messages" class="messages" aria-live="off"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your Zed thread will appear here</h3><p>Only threads explicitly exposed with <code>/remote-control</code> are listed.</p></div></div>
+      <div class="composer-wrap">
+        <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
+        <form id="composer-form" class="composer">
+          <label class="sr-only" for="prompt">Message to native Zed Agent</label>
+          <textarea id="prompt" rows="3" maxlength="3000" placeholder="Message your Zed Agent…" disabled></textarea>
+          <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="submit" disabled>Send</button></div>
+        </form>
+        <div class="delivery-actions"><button id="retry" class="quiet hidden" type="button">Retry same request ID</button><button id="clear-pending" class="quiet hidden" type="button">Clear uncertain status</button></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,916 @@
+diff --git a/README.md b/README.md
+index 9f641fb384..24840eec03 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,6 @@
++> [!IMPORTANT]
++> Remove this line to confirm you've reviewed this PR before submitting.
++
+ # Zed
+ 
+ [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 24c44be6f4..ee395e851a 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -2680,6 +2680,10 @@ impl AcpThread {
+         }
+     }
+ 
++    pub fn current_turn_id(&self) -> Option<u32> {
++        self.running_turn.as_ref().map(|turn| turn.id)
++    }
++
+     pub fn had_error(&self) -> bool {
+         self.had_error
+     }
+diff --git a/crates/agent/src/agent.rs b/crates/agent/src/agent.rs
+index 135c970ce0..798331b0a5 100644
+--- a/crates/agent/src/agent.rs
++++ b/crates/agent/src/agent.rs
+@@ -2270,18 +2270,50 @@ impl NativeAgentConnection {
+             Ok(stream) => stream,
+             Err(err) => return Task::ready(Err(err)),
+         };
+-        Self::handle_thread_events(response_stream, acp_thread, Some(self.clone()), cx)
++        Self::handle_thread_events_for_turn(
++            response_stream,
++            acp_thread,
++            Some(self.clone()),
++            true,
++            cx,
++        )
+     }
+ 
+     fn handle_thread_events(
++        events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
++        acp_thread: WeakEntity<AcpThread>,
++        connection: Option<NativeAgentConnection>,
++        cx: &App,
++    ) -> Task<Result<acp::PromptResponse>> {
++        Self::handle_thread_events_for_turn(events, acp_thread, connection, false, cx)
++    }
++
++    fn handle_thread_events_for_turn(
+         mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
+         acp_thread: WeakEntity<AcpThread>,
+         connection: Option<NativeAgentConnection>,
++        track_turn: bool,
+         cx: &App,
+     ) -> Task<Result<acp::PromptResponse>> {
+         cx.spawn(async move |cx| {
++            let expected_turn_id = if track_turn {
++                let Some(turn_id) =
++                    acp_thread.read_with(cx, |thread, _| thread.current_turn_id())?
++                else {
++                    return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
++                };
++                Some(turn_id)
++            } else {
++                None
++            };
+             // Handle response stream and forward to session.acp_thread
+             while let Some(result) = events.next().await {
++                if let Some(expected_turn_id) = expected_turn_id
++                    && acp_thread.read_with(cx, |thread, _| thread.current_turn_id())?
++                        != Some(expected_turn_id)
++                {
++                    return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
++                }
+                 match result {
+                     Ok(event) => {
+                         log::trace!("Received completion event: {:?}", event);
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index c9e823bd26..ba1edd24bc 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -36,6 +36,8 @@ pub mod thread_worktree_archive;
+ pub mod threads_archive_view;
+ mod ui;
+ mod unicode_confusables;
++#[cfg(unix)]
++mod zedlink_probe;
+ 
+ use std::rc::Rc;
+ use std::sync::Arc;
+@@ -614,6 +616,10 @@ pub fn init(
+         init_language_model_settings(cx);
+     }
+     agent_panel::init(cx);
++    #[cfg(unix)]
++    if !is_eval {
++        zedlink_probe::init(cx);
++    }
+     context_server_configuration::init(language_registry, fs.clone(), cx);
+     thread_metadata_store::init(cx);
+     terminal_thread_metadata_store::init(cx);
+diff --git a/crates/agent_ui/src/completion_provider.rs b/crates/agent_ui/src/completion_provider.rs
+index 6b6196c438..d156a03abe 100644
+--- a/crates/agent_ui/src/completion_provider.rs
++++ b/crates/agent_ui/src/completion_provider.rs
+@@ -199,6 +199,8 @@ impl PromptContextAction {
+ pub enum PromptLocalCommand {
+     ThumbsUp,
+     ThumbsDown,
++    #[cfg(unix)]
++    RemoteControl,
+ }
+ 
+ impl PromptLocalCommand {
+@@ -206,6 +208,8 @@ impl PromptLocalCommand {
+         match self {
+             Self::ThumbsUp => "helpful",
+             Self::ThumbsDown => "not-helpful",
++            #[cfg(unix)]
++            Self::RemoteControl => "remote-control",
+         }
+     }
+ 
+@@ -213,6 +217,8 @@ impl PromptLocalCommand {
+         match self {
+             Self::ThumbsUp => "Positive Feedback",
+             Self::ThumbsDown => "Negative Feedback",
++            #[cfg(unix)]
++            Self::RemoteControl => "Remote Control",
+         }
+     }
+ 
+@@ -224,6 +230,8 @@ impl PromptLocalCommand {
+             Self::ThumbsDown => {
+                 "Rate this response as not helpful. Sends the current conversation to the Zed team."
+             }
++            #[cfg(unix)]
++            Self::RemoteControl => "Expose or stop exposing this native Agent thread to ZedLink.",
+         }
+     }
+ 
+@@ -231,6 +239,8 @@ impl PromptLocalCommand {
+         match self {
+             Self::ThumbsUp => IconName::ThumbsUp,
+             Self::ThumbsDown => IconName::ThumbsDown,
++            #[cfg(unix)]
++            Self::RemoteControl => IconName::Link,
+         }
+     }
+ }
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index bfefb986bd..3f9c2d3a10 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -1163,6 +1163,19 @@ impl ThreadView {
+             PromptLocalCommand::ThumbsDown => {
+                 self.handle_feedback_click(ThreadFeedback::Negative, window, cx);
+             }
++            #[cfg(unix)]
++            PromptLocalCommand::RemoteControl => {
++                if self.parent_session_id.is_some() || self.as_native_thread(cx).is_none() {
++                    return;
++                }
++                match crate::zedlink_probe::toggle_thread_exposure(&self.thread, cx) {
++                    Some(true) => {
++                        self.show_local_command_toast("Thread exposed to ZedLink locally", cx)
++                    }
++                    Some(false) => self.show_local_command_toast("ZedLink exposure stopped", cx),
++                    None => self.show_local_command_toast("ZedLink local probe unavailable", cx),
++                }
++            }
+         }
+     }
+ 
+@@ -1552,6 +1565,10 @@ impl ThreadView {
+         self.send_impl(message_editor, window, cx)
+     }
+ 
++    pub(crate) fn is_loading_message_contents(&self) -> bool {
++        self.is_loading_contents
++    }
++
+     /// Sends a bare `/command` turn and queues everything the user typed after
+     /// it as a follow-up message. The queued remainder auto-processes when the
+     /// command turn stops, so e.g. `/compact do X` compacts and then runs `do X`
+@@ -6984,6 +7001,14 @@ impl ThreadView {
+             commands.push(PromptLocalCommand::ThumbsDown);
+         }
+ 
++        #[cfg(unix)]
++        if self.parent_session_id.is_none()
++            && self.as_native_thread(cx).is_some()
++            && crate::zedlink_probe::is_available(cx)
++        {
++            commands.push(PromptLocalCommand::RemoteControl);
++        }
++
+         commands
+     }
+ 
+diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
+new file mode 100644
+index 0000000000..6d616f4c1d
+--- /dev/null
++++ b/crates/agent_ui/src/zedlink_probe.rs
+@@ -0,0 +1,705 @@
++use std::{
++    cell::RefCell,
++    collections::{HashMap, HashSet, VecDeque},
++    fs::{self, DirBuilder, Permissions},
++    io::{BufRead, BufReader, Read, Write},
++    os::unix::{
++        fs::{DirBuilderExt, PermissionsExt},
++        net::{UnixListener, UnixStream},
++    },
++    path::{Path, PathBuf},
++    rc::Rc,
++    sync::mpsc,
++    time::Duration,
++};
++
++use acp_thread::{
++    AcpThread, AcpThreadEvent, AgentThreadEntry, AuthorizationKind, SelectedPermissionOutcome,
++    ThreadStatus, ToolCallStatus,
++};
++use agent_client_protocol::schema::v1 as acp;
++use anyhow::{Context as _, Result, anyhow};
++use gpui::{App, Entity, Global, Subscription, Task};
++use serde::Deserialize;
++use serde_json::{Value, json};
++
++use crate::agent_panel::AgentPanel;
++use crate::conversation_view::ThreadView;
++
++const MAX_REQUEST_BYTES: u64 = 4096;
++const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct ProbeRequest {
++    version: u8,
++    request_id: String,
++    method: String,
++    params: Value,
++}
++
++struct ProbeCommand {
++    request: ProbeRequest,
++    response: mpsc::Sender<Value>,
++}
++
++struct ProbeState {
++    project_root: PathBuf,
++    instance_id: String,
++    epoch: String,
++    submissions: RefCell<HashMap<String, SubmissionRecord>>,
++    exposed_threads: RefCell<HashSet<String>>,
++    subscriptions: RefCell<HashMap<String, Subscription>>,
++    events: RefCell<HashMap<String, ThreadEvents>>,
++}
++
++#[derive(Default)]
++struct ThreadEvents {
++    last_sequence: u64,
++    records: VecDeque<Value>,
++}
++
++struct ProbeGlobal(Rc<ProbeState>);
++
++impl Global for ProbeGlobal {}
++
++struct SubmissionRecord {
++    thread_id: String,
++    text: String,
++    outcome: &'static str,
++}
++
++pub fn init(cx: &mut App) {
++    let (Some(directory), Some(project_root)) = (
++        std::env::var_os("ZEDLINK_PROBE_DIR"),
++        std::env::var_os("ZEDLINK_PROBE_PROJECT_ROOT"),
++    ) else {
++        return;
++    };
++
++    let directory = PathBuf::from(directory);
++    let project_root = PathBuf::from(project_root);
++    if !directory.is_absolute() || !project_root.is_absolute() {
++        log::warn!("ZedLink probe requires absolute directory and project paths");
++        return;
++    }
++
++    let setup = (|| -> Result<(UnixListener, ProbeState)> {
++        let project_root = fs::canonicalize(project_root).context("project root unavailable")?;
++        if !project_root.is_dir() {
++            return Err(anyhow!("project root is not a directory"));
++        }
++
++        let mut builder = DirBuilder::new();
++        builder.mode(0o700);
++        builder
++            .create(&directory)
++            .context("private socket directory unavailable")?;
++        let socket = directory.join("zedlink.sock");
++        let listener = UnixListener::bind(&socket).context("socket unavailable")?;
++        fs::set_permissions(&socket, Permissions::from_mode(0o600))
++            .context("socket permissions unavailable")?;
++        Ok((
++            listener,
++            ProbeState {
++                project_root,
++                instance_id: uuid::Uuid::new_v4().to_string(),
++                epoch: uuid::Uuid::new_v4().to_string(),
++                submissions: RefCell::new(HashMap::new()),
++                exposed_threads: RefCell::new(HashSet::new()),
++                subscriptions: RefCell::new(HashMap::new()),
++                events: RefCell::new(HashMap::new()),
++            },
++        ))
++    })();
++
++    let Ok((listener, state)) = setup else {
++        log::warn!("ZedLink local probe could not start");
++        return;
++    };
++    let state = Rc::new(state);
++
++    let (sender, receiver) = async_channel::bounded::<ProbeCommand>(16);
++    let listener_thread = std::thread::Builder::new()
++        .name("zedlink-probe".into())
++        .spawn(move || {
++            for incoming in listener.incoming() {
++                let Ok(stream) = incoming else {
++                    log::warn!("ZedLink local probe listener stopped");
++                    break;
++                };
++                if handle_stream(stream, &sender).is_err() {
++                    log::debug!("ZedLink local probe request failed");
++                }
++            }
++        });
++    if listener_thread.is_err() {
++        log::warn!("ZedLink local probe worker could not start");
++        return;
++    }
++    cx.set_global(ProbeGlobal(state.clone()));
++
++    cx.spawn(async move |cx| {
++        while let Ok(command) = receiver.recv().await {
++            let result = cx.update(|cx| handle_request(command.request, &state, cx));
++            if command.response.send(result).is_err() {
++                continue;
++            }
++        }
++    })
++    .detach();
++}
++
++pub(crate) fn toggle_thread_exposure(thread: &Entity<AcpThread>, cx: &mut App) -> Option<bool> {
++    let state = cx.try_global::<ProbeGlobal>()?.0.clone();
++    if !thread_belongs_to_project(thread, &state.project_root, cx) {
++        return None;
++    }
++    let id = thread.read(cx).session_id().to_string();
++    let was_exposed = state.exposed_threads.borrow_mut().remove(&id);
++    if was_exposed {
++        state.subscriptions.borrow_mut().remove(&id);
++        Some(false)
++    } else {
++        let subscription = cx.subscribe(thread, {
++            let state = state.clone();
++            let id = id.clone();
++            move |_thread, event: &AcpThreadEvent, _cx| {
++                let mut events = state.events.borrow_mut();
++                let record = events.entry(id.clone()).or_default();
++                let Some(sequence) = record.last_sequence.checked_add(1) else {
++                    return;
++                };
++                record.last_sequence = sequence;
++                record.records.push_back(json!({
++                    "sequence": sequence,
++                    "kind": event_kind(event),
++                }));
++                if record.records.len() > 256 {
++                    record.records.pop_front();
++                }
++            }
++        });
++        state.events.borrow_mut().entry(id.clone()).or_default();
++        state
++            .subscriptions
++            .borrow_mut()
++            .insert(id.clone(), subscription);
++        state.exposed_threads.borrow_mut().insert(id);
++        Some(true)
++    }
++}
++
++fn event_kind(event: &AcpThreadEvent) -> &'static str {
++    match event {
++        AcpThreadEvent::NewEntry => "entry.added",
++        AcpThreadEvent::EntryUpdated(_) => "entry.updated",
++        AcpThreadEvent::EntriesRemoved(_) => "entry.removed",
++        AcpThreadEvent::StatusChanged => "status.changed",
++        AcpThreadEvent::ToolAuthorizationRequested(_) => "approval.requested",
++        AcpThreadEvent::ToolAuthorizationReceived(_) => "approval.resolved",
++        AcpThreadEvent::Stopped(_) => "turn.stopped",
++        AcpThreadEvent::Error => "turn.error",
++        _ => "metadata.changed",
++    }
++}
++
++pub(crate) fn is_available(cx: &App) -> bool {
++    cx.has_global::<ProbeGlobal>()
++}
++
++fn handle_stream(
++    mut stream: UnixStream,
++    sender: &async_channel::Sender<ProbeCommand>,
++) -> Result<()> {
++    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
++    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
++
++    let mut bytes = Vec::new();
++    let mut reader = BufReader::new((&mut stream).take(MAX_REQUEST_BYTES + 1));
++    reader.read_until(b'\n', &mut bytes)?;
++    let response = if bytes.len() as u64 > MAX_REQUEST_BYTES {
++        error("", "PAYLOAD_TOO_LARGE")
++    } else {
++        match serde_json::from_slice::<ProbeRequest>(&bytes) {
++            Ok(request)
++                if request.version == 1
++                    && !request.request_id.is_empty()
++                    && request.request_id.len() <= 128
++                    && request.params.is_object() =>
++            {
++                let request_id = request.request_id.clone();
++                let (response_sender, response_receiver) = mpsc::channel();
++                match sender.try_send(ProbeCommand {
++                    request,
++                    response: response_sender,
++                }) {
++                    Ok(()) => response_receiver
++                        .recv_timeout(Duration::from_secs(5))
++                        .unwrap_or_else(|_| error(&request_id, "INSTANCE_UNAVAILABLE")),
++                    Err(async_channel::TrySendError::Full(_)) => error(&request_id, "RATE_LIMITED"),
++                    Err(async_channel::TrySendError::Closed(_)) => {
++                        error(&request_id, "INSTANCE_UNAVAILABLE")
++                    }
++                }
++            }
++            _ => error("", "INVALID_REQUEST"),
++        }
++    };
++    serde_json::to_writer(&mut stream, &response)?;
++    stream.write_all(b"\n")?;
++    Ok(())
++}
++
++fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    match request.method.as_str() {
++        "instance.info" => success(
++            &request.request_id,
++            json!({
++                "instance_id": state.instance_id,
++                "epoch": state.epoch,
++                "capabilities": ["thread.list", "thread.snapshot", "thread.events", "thread.send", "request.status"],
++                "provisional": true,
++            }),
++        ),
++        "request.status" => {
++            if request.params.get("instance_id").and_then(Value::as_str)
++                != Some(state.instance_id.as_str())
++                || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
++            {
++                return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++            }
++            let Some(original_request_id) = request
++                .params
++                .get("original_request_id")
++                .and_then(Value::as_str)
++                .filter(|id| !id.is_empty())
++            else {
++                return error(&request.request_id, "INVALID_REQUEST");
++            };
++            let submissions = state.submissions.borrow();
++            let Some(record) = submissions.get(original_request_id) else {
++                return success(
++                    &request.request_id,
++                    json!({"known": false, "outcome": "unknown", "provisional": true}),
++                );
++            };
++            if !state.exposed_threads.borrow().contains(&record.thread_id) {
++                return error(&request.request_id, "THREAD_NOT_EXPOSED");
++            }
++            success(
++                &request.request_id,
++                json!({"known": true, "outcome": record.outcome, "provisional": true}),
++            )
++        }
++        "thread.list" => {
++            let mut seen = HashSet::new();
++            let threads = loaded_threads(&state.project_root, cx)
++                .into_iter()
++                .filter_map(|thread| {
++                    let thread = thread.read(cx);
++                    let id = thread.session_id().to_string();
++                    (state.exposed_threads.borrow().contains(&id) && seen.insert(id.clone())).then(
++                        || {
++                            json!({
++                                "thread_id": id,
++                            "title": thread.title().map(|title| title.to_string()),
++                            "status": format!("{:?}", thread.status()),
++                            "current_turn_id": thread.current_turn_id(),
++                            })
++                        },
++                    )
++                })
++                .collect::<Vec<_>>();
++            success(
++                &request.request_id,
++                json!({
++                    "instance_id": state.instance_id,
++                    "epoch": state.epoch,
++                    "threads": threads,
++                }),
++            )
++        }
++        "thread.snapshot" => {
++            let Some(id) = request.params.get("thread_id").and_then(Value::as_str) else {
++                return error(&request.request_id, "INVALID_REQUEST");
++            };
++            if !state.exposed_threads.borrow().contains(id) {
++                return error(&request.request_id, "THREAD_NOT_EXPOSED");
++            }
++            let Some(thread) = loaded_threads(&state.project_root, cx)
++                .into_iter()
++                .find(|thread| thread.read(cx).session_id().to_string() == id)
++            else {
++                return error(&request.request_id, "THREAD_NOT_EXPOSED");
++            };
++            let thread = thread.read(cx);
++            let mut used = 0;
++            let mut entries = Vec::new();
++            let mut truncated = false;
++            for entry in thread.entries() {
++                let markdown = entry.to_markdown(cx);
++                if used + markdown.len() > MAX_SNAPSHOT_BYTES {
++                    truncated = true;
++                    break;
++                }
++                used += markdown.len();
++                entries.push(markdown);
++            }
++            success(
++                &request.request_id,
++                json!({
++                    "instance_id": state.instance_id,
++                    "epoch": state.epoch,
++                    "thread_id": id,
++                    "title": thread.title().map(|title| title.to_string()),
++                    "status": format!("{:?}", thread.status()),
++                    "current_turn_id": thread.current_turn_id(),
++                    "pending_approvals": pending_approvals(thread),
++                    "entries_markdown": entries,
++                    "truncated": truncated,
++                    "provisional": true,
++                    "last_sequence": state.events.borrow().get(id).map_or(0, |events| events.last_sequence),
++                }),
++            )
++        }
++        "thread.events" => {
++            let Some(id) = request.params.get("thread_id").and_then(Value::as_str) else {
++                return error(&request.request_id, "INVALID_REQUEST");
++            };
++            let Some(after_sequence) = request.params.get("after_sequence").and_then(Value::as_u64)
++            else {
++                return error(&request.request_id, "INVALID_REQUEST");
++            };
++            if !state.exposed_threads.borrow().contains(id)
++                || !loaded_threads(&state.project_root, cx)
++                    .into_iter()
++                    .any(|thread| thread.read(cx).session_id().to_string() == id)
++            {
++                return error(&request.request_id, "THREAD_NOT_EXPOSED");
++            }
++            let events = state.events.borrow();
++            let Some(events) = events.get(id) else {
++                return error(&request.request_id, "RESYNC_REQUIRED");
++            };
++            if after_sequence > events.last_sequence
++                || events.records.front().is_some_and(|record| {
++                    after_sequence.saturating_add(1) < record["sequence"].as_u64().unwrap_or(0)
++                })
++            {
++                return error(&request.request_id, "RESYNC_REQUIRED");
++            }
++            let records = events
++                .records
++                .iter()
++                .filter(|record| {
++                    record["sequence"]
++                        .as_u64()
++                        .is_some_and(|seq| seq > after_sequence)
++                })
++                .cloned()
++                .collect::<Vec<_>>();
++            success(
++                &request.request_id,
++                json!({
++                    "instance_id": state.instance_id,
++                    "epoch": state.epoch,
++                    "thread_id": id,
++                    "last_sequence": events.last_sequence,
++                    "events": records,
++                    "provisional": true,
++                }),
++            )
++        }
++        "thread.send" => send_request(&request, state, cx),
++        "thread.cancel" => cancel_request(&request, state, cx),
++        "thread.approvals" => approval_list(&request, state, cx),
++        "approval.respond" => approval_response(&request, state, cx),
++        _ => error(&request.request_id, "UNSUPPORTED_CAPABILITY"),
++    }
++}
++
++fn pending_approvals(thread: &AcpThread) -> Vec<Value> {
++    let turn_id = thread.current_turn_id();
++    thread
++        .entries()
++        .iter()
++        .filter_map(|entry| {
++            let AgentThreadEntry::ToolCall(tool_call) = entry else {
++                return None;
++            };
++            let ToolCallStatus::WaitingForConfirmation { options, kind, .. } = &tool_call.status
++            else {
++                return None;
++            };
++            if !matches!(kind, AuthorizationKind::PermissionGrant) {
++                return None;
++            }
++            Some(json!({
++                "approval_id": tool_call.id.0.as_ref(),
++                "turn_id": turn_id,
++                "can_approve_once": options.allow_once_option_id().is_some(),
++                "can_deny_once": options.deny_once_option_id().is_some(),
++            }))
++        })
++        .collect()
++}
++
++fn approval_list(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if !state.exposed_threads.borrow().contains(thread_id) {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    }
++    let Some(thread) = loaded_threads(&state.project_root, cx)
++        .into_iter()
++        .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
++    else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    success(
++        &request.request_id,
++        json!({"thread_id": thread_id, "approvals": pending_approvals(thread.read(cx)), "provisional": true}),
++    )
++}
++
++fn approval_response(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(approval_id) = request.params.get("approval_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(turn_id) = request
++        .params
++        .get("turn_id")
++        .and_then(Value::as_u64)
++        .and_then(|id| u32::try_from(id).ok())
++    else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let kind = match request.params.get("decision").and_then(Value::as_str) {
++        Some("approve_once") => acp::PermissionOptionKind::AllowOnce,
++        Some("deny_once") => acp::PermissionOptionKind::RejectOnce,
++        _ => return error(&request.request_id, "INVALID_REQUEST"),
++    };
++    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
++        || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
++    {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    if !state.exposed_threads.borrow().contains(thread_id) {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    }
++    let Some(thread) = loaded_threads(&state.project_root, cx)
++        .into_iter()
++        .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
++    else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    if thread.read(cx).current_turn_id() != Some(turn_id) {
++        return error(&request.request_id, "STALE_TURN");
++    }
++    let tool_call_id = acp::ToolCallId::new(approval_id);
++    let outcome = {
++        let thread = thread.read(cx);
++        let Some((_, tool_call)) = thread.tool_call(&tool_call_id) else {
++            return error(&request.request_id, "APPROVAL_EXPIRED");
++        };
++        let ToolCallStatus::WaitingForConfirmation {
++            options,
++            kind: authorization_kind,
++            ..
++        } = &tool_call.status
++        else {
++            return error(&request.request_id, "APPROVAL_ALREADY_RESOLVED");
++        };
++        if !matches!(authorization_kind, AuthorizationKind::PermissionGrant) {
++            return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
++        }
++        let Some(option) = options.first_option_of_kind(kind) else {
++            return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
++        };
++        SelectedPermissionOutcome::new(option.option_id.clone(), option.kind)
++    };
++    thread.update(cx, |thread, cx| {
++        thread.authorize_tool_call(tool_call_id, outcome, cx)
++    });
++    success(
++        &request.request_id,
++        json!({"outcome": "resolved", "provisional": true}),
++    )
++}
++
++fn cancel_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(turn_id) = request
++        .params
++        .get("turn_id")
++        .and_then(Value::as_u64)
++        .and_then(|id| u32::try_from(id).ok())
++    else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
++        || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
++    {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    if !state.exposed_threads.borrow().contains(thread_id) {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    }
++    let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++        .into_iter()
++        .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
++    else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    if thread.read(cx).current_turn_id() != Some(turn_id) {
++        return error(&request.request_id, "STALE_TURN");
++    }
++    view.update(cx, |view, cx| view.cancel_generation(cx));
++    success(
++        &request.request_id,
++        json!({"outcome": "requested", "turn_id": turn_id, "provisional": true}),
++    )
++}
++
++fn send_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(text) = request.params.get("text").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if text.trim().is_empty() || text.len() > 3000 {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
++        || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
++    {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    if !state.exposed_threads.borrow().contains(thread_id) {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    }
++
++    let submissions = state.submissions.borrow();
++    if let Some(previous) = submissions.get(&request.request_id) {
++        if previous.thread_id != thread_id || previous.text != text {
++            return error(&request.request_id, "REQUEST_CONFLICT");
++        }
++        return send_result(&request.request_id, previous.outcome);
++    }
++    if submissions.len() >= 256 {
++        return error(&request.request_id, "RATE_LIMITED");
++    }
++    drop(submissions);
++
++    let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++        .into_iter()
++        .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
++    else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    if view.read(cx).is_loading_message_contents() {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++
++    let content = vec![acp::ContentBlock::Text(acp::TextContent::new(text))];
++    let can_send_now =
++        thread.read(cx).status() == ThreadStatus::Idle && !view.read(cx).has_queued_messages();
++    let sent = cx.with_window(view.entity_id(), |window, cx| {
++        view.update(cx, |view, cx| {
++            if can_send_now {
++                view.send_content(
++                    Task::ready(Ok(Some((content, Vec::new())))),
++                    false,
++                    window,
++                    cx,
++                );
++                "unknown"
++            } else {
++                view.add_to_queue(content, Vec::new(), window, cx);
++                "queued"
++            }
++        })
++    });
++    let Some(outcome) = sent else {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    };
++    state.submissions.borrow_mut().insert(
++        request.request_id.clone(),
++        SubmissionRecord {
++            thread_id: thread_id.to_string(),
++            text: text.to_string(),
++            outcome,
++        },
++    );
++    send_result(&request.request_id, outcome)
++}
++
++fn send_result(request_id: &str, outcome: &str) -> Value {
++    success(request_id, json!({"outcome": outcome, "provisional": true}))
++}
++
++fn loaded_threads(project_root: &Path, cx: &App) -> Vec<Entity<AcpThread>> {
++    loaded_thread_views(project_root, cx)
++        .into_iter()
++        .map(|(thread, _)| thread)
++        .collect()
++}
++
++fn loaded_thread_views(
++    project_root: &Path,
++    cx: &App,
++) -> Vec<(Entity<AcpThread>, Entity<ThreadView>)> {
++    let workspaces = workspace::AppState::global(cx)
++        .workspace_store
++        .read(cx)
++        .workspaces()
++        .cloned()
++        .collect::<Vec<_>>();
++    let mut threads = Vec::new();
++    for workspace in workspaces {
++        let Some(workspace) = workspace.upgrade() else {
++            continue;
++        };
++        let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) else {
++            continue;
++        };
++        for conversation in panel.read(cx).conversation_views() {
++            let conversation = conversation.read(cx);
++            if conversation.as_native_thread(cx).is_none() {
++                continue;
++            }
++            let Some(view) = conversation.root_thread_view() else {
++                continue;
++            };
++            let thread = view.read(cx).thread.clone();
++            if thread_belongs_to_project(&thread, project_root, cx) {
++                threads.push((thread, view));
++            }
++        }
++    }
++    threads
++}
++
++fn thread_belongs_to_project(thread: &Entity<AcpThread>, project_root: &Path, cx: &App) -> bool {
++    let project = thread.read(cx).project().clone();
++    project
++        .read(cx)
++        .visible_worktrees(cx)
++        .any(|worktree| worktree.read(cx).abs_path().as_ref() == project_root)
++}
++
++fn success(request_id: &str, result: Value) -> Value {
++    json!({"version": 1, "request_id": request_id, "result": result})
++}
++
++fn error(request_id: &str, code: &str) -> Value {
++    json!({"version": 1, "request_id": request_id, "error": {"code": code}})
++}
