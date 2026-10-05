@@ -11,11 +11,13 @@ use axum::{
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, DirBuilder, OpenOptions, Permissions},
     io::Write,
     net::{IpAddr, SocketAddr},
@@ -31,11 +33,17 @@ use tokio::{
     sync::{Mutex, Semaphore},
 };
 use uuid::Uuid;
+use web_push::{
+    ContentEncoding, IsahcWebPushClient, SubscriptionInfo, Urgency, VapidSignatureBuilder,
+    WebPushClient, WebPushError, WebPushMessageBuilder,
+};
 
 const MAX_RPC: usize = 4096;
 const MAX_PROBE_RESPONSE: u64 = 1024 * 1024;
 const PAIR_TTL: Duration = Duration::from_secs(300);
 const MAX_DEVICES: usize = 32;
+const NOTIFICATION_POLL: Duration = Duration::from_secs(2);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Clone)]
 struct Gateway(Arc<Inner>);
@@ -45,17 +53,27 @@ struct Inner {
     persisted: Mutex<Persisted>,
     pairing: Mutex<Option<Pairing>>,
     probe_limit: Arc<Semaphore>,
+    push_client: IsahcWebPushClient,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Persisted {
     gateway_id: Uuid,
     devices: Vec<Device>,
+    #[serde(default)]
+    vapid_private_key: String,
+    #[serde(default)]
+    push_subscriptions: Vec<PushSubscription>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Device {
     id: Uuid,
     name: String,
     digest: String,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PushSubscription {
+    device_id: Uuid,
+    subscription: SubscriptionInfo,
 }
 struct Pairing {
     digest: [u8; 32],
@@ -77,6 +95,22 @@ struct PairRequest {
 struct EventQuery {
     thread_id: String,
     after_sequence: Option<u64>,
+}
+#[derive(Deserialize)]
+struct UnsubscribeRequest {
+    endpoint: String,
+}
+
+#[derive(Clone, Default)]
+struct ThreadObservation {
+    status: String,
+    approvals: usize,
+}
+
+enum PushOutcome {
+    Sent,
+    Stale,
+    Failed,
 }
 
 #[tokio::main]
@@ -104,6 +138,8 @@ async fn main() -> Result<()> {
                     eprintln!("admin socket stopped: {error:#}");
                 }
             });
+            let notifications = state.clone();
+            tokio::spawn(async move { notifications.notification_monitor().await });
             let app = Router::new()
                 .route("/", get(browser_page))
                 .route("/app.js", get(browser_script))
@@ -116,6 +152,13 @@ async fn main() -> Result<()> {
                 .route("/v1/pair", post(pair))
                 .route("/v1/rpc", post(rpc))
                 .route("/v1/events", get(events))
+                .route("/v1/notifications/config", get(notification_config))
+                .route("/v1/notifications/subscribe", post(notification_subscribe))
+                .route(
+                    "/v1/notifications/unsubscribe",
+                    post(notification_unsubscribe),
+                )
+                .route("/v1/notifications/test", post(notification_test))
                 .layer(DefaultBodyLimit::max(MAX_RPC))
                 .with_state(state);
             axum_server::bind_rustls(address, tls)
@@ -231,6 +274,44 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     hash.update(bytes);
     hash.finalize().into()
 }
+fn new_vapid_private_key() -> String {
+    loop {
+        let bytes: [u8; 32] = rand::random();
+        let encoded = URL_SAFE_NO_PAD.encode(bytes);
+        if VapidSignatureBuilder::from_base64_no_sub(&encoded).is_ok() {
+            return encoded;
+        }
+    }
+}
+
+fn valid_subscription(subscription: &SubscriptionInfo) -> bool {
+    let public_key = URL_SAFE_NO_PAD.decode(subscription.keys.p256dh.as_bytes());
+    let auth = URL_SAFE_NO_PAD.decode(subscription.keys.auth.as_bytes());
+    let trusted_endpoint = url::Url::parse(&subscription.endpoint)
+        .ok()
+        .filter(|endpoint| {
+            endpoint.scheme() == "https"
+                && endpoint.username().is_empty()
+                && endpoint.password().is_none()
+                && endpoint.port_or_known_default() == Some(443)
+        })
+        .and_then(|endpoint| endpoint.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host == "fcm.googleapis.com"
+                || host == "push.apple.com"
+                || host.ends_with(".push.apple.com")
+                || host == "push.services.mozilla.com"
+                || host.ends_with(".push.services.mozilla.com")
+        });
+    trusted_endpoint
+        && subscription.endpoint.len() <= 2048
+        && !subscription.keys.p256dh.is_empty()
+        && subscription.keys.p256dh.len() <= 256
+        && !subscription.keys.auth.is_empty()
+        && subscription.keys.auth.len() <= 256
+        && matches!(public_key.as_deref(), Ok([4, ..]) if public_key.as_ref().is_ok_and(|key| key.len() == 65))
+        && auth.as_ref().is_ok_and(|secret| secret.len() == 16)
+}
 fn save(directory: &Path, state: &Persisted) -> Result<()> {
     let temporary = directory.join(format!("state-{}.tmp", Uuid::new_v4()));
     let mut file = OpenOptions::new()
@@ -265,7 +346,7 @@ impl Gateway {
             bail!("state directory must be private");
         }
         let file = directory.join("state.json");
-        let persisted = if file.exists() {
+        let mut persisted: Persisted = if file.exists() {
             let metadata = fs::metadata(&file)?;
             if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
                 bail!("state file must be private");
@@ -275,16 +356,25 @@ impl Gateway {
             let initial = Persisted {
                 gateway_id: Uuid::new_v4(),
                 devices: vec![],
+                vapid_private_key: new_vapid_private_key(),
+                push_subscriptions: vec![],
             };
             save(&directory, &initial)?;
             initial
         };
+        if persisted.vapid_private_key.is_empty() {
+            persisted.vapid_private_key = new_vapid_private_key();
+            save(&directory, &persisted)?;
+        }
+        VapidSignatureBuilder::from_base64_no_sub(&persisted.vapid_private_key)
+            .context("invalid saved Web Push key")?;
         Ok(Self(Arc::new(Inner {
             directory,
             probe,
             persisted: Mutex::new(persisted),
             pairing: Mutex::new(None),
             probe_limit: Arc::new(Semaphore::new(16)),
+            push_client: IsahcWebPushClient::new().context("Web Push client unavailable")?,
         })))
     }
     async fn authorize(&self, headers: &HeaderMap) -> Option<Uuid> {
@@ -400,7 +490,11 @@ impl Gateway {
             Some("devices") => {
                 let persisted = self.0.persisted.lock().await;
                 json!({"gateway_id":persisted.gateway_id,
-                    "devices":persisted.devices.iter().map(|device| json!({"id":device.id,"name":device.name})).collect::<Vec<_>>()})
+                    "devices":persisted.devices.iter().map(|device| json!({
+                        "id":device.id,
+                        "name":device.name,
+                        "notifications":persisted.push_subscriptions.iter().any(|subscription| subscription.device_id == device.id)
+                    })).collect::<Vec<_>>()})
             }
             Some("revoke") => {
                 let id =
@@ -409,6 +503,8 @@ impl Gateway {
                 let mut next = persisted.clone();
                 let before = next.devices.len();
                 next.devices.retain(|device| device.id != id);
+                next.push_subscriptions
+                    .retain(|subscription| subscription.device_id != id);
                 if next.devices.len() != before {
                     save(&self.0.directory, &next)?;
                     *persisted = next;
@@ -423,6 +519,137 @@ impl Gateway {
             .await?;
         stream.write_all(b"\n").await?;
         Ok(())
+    }
+
+    fn vapid_public_key(&self, persisted: &Persisted) -> Result<String> {
+        let builder = VapidSignatureBuilder::from_base64_no_sub(&persisted.vapid_private_key)?;
+        Ok(URL_SAFE_NO_PAD.encode(builder.get_public_key()))
+    }
+
+    async fn send_push(
+        &self,
+        record: &PushSubscription,
+        body: &str,
+        thread_id: Option<&str>,
+    ) -> PushOutcome {
+        let private_key = self.0.persisted.lock().await.vapid_private_key.clone();
+        let signature = match VapidSignatureBuilder::from_base64(&private_key, &record.subscription)
+            .and_then(|builder| builder.build())
+        {
+            Ok(signature) => signature,
+            Err(_) => return PushOutcome::Failed,
+        };
+        let payload = json!({
+            "title": "ZedLink",
+            "body": body,
+            "tag": thread_id.map_or_else(|| "zedlink-test".to_owned(), |id| format!("zedlink-thread-{id}")),
+            "thread_id": thread_id,
+        });
+        let encoded = match serde_json::to_vec(&payload) {
+            Ok(encoded) => encoded,
+            Err(_) => return PushOutcome::Failed,
+        };
+        let mut builder = WebPushMessageBuilder::new(&record.subscription);
+        builder.set_payload(ContentEncoding::Aes128Gcm, &encoded);
+        builder.set_ttl(300);
+        builder.set_urgency(Urgency::Normal);
+        builder.set_vapid_signature(signature);
+        let message = match builder.build() {
+            Ok(message) => message,
+            Err(_) => return PushOutcome::Failed,
+        };
+        match tokio::time::timeout(PUSH_TIMEOUT, self.0.push_client.send(message)).await {
+            Ok(Ok(())) => PushOutcome::Sent,
+            Ok(Err(WebPushError::EndpointNotFound(_) | WebPushError::EndpointNotValid(_))) => {
+                PushOutcome::Stale
+            }
+            _ => PushOutcome::Failed,
+        }
+    }
+
+    async fn notify_all(&self, body: &'static str, thread_id: &str) {
+        let subscriptions = self.0.persisted.lock().await.push_subscriptions.clone();
+        let mut stale = HashSet::new();
+        for record in subscriptions {
+            if matches!(
+                self.send_push(&record, body, Some(thread_id)).await,
+                PushOutcome::Stale
+            ) {
+                stale.insert(record.subscription.endpoint);
+            }
+        }
+        if !stale.is_empty() {
+            let mut persisted = self.0.persisted.lock().await;
+            let mut next = persisted.clone();
+            next.push_subscriptions
+                .retain(|record| !stale.contains(&record.subscription.endpoint));
+            if save(&self.0.directory, &next).is_ok() {
+                *persisted = next;
+            }
+        }
+    }
+
+    async fn notification_monitor(&self) {
+        let mut prior = HashMap::<String, ThreadObservation>::new();
+        let mut interval = tokio::time::interval(NOTIFICATION_POLL);
+        loop {
+            interval.tick().await;
+            if self.0.persisted.lock().await.push_subscriptions.is_empty() {
+                prior.clear();
+                continue;
+            }
+            let request = json!({
+                "version": 1,
+                "request_id": Uuid::new_v4().to_string(),
+                "method": "thread.list",
+                "params": {},
+            });
+            let Ok(response) = self.probe(&request).await else {
+                continue;
+            };
+            let Some(threads) = response["result"]["threads"].as_array() else {
+                continue;
+            };
+            let mut current = HashMap::new();
+            for thread in threads {
+                let (Some(thread_id), Some(status)) =
+                    (thread["thread_id"].as_str(), thread["status"].as_str())
+                else {
+                    continue;
+                };
+                let snapshot_request = json!({
+                    "version": 1,
+                    "request_id": Uuid::new_v4().to_string(),
+                    "method": "thread.snapshot",
+                    "params": {"thread_id": thread_id},
+                });
+                let approvals = self
+                    .probe(&snapshot_request)
+                    .await
+                    .ok()
+                    .and_then(|snapshot| {
+                        snapshot["result"]["pending_approvals"]
+                            .as_array()
+                            .map(Vec::len)
+                    })
+                    .unwrap_or(0);
+                let observation = ThreadObservation {
+                    status: status.to_owned(),
+                    approvals,
+                };
+                if let Some(previous) = prior.get(thread_id) {
+                    if previous.approvals == 0 && observation.approvals > 0 {
+                        self.notify_all("A Zed Agent session needs your approval.", thread_id)
+                            .await;
+                    } else if previous.status == "Generating" && observation.status == "Idle" {
+                        self.notify_all("A Zed Agent session finished.", thread_id)
+                            .await;
+                    }
+                }
+                current.insert(thread_id.to_owned(), observation);
+            }
+            prior = current;
+        }
     }
 }
 async fn info(State(state): State<Gateway>) -> Json<Value> {
@@ -495,6 +722,151 @@ async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) ->
         Json(json!({"device_id":id,"token":hex::encode(token),"gateway_id":persisted.gateway_id})),
     )
 }
+
+async fn notification_config(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    let persisted = state.0.persisted.lock().await;
+    let public_key = match state.vapid_public_key(&persisted) {
+        Ok(public_key) => public_key,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"INTERNAL_ERROR"})),
+            );
+        }
+    };
+    let enabled = persisted
+        .push_subscriptions
+        .iter()
+        .any(|subscription| subscription.device_id == device_id);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "version": 1,
+            "supported": true,
+            "enabled": enabled,
+            "application_server_key": public_key,
+        })),
+    )
+}
+
+async fn notification_subscribe(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+    Json(subscription): Json<SubscriptionInfo>,
+) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    if !valid_subscription(&subscription) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"INVALID_SUBSCRIPTION"})),
+        );
+    }
+    let mut persisted = state.0.persisted.lock().await;
+    let mut next = persisted.clone();
+    next.push_subscriptions
+        .retain(|record| record.subscription.endpoint != subscription.endpoint);
+    next.push_subscriptions.push(PushSubscription {
+        device_id,
+        subscription,
+    });
+    if save(&state.0.directory, &next).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"INTERNAL_ERROR"})),
+        );
+    }
+    *persisted = next;
+    (StatusCode::OK, Json(json!({"enabled":true})))
+}
+
+async fn notification_unsubscribe(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+    Json(request): Json<UnsubscribeRequest>,
+) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    if request.endpoint.is_empty() || request.endpoint.len() > 2048 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"INVALID_REQUEST"})),
+        );
+    }
+    let mut persisted = state.0.persisted.lock().await;
+    let mut next = persisted.clone();
+    next.push_subscriptions.retain(|record| {
+        record.device_id != device_id || record.subscription.endpoint != request.endpoint
+    });
+    if save(&state.0.directory, &next).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"INTERNAL_ERROR"})),
+        );
+    }
+    *persisted = next;
+    (StatusCode::OK, Json(json!({"enabled":false})))
+}
+
+async fn notification_test(State(state): State<Gateway>, headers: HeaderMap) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    let subscription = state
+        .0
+        .persisted
+        .lock()
+        .await
+        .push_subscriptions
+        .iter()
+        .find(|record| record.device_id == device_id)
+        .cloned();
+    let Some(subscription) = subscription else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"NOTIFICATIONS_DISABLED"})),
+        );
+    };
+    match state
+        .send_push(
+            &subscription,
+            "Notifications are ready for this device.",
+            None,
+        )
+        .await
+    {
+        PushOutcome::Sent => (StatusCode::OK, Json(json!({"delivered":true}))),
+        PushOutcome::Stale => (
+            StatusCode::GONE,
+            Json(json!({"error":"SUBSCRIPTION_EXPIRED"})),
+        ),
+        PushOutcome::Failed => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":"PUSH_DELIVERY_FAILED"})),
+        ),
+    }
+}
+
 async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     let Some(device_id) = state.authorize(&headers).await else {
         return (
@@ -650,5 +1022,54 @@ async fn event_stream(mut socket: WebSocket, state: Gateway, device_id: Uuid, qu
     }
     if let Err(error) = socket.close().await {
         eprintln!("event stream close failed: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_stable_vapid_key_pair() {
+        let private_key = new_vapid_private_key();
+        let first = VapidSignatureBuilder::from_base64_no_sub(&private_key).unwrap();
+        let second = VapidSignatureBuilder::from_base64_no_sub(&private_key).unwrap();
+        assert_eq!(first.get_public_key(), second.get_public_key());
+        assert_eq!(first.get_public_key().len(), 65);
+    }
+
+    #[test]
+    fn validates_web_push_subscription_shape() {
+        let subscription = SubscriptionInfo::new(
+            "https://fcm.googleapis.com/device".to_owned(),
+            URL_SAFE_NO_PAD.encode([4_u8].into_iter().chain([7_u8; 64]).collect::<Vec<_>>()),
+            URL_SAFE_NO_PAD.encode([9_u8; 16]),
+        );
+        assert!(valid_subscription(&subscription));
+
+        let mut insecure = subscription.clone();
+        insecure.endpoint = "http://push.example.test/device".into();
+        assert!(!valid_subscription(&insecure));
+
+        let mut private_endpoint = subscription.clone();
+        private_endpoint.endpoint = "https://127.0.0.1/device".into();
+        assert!(!valid_subscription(&private_endpoint));
+
+        let mut malformed = subscription;
+        malformed.keys.p256dh = URL_SAFE_NO_PAD.encode([4_u8; 32]);
+        assert!(!valid_subscription(&malformed));
+    }
+
+    #[test]
+    fn loads_state_from_before_notifications() {
+        let gateway_id = Uuid::new_v4();
+        let state: Persisted = serde_json::from_value(json!({
+            "gateway_id": gateway_id,
+            "devices": [],
+        }))
+        .unwrap();
+        assert_eq!(state.gateway_id, gateway_id);
+        assert!(state.vapid_private_key.is_empty());
+        assert!(state.push_subscriptions.is_empty());
     }
 }

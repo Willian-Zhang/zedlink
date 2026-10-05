@@ -252,6 +252,10 @@ input[type=search] { appearance: none; }
 .settings-switch strong { font-size: .78rem; }
 .settings-switch input { width: 20px; height: 20px; margin: 0; accent-color: var(--online); }
 #save-zed-settings { margin-top: 13px; }
+.notification-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 14px; }
+.notification-actions .primary, .notification-actions .quiet { width: auto !important; min-height: 42px; margin: 0 !important; }
+#notification-state.enabled { color: var(--online); }
+#notification-state.blocked { color: #e0a2a2; }
 #sign-out { width: 100%; margin-top: 26px; border-color: #6f4545; font-size: .76rem; }
 
 body.pairing .layout { grid-template-columns: minmax(0, 1fr); }

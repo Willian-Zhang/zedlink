@@ -263,6 +263,7 @@ def main():
             with urllib.request.urlopen(base + "/service-worker.js", context=context, timeout=5) as worker_response:
                 worker = worker_response.read().decode()
                 assert 'url.pathname.startsWith("/v1/")' in worker and "SHELL_CACHE" in worker
+                assert 'addEventListener("push"' in worker and 'addEventListener("notificationclick"' in worker
             with urllib.request.urlopen(base + "/icons/icon-192.png", context=context, timeout=5) as icon_response:
                 assert icon_response.headers["Content-Type"] == "image/png"
                 assert icon_response.read(8) == b"\x89PNG\r\n\x1a\n"
@@ -291,6 +292,14 @@ def main():
                              {"code": code1, "device_name": "reused"})
             assert status == 403
             token1 = device1["token"]
+            status, notification_config = http(base, context, "/v1/notifications/config", token=token1)
+            assert status == 200 and notification_config["supported"]
+            assert not notification_config["enabled"] and notification_config["application_server_key"]
+            status, invalid_subscription = http(
+                base, context, "/v1/notifications/subscribe", "POST",
+                {"endpoint": "https://127.0.0.1/private", "keys": {"p256dh": "AA", "auth": "AA"}}, token1,
+            )
+            assert status == 400 and invalid_subscription["error"] == "INVALID_SUBSCRIPTION"
             token_file = root / "device-one.json"
             token_file.write_text(json.dumps(device1))
             os.chmod(token_file, 0o600)
@@ -398,7 +407,9 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.9"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.10"
+                assert browser.find_element(By.ID, "notification-state")
+                assert browser.find_element(By.ID, "enable-notifications")
                 assert len(browser.find_elements(By.ID, "sign-out")) == 1
                 assert not browser.find_elements(By.ID, "forget")
                 assert not browser.find_elements(By.ID, "mobile-forget")
@@ -700,7 +711,7 @@ def main():
                                              capture_output=True, text=True, timeout=20).stdout
                 assert re.search(r'<section class="panel" id="sessions-panel">', second_page)
                 assert admin(state, "revoke", chromium_device["id"])["revoked"]
-            print("PASS: private bind/state, TLS identity, installable PWA shell/mobile navigation, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
+            print("PASS: private bind/state, TLS identity, installable PWA shell/mobile navigation, authenticated Web Push configuration, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
         finally:
             server.terminate()
             try:

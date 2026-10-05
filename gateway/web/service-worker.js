@@ -1,6 +1,6 @@
 "use strict";
 
-const SHELL_CACHE = "zedlink-shell-v10";
+const SHELL_CACHE = "zedlink-shell-v11";
 const SHELL = [
   "/",
   "/style.css",
@@ -32,4 +32,37 @@ self.addEventListener("fetch", (event) => {
     }
     return response;
   }).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/"))));
+});
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data?.json() || {}; } catch { /* Show a generic notification. */ }
+  const title = typeof data.title === "string" ? data.title : "ZedLink";
+  const body = typeof data.body === "string" ? data.body : "A Zed Agent session changed.";
+  const thread = typeof data.thread_id === "string" ? data.thread_id : null;
+  const url = thread ? `/?thread=${encodeURIComponent(thread)}` : "/";
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(title, {
+      body,
+      tag: typeof data.tag === "string" ? data.tag : "zedlink",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      data: { url },
+    }),
+    "setAppBadge" in self.navigator ? self.navigator.setAppBadge(1) : Promise.resolve(),
+  ]));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+    for (const client of clients) {
+      if (new URL(client.url).origin === self.location.origin) {
+        await client.navigate(target);
+        return client.focus();
+      }
+    }
+    return self.clients.openWindow(target);
+  }));
 });

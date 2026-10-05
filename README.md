@@ -309,6 +309,21 @@ On a wide desktop window, ZedLink uses the full browser width. The Sessions colu
 
 The installed web app still requires the private route, gateway, and patched Zed to be online.
 
+### Enable session notifications
+
+ZedLink uses standards-based Web Push for the browser app. This covers desktop Chrome, Edge, Firefox, supported Android browsers, and the ZedLink website installed on an iPhone or iPad Home Screen. On iOS and iPadOS, open the installed Home Screen app before enabling notifications; a normal browser tab does not expose Web Push there.
+
+1. Pair the browser or installed web app.
+2. Open **Settings**.
+3. Under **This device**, select **Enable notifications** and accept the system prompt.
+4. Select **Send test** to verify delivery through that browser's push service.
+
+ZedLink then sends a generic notification when an exposed session finishes or needs approval. Lock-screen text never contains the prompt, reply, tool arguments, output, project name, or model credentials. Selecting the notification opens the corresponding exposed session. Disabling notifications removes the subscription from the private gateway and the browser. Revoking the paired device also removes its subscriptions.
+
+The gateway needs outbound HTTPS access to the browser's Apple, Google, or Mozilla push service. It does not open an inbound public port and does not make the ZedLink gateway public. Notifications stop when the gateway or patched Zed is closed.
+
+The native SwiftUI and Android packages require separate APNs and Firebase credentials, signing, and physical-device validation for native background delivery. Those native channels are not enabled yet; install the ZedLink website for the implemented cross-platform notification path.
+
 ### 6. Send a test message
 
 In the paired browser or app:
@@ -498,6 +513,12 @@ The patch is pinned to Zed revision:
 
 The stock extension API at that revision cannot enumerate or control an existing native Agent thread, which is why ZedLink requires the narrow, reviewable source patch under `patches/`.
 
+### Zed upstream fork and contribution path
+
+The nested Zed checkout also has a local branch named `zedlink/native-agent-remote-control`, based on the exact pinned revision above. Its two commits separate the native cancellation guard from the opt-in local Agent bridge. Before publishing that branch, create a personal fork of `zed-industries/zed` and push the branch there.
+
+Zed's contribution policy requires feature work of this size to start as a GitHub Discussion unless a staff-confirmed issue already exists. It also requires the human author to understand and review all AI-assisted code, manually test Zed, retain tests and evidence, sign the CLA, and write the maintainer communication. The checkout deliberately retains Zed's README review marker until that human review is complete. Do not remove it automatically.
+
 ## Validation and limitations
 
 Verified:
@@ -511,11 +532,13 @@ Verified:
 - browser `/compact` through the native command path,
 - automatically visible live reasoning and tool activity from a bounded recent native snapshot,
 - global Zed task discovery and Status execution in an already-open Zed window.
+- authenticated Web Push registration, private-endpoint rejection, persisted VAPID identity, subscription removal on revocation, and service-worker notification/open-session handling in deterministic tests.
 
 Still incomplete:
 
 - release packaging as a stock Zed extension,
 - supervised background startup and certificate renewal,
+- physical Web Push delivery on an installed iPhone/Android web app and native APNs/FCM delivery,
 - fully structured desktop-equivalent tool arguments, output, and diffs,
 - complete real approval-race validation through the paired gateway,
 - broader physical-device and VPN-provider coverage.

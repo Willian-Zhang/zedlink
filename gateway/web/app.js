@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.9";
+const UI_BUILD = "2026.10.05.10";
 const state = {
   gatewayId: null,
   token: null,
@@ -34,6 +34,7 @@ const state = {
   stoppingTurn: false,
   threadSettings: null,
   settingsBusy: false,
+  notificationConfig: null,
 };
 const safeStore = {
   read(key) {
@@ -98,6 +99,149 @@ function delivery(message, uncertain = false) {
 function pendingKey() { return `zedlink.pending.${state.gatewayId}`; }
 function tokenKey() { return `zedlink.token.${state.gatewayId}`; }
 function selectedThreadKey() { return `zedlink.selectedThread.${state.gatewayId}`; }
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function renderNotificationState(status) {
+  const label = $("notification-state");
+  const enable = $("enable-notifications");
+  const test = $("test-notifications");
+  label.className = "";
+  test.classList.add("hidden");
+  enable.disabled = true;
+  if (!pushSupported()) {
+    label.textContent = "Not supported";
+    $("notification-help").textContent = /iPhone|iPad/i.test(navigator.userAgent || "")
+      ? "Add ZedLink to the Home Screen, open that app, and enable notifications there."
+      : "This browser does not expose standards-based Web Push.";
+    return;
+  }
+  if (Notification.permission === "denied") {
+    label.textContent = "Blocked";
+    label.classList.add("blocked");
+    enable.textContent = "Blocked by browser";
+    $("notification-help").textContent = "Allow notifications for this site in the browser or system settings, then return here.";
+    return;
+  }
+  if (status === "enabled") {
+    label.textContent = "Enabled";
+    label.classList.add("enabled");
+    enable.textContent = "Disable notifications";
+    enable.disabled = false;
+    test.classList.remove("hidden");
+  } else if (status === "loading") {
+    label.textContent = "Checking…";
+    enable.textContent = "Enable notifications";
+  } else if (status === "unavailable") {
+    label.textContent = "Gateway unavailable";
+    enable.textContent = "Enable notifications";
+  } else {
+    label.textContent = "Off";
+    enable.textContent = "Enable notifications";
+    enable.disabled = !state.token;
+  }
+}
+
+async function notificationRequest(path, options = {}) {
+  const response = await fetch(path, {
+    method: options.method || "GET",
+    cache: "no-store",
+    redirect: "error",
+    headers: {
+      Authorization: `Bearer ${state.token}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(apiError(result.error || "INTERNAL_ERROR"));
+  return result;
+}
+
+function applicationServerKey(encoded) {
+  const padding = "=".repeat((4 - encoded.length % 4) % 4);
+  const binary = atob((encoded + padding).replaceAll("-", "+").replaceAll("_", "/"));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function refreshNotifications() {
+  renderNotificationState("loading");
+  if (!state.token || !pushSupported()) {
+    renderNotificationState("off");
+    return;
+  }
+  state.notificationConfig = await notificationRequest("/v1/notifications/config");
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.getSubscription();
+  renderNotificationState(state.notificationConfig.enabled && subscription ? "enabled" : "off");
+}
+
+async function enableNotifications() {
+  if (!state.token || !pushSupported()) return;
+  if (state.notificationConfig?.enabled) {
+    await disableNotifications(true);
+    return;
+  }
+  $("enable-notifications").disabled = true;
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      renderNotificationState("off");
+      return;
+    }
+    const config = await notificationRequest("/v1/notifications/config");
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: applicationServerKey(config.application_server_key),
+      });
+    }
+    await notificationRequest("/v1/notifications/subscribe", {
+      method: "POST",
+      body: subscription.toJSON(),
+    });
+    state.notificationConfig = { ...config, enabled: true };
+    renderNotificationState("enabled");
+    notice("Notifications enabled for this paired device.");
+  } catch (error) {
+    renderNotificationState("off");
+    notice(`Could not enable notifications: ${error.message}`);
+  }
+}
+
+async function disableNotifications(showNotice = true) {
+  if (!pushSupported()) return;
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.getSubscription();
+  if (subscription && state.token) {
+    await notificationRequest("/v1/notifications/unsubscribe", {
+      method: "POST",
+      body: { endpoint: subscription.endpoint },
+    });
+  }
+  if (subscription) await subscription.unsubscribe();
+  state.notificationConfig = state.notificationConfig
+    ? { ...state.notificationConfig, enabled: false }
+    : null;
+  renderNotificationState("off");
+  if (showNotice) notice("Notifications disabled on this device.");
+}
+
+async function testNotifications() {
+  $("test-notifications").disabled = true;
+  try {
+    await notificationRequest("/v1/notifications/test", { method: "POST" });
+    notice("Test notification sent through this browser's push service.");
+  } catch (error) {
+    notice(`Test notification failed: ${error.message}`);
+  } finally {
+    $("test-notifications").disabled = false;
+  }
+}
 function sidebarKey() { return `zedlink.sidebarCollapsed.${state.gatewayId}`; }
 function updateSidebarToggle() {
   const mobile = matchMedia("(max-width: 760px)").matches;
@@ -181,6 +325,10 @@ function apiError(code) {
   if (code === "PAIRING_EXPIRED") return "That pairing link expired. Create a fresh one in desktop Zed.";
   if (code === "PAIRING_INVALID") return "That pairing code is incorrect. Check the code or create a fresh pairing link.";
   if (code === "RATE_LIMITED") return "The gateway cannot add another device. Revoke an old device in desktop Zed first.";
+  if (code === "INVALID_SUBSCRIPTION") return "This browser returned an unsupported push subscription.";
+  if (code === "NOTIFICATIONS_DISABLED") return "Enable notifications on this device first.";
+  if (code === "SUBSCRIPTION_EXPIRED") return "This browser subscription expired. Disable notifications, then enable them again.";
+  if (code === "PUSH_DELIVERY_FAILED") return "The gateway could not reach this browser's push service.";
   return code || "Gateway request failed.";
 }
 
@@ -393,6 +541,7 @@ async function connect() {
   document.body.classList.remove("pairing");
   $("pair-panel").classList.add("hidden");
   $("sessions-panel").classList.remove("hidden");
+  refreshNotifications().catch(() => renderNotificationState("unavailable"));
   try {
     const info = await rpc("instance.info");
     if (typeof info.instance_id !== "string" || typeof info.epoch !== "string") {
@@ -424,6 +573,11 @@ async function connect() {
       if (state.pending) delivery("A previous message may have reached Zed. Check the conversation before continuing.", true);
     }
     await loadThreads();
+    const requestedThread = new URLSearchParams(location.search).get("thread");
+    if (requestedThread && state.threads.some((thread) => thread.thread_id === requestedThread)) {
+      await selectThread(requestedThread);
+      history.replaceState(null, "", location.pathname);
+    }
     if (!state.threadId) {
       const selected = safeStore.read(selectedThreadKey());
       if (selected && state.threads.some((thread) => thread.thread_id === selected)) {
@@ -1414,7 +1568,8 @@ $("prompt").addEventListener("keydown", (event) => {
     $("composer-form").requestSubmit();
   }
 });
-function signOut() {
+async function signOut() {
+  try { await disableNotifications(false); } catch { /* Revoking the paired device remains authoritative. */ }
   closeEventStream();
   safeStore.remove(tokenKey());
   safeStore.remove(pendingKey());
@@ -1438,6 +1593,8 @@ function signOut() {
   notice("Signed out on this device. Revoke its paired-device record from desktop Zed if this device should not connect again.");
 }
 $("sign-out").addEventListener("click", signOut);
+$("enable-notifications").addEventListener("click", enableNotifications);
+$("test-notifications").addEventListener("click", testNotifications);
 $("native-settings-form").addEventListener("submit", saveThreadSettings);
 $("open-settings").addEventListener("click", () => {
   if (matchMedia("(max-width: 760px)").matches) showMobileView("settings");
@@ -1548,6 +1705,7 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js")
     .catch(() => { /* HTTPS app remains usable without offline shell caching. */ }));
 }
+if ("clearAppBadge" in navigator) navigator.clearAppBadge().catch(() => {});
 $("ui-build").textContent = UI_BUILD;
 $("device-name").value = browserDeviceName();
 showInstallHelp();
