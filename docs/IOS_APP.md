@@ -2,7 +2,7 @@
 
 Brand: ZedLink. Tagline: Your Zed agent, wherever you are.
 
-Status: product/build specification. An initial native SwiftUI application now exists in `ios/`, compiled with Xcode 16.4, and launched on a hosted iPhone 16 Pro simulator. One first-use navigation UI test passed. The UI and transport have not been tested against a live exposed Zed thread from an iPhone; the requirements below remain the acceptance target. Preserve the real native Zed thread and local LLM architecture.
+Status: product/build specification. A native SwiftUI application exists in `ios/`; its earlier onboarding build launched on a hosted iPhone 16 Pro simulator. The current Zedra-inspired OLED workspace revision adds searchable sessions, native activity/reasoning, tool output, Markdown, persistent drafts, and slash commands, but has not yet compiled on macOS or run in a simulator. The UI and transport have not been tested against a live exposed Zed thread from the native app. Preserve the real native Zed thread and local LLM architecture. See `ZEDRA_FEATURE_PARITY.md` for the source-grounded feature map and intentional security differences.
 
 ## Design principles
 

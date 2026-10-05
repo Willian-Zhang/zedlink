@@ -48,6 +48,7 @@ actor CredentialVault {
 @MainActor final class ProfileStore: ObservableObject {
     @Published private(set) var profiles: [ConnectionProfile] = []
     private let key = "zedlink.profiles.v1"
+    private let lastProfileKey = "zedlink.last-profile.v1"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
@@ -59,11 +60,26 @@ actor CredentialVault {
     func save(_ profile: ConnectionProfile) {
         profiles.removeAll { $0.id == profile.id }
         profiles.append(profile)
+        markUsed(profile)
         persist()
+    }
+
+    var preferredProfile: ConnectionProfile? {
+        if let value = UserDefaults.standard.string(forKey: lastProfileKey),
+           let id = UUID(uuidString: value),
+           let profile = profiles.first(where: { $0.id == id }) { return profile }
+        return profiles.first
+    }
+
+    func markUsed(_ profile: ConnectionProfile) {
+        UserDefaults.standard.set(profile.id.uuidString, forKey: lastProfileKey)
     }
 
     func remove(_ profile: ConnectionProfile) async {
         profiles.removeAll { $0.id == profile.id }
+        if UserDefaults.standard.string(forKey: lastProfileKey) == profile.id.uuidString {
+            UserDefaults.standard.removeObject(forKey: lastProfileKey)
+        }
         persist()
         await CredentialVault.shared.delete(profile.id)
     }

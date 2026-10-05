@@ -35,6 +35,26 @@ struct NativeThread: Identifiable, Equatable {
     let currentTurnID: Int?
 }
 
+struct NativeCommand: Identifiable, Equatable {
+    let name: String
+    let description: String
+    let category: String
+    let requiresArgument: Bool
+
+    var id: String { name }
+}
+
+struct NativeApproval: Identifiable, Equatable {
+    let id: String
+    let turnID: Int?
+    let toolName: String
+    let display: String
+    let rawInput: String?
+    let detailsTruncated: Bool
+    let canApproveOnce: Bool
+    let canDenyOnce: Bool
+}
+
 struct ThreadSnapshot {
     let threadID: String
     let title: String
@@ -44,8 +64,12 @@ struct ThreadSnapshot {
     let epoch: String
     let lastSequence: Int
     let entries: [String]
+    let activityEntries: [String]
     let truncated: Bool
-    let pendingApprovalCount: Int
+    let activityTruncated: Bool
+    let pendingApprovals: [NativeApproval]
+
+    var isBusy: Bool { status != "Idle" }
 }
 
 struct PendingSend: Codable {
@@ -73,6 +97,16 @@ enum LinkState: Equatable {
         case .live: "Live"
         case .reconnecting: "Reconnecting"
         case .stale: "Stale"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .offline: "wifi.slash"
+        case .connecting: "arrow.triangle.2.circlepath"
+        case .live: "circle.fill"
+        case .reconnecting: "arrow.clockwise"
+        case .stale: "exclamationmark.triangle"
         }
     }
 }

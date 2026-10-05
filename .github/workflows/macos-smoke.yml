@@ -29,12 +29,12 @@ jobs:
         run: brew install xcodegen
       - name: Generate iOS project
         run: cd ios && xcodegen generate
-      - name: Build iPhone simulator app
+      - name: Build iPhone simulator app and tests
         run: >-
           xcodebuild -project ios/ZedLink.xcodeproj -scheme ZedLink
           -configuration Debug -sdk iphonesimulator
           -destination 'generic/platform=iOS Simulator'
-          -derivedDataPath /tmp/zedlink-derived CODE_SIGNING_ALLOWED=NO build
+          -derivedDataPath /tmp/zedlink-derived CODE_SIGNING_ALLOWED=NO build-for-testing
       - name: Verify launch screen declaration
         run: plutil -extract UILaunchScreen json -o - /tmp/zedlink-derived/Build/Products/Debug-iphonesimulator/ZedLink.app/Info.plist
       - name: Launch on iPhone simulator
@@ -56,7 +56,7 @@ jobs:
           xcodebuild -project ios/ZedLink.xcodeproj -scheme ZedLink \
             -configuration Debug -destination "platform=iOS Simulator,id=$device_id" \
             -derivedDataPath /tmp/zedlink-derived -parallel-testing-enabled NO \
-            -only-testing:ZedLinkUITests/OnboardingUITests \
+            -only-testing:ZedLinkTests -only-testing:ZedLinkUITests/OnboardingUITests \
             CODE_SIGNING_ALLOWED=NO test
       - name: Save simulator screenshot
         if: ${{ inputs.simulator }}

@@ -1,100 +1,147 @@
-import SwiftUI
 import AVFoundation
+import SwiftUI
 import UIKit
 import VisionKit
-
-private struct StatusBadge: View {
-    let state: LinkState
-    var body: some View {
-        Label(state.label, systemImage: state == .live ? "checkmark.circle.fill" : "exclamationmark.circle")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(state == .live ? .green : .secondary)
-            .accessibilityLabel("Connection \(state.label)")
-    }
-}
-
-private struct NativeEntryPresentation {
-    enum Kind: Equatable { case user, assistant, tool, other }
-    let kind: Kind
-    let label: String
-    let body: String
-
-    init(_ markdown: String, index: Int) {
-        let prefixes: [(String, Kind, String)] = [
-            ("## User\n\n", .user, "You"),
-            ("## User (checkpoint)\n\n", .user, "You · checkpoint"),
-            ("## Assistant\n\n", .assistant, "Zed Agent"),
-            ("## Input Requested\n\n", .tool, "Input requested in Zed"),
-            ("## Plan\n\n", .tool, "Plan")
-        ]
-        if let match = prefixes.first(where: { markdown.hasPrefix($0.0) }) {
-            kind = match.1
-            label = match.2
-            body = String(markdown.dropFirst(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if markdown.hasPrefix("**Tool Call: ") {
-            kind = .tool
-            label = "Tool call"
-            body = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            kind = .other
-            label = "Native entry \(index + 1)"
-            body = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-}
 
 struct SessionsView: View {
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var session: SessionManager
+    @State private var search = ""
+
+    private var visibleThreads: [NativeThread] {
+        guard !search.isEmpty else { return session.threads }
+        return session.threads.filter { $0.title.localizedCaseInsensitiveContains(search) }
+    }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Connection") {
-                    if let profile = session.profile {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(profile.name).font(.headline)
-                                Text(profile.route.rawValue).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            StatusBadge(state: session.state)
-                        }
-                        Button("Reconnect") { Task { await session.refresh() } }
-                            .accessibilityIdentifier("reconnect")
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Choose a connection", systemImage: "network").font(.headline)
-                            Text("Add and pair a private HTTPS connection in the Connections tab.")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 10)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    connectionHeader
+                    if !session.issue.isEmpty { diagnostic }
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(ZLTheme.muted)
+                        TextField("Search exposed sessions", text: $search)
+                            .textInputAutocapitalization(.never)
                     }
-                    if !session.issue.isEmpty {
-                        Text(session.issue).foregroundStyle(.orange).font(.footnote)
-                            .accessibilityIdentifier("connection-diagnostic")
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                    .background(ZLTheme.surface)
+                    .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+                    .padding(.horizontal, 16).padding(.top, 18)
+
+                    HStack {
+                        SectionLabel("Exposed Zed threads")
+                        Spacer()
+                        Text("\(session.threads.count)").font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                    }
+                    .padding(.horizontal, 16).padding(.top, 24).padding(.bottom, 9)
+
+                    if visibleThreads.isEmpty {
+                        emptyThreads
+                    } else {
+                        ForEach(visibleThreads) { thread in
+                            NavigationLink(value: thread.id) { SessionRow(thread: thread) }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("thread-\(thread.id)")
+                            Hairline().padding(.leading, 48)
+                        }
                     }
                 }
-                Section("Exposed Agent threads") {
-                    if session.threads.isEmpty {
-                        Text("In desktop Zed, open a native Agent thread and choose /remote-control to expose it.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(session.threads) { thread in
-                        NavigationLink(value: thread.id) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(thread.title).font(.headline)
-                                Text(thread.status).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .accessibilityIdentifier("thread-\(thread.id)")
-                    }
+                .padding(.bottom, 30)
+            }
+            .background(ZLTheme.background)
+            .navigationTitle("ZedLink")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { await session.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                        .disabled(session.profile == nil)
+                        .accessibilityLabel("Refresh sessions")
+                        .accessibilityIdentifier("reconnect")
                 }
             }
-            .navigationTitle("Sessions")
-            .navigationDestination(for: String.self) { id in ConversationView(threadID: id) }
+            .navigationDestination(for: String.self) { ConversationView(threadID: $0) }
             .refreshable { await session.refresh() }
         }
+    }
+
+    @ViewBuilder private var connectionHeader: some View {
+        if let profile = session.profile {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "bolt.fill").font(.headline).foregroundStyle(ZLTheme.healthy)
+                    .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(profile.name).font(.headline)
+                        Spacer()
+                        ConnectionStatusView(state: session.state)
+                    }
+                    Text(profile.endpoint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                        .lineLimit(1).truncationMode(.middle)
+                    Text("\(profile.route.rawValue) · Native Zed Agent")
+                        .font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+                }
+            }
+            .padding(16)
+            .background(ZLTheme.surface)
+            .overlay(alignment: .bottom) { Hairline() }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Choose a connection").font(.title3.weight(.semibold))
+                Text("Pair a private ZedLink gateway from the Connections tab.")
+                    .font(.subheadline).foregroundStyle(ZLTheme.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            .background(ZLTheme.surface)
+        }
+    }
+
+    private var diagnostic: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(ZLTheme.warning)
+            Text(session.issue).font(.footnote).foregroundStyle(.secondary)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(ZLTheme.warning.opacity(0.08))
+        .overlay(alignment: .bottom) { Hairline() }
+        .accessibilityIdentifier("connection-diagnostic")
+    }
+
+    private var emptyThreads: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: "rectangle.connected.to.line.below").font(.title2).foregroundStyle(ZLTheme.muted)
+            Text(session.threads.isEmpty ? "No exposed sessions" : "No matching sessions").font(.headline)
+            Text(session.threads.isEmpty
+                 ? "In Zed Dev, open a native Agent conversation and select /remote-control."
+                 : "Try another search term.")
+                .font(.subheadline).foregroundStyle(ZLTheme.muted)
+        }
+        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SessionRow: View {
+    let thread: NativeThread
+    private var busy: Bool { thread.status != "Idle" }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: busy ? "waveform" : "bubble.left")
+                .font(.subheadline).foregroundStyle(busy ? ZLTheme.focus : ZLTheme.muted).frame(width: 20)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(thread.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                HStack(spacing: 7) {
+                    Circle().fill(busy ? ZLTheme.focus : ZLTheme.healthy).frame(width: 6, height: 6)
+                    Text(busy ? "Working" : "Ready").font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                    Text("·").foregroundStyle(ZLTheme.muted)
+                    Text(String(thread.id.prefix(8))).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+                }
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(ZLTheme.muted)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .contentShape(Rectangle())
     }
 }
 
@@ -102,113 +149,334 @@ struct ConversationView: View {
     @EnvironmentObject private var session: SessionManager
     let threadID: String
     @State private var showingClearConfirmation = false
+    @State private var showingCommands = false
+    @State private var activityExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
             if let snapshot = session.snapshot, snapshot.threadID == threadID {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 14) {
-                            if snapshot.truncated {
-                                Label("Native transcript was truncated by the adapter", systemImage: "exclamationmark.triangle")
-                                    .font(.footnote).foregroundStyle(.orange)
-                            }
-                            ForEach(Array(snapshot.entries.enumerated()), id: \.offset) { index, entry in
-                                let message = NativeEntryPresentation(entry, index: index)
-                                HStack {
-                                    if message.kind == .user { Spacer(minLength: 40) }
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text(message.label.uppercased())
-                                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                        Text(message.body).textSelection(.enabled)
-                                            .font(.body)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .padding(14)
-                                    .background(message.kind == .user ? Color.accentColor.opacity(0.15) :
-                                                Color(uiColor: .secondarySystemBackground),
-                                                in: RoundedRectangle(cornerRadius: 16))
-                                    if message.kind != .user { Spacer(minLength: 12) }
-                                }
-                                .accessibilityElement(children: .combine)
-                                .id(index)
-                            }
-                        }
-                        .padding()
-                    }
-                    .defaultScrollAnchor(.bottom)
-                }
-                if snapshot.pendingApprovalCount > 0 {
-                    Label("Approval pending in desktop Zed. Mobile approval awaits native race validation.",
-                          systemImage: "hand.raised")
-                        .font(.footnote)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.orange.opacity(0.15))
-                        .accessibilityIdentifier("approval-unavailable")
-                }
+                conversation(snapshot)
+                if !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
             } else {
                 ContentUnavailableView("Loading native thread", systemImage: "bubble.left")
                     .frame(maxHeight: .infinity)
             }
-            VStack(alignment: .leading, spacing: 8) {
-                if !session.delivery.isEmpty {
-                    Text(session.delivery).font(.footnote).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("delivery-status")
-                }
-                if session.pending != nil {
-                    HStack {
-                        Button("Check status") { Task { await session.reconcilePending() } }
-                            .accessibilityIdentifier("check-request-status")
-                        if session.pending?.text != nil {
-                            Button("Retry same ID") { Task { await session.retryPending() } }
-                                .accessibilityIdentifier("retry-same-request")
-                        }
-                        Button("Clear") { showingClearConfirmation = true }
-                    }
-                    .font(.footnote)
-                }
-                TextEditor(text: $session.draft)
-                    .frame(minHeight: 68, maxHeight: 110)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityLabel("Message to native Zed Agent")
-                    .accessibilityIdentifier("composer")
-                HStack {
-                    Text(session.snapshot?.status ?? "Unknown")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    if session.canCancel {
-                        Button { Task { await session.cancelCurrentTurn() } } label: {
-                            Label("Stop", systemImage: "stop.circle.fill")
-                                .frame(minHeight: 44)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .accessibilityIdentifier("stop-current-turn")
-                    }
-                    Button { Task { await session.send() } } label: {
-                        Label("Send", systemImage: "arrow.up")
-                            .frame(minWidth: 76, minHeight: 44)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!session.canSend || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("send-prompt")
-                }
-            }
-            .padding()
-            .background(.regularMaterial)
+            composer
         }
+        .background(ZLTheme.background)
         .navigationTitle(session.snapshot?.title ?? "Agent thread")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { StatusBadge(state: session.state) } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { ConnectionStatusView(state: session.state) }
+        }
         .task(id: threadID) { await session.select(threadID) }
+        .sheet(isPresented: $showingCommands) { CommandPicker() }
         .confirmationDialog("Clear uncertain delivery?", isPresented: $showingClearConfirmation) {
             Button("Clear locally", role: .destructive) { session.clearPending() }
         } message: {
             Text("Inspect the desktop transcript first. Clearing this record does not cancel a native turn.")
         }
+    }
+
+    private func conversation(_ snapshot: ThreadSnapshot) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    threadMeta(snapshot)
+                    if snapshot.isBusy || hasActivity(snapshot) {
+                        ActivityPanel(snapshot: snapshot, expanded: $activityExpanded)
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                    }
+                    ForEach(Array(snapshot.entries.enumerated()), id: \.offset) { index, markdown in
+                        NativeMessageView(message: NativeEntryPresentation(markdown, index: index))
+                            .id(index)
+                        Hairline().padding(.horizontal, 14)
+                    }
+                    Color.clear.frame(height: 1).id("conversation-bottom")
+                }
+            }
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: snapshot.entries) { _, _ in
+                withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+            }
+        }
+    }
+
+    private func threadMeta(_ snapshot: ThreadSnapshot) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(snapshot.isBusy ? ZLTheme.focus : ZLTheme.healthy).frame(width: 7, height: 7)
+            Text(snapshot.isBusy ? "ZED IS WORKING" : "NATIVE THREAD READY")
+                .font(.caption2.monospaced().weight(.semibold)).tracking(0.8)
+            Spacer()
+            if snapshot.truncated {
+                Text("OLDER HISTORY IN ZED").font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+            }
+        }
+        .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.healthy)
+        .padding(.horizontal, 16).padding(.vertical, 9)
+        .background(ZLTheme.surface)
+        .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    private func hasActivity(_ snapshot: ThreadSnapshot) -> Bool {
+        snapshot.activityEntries.contains { $0.contains("<thinking>") || $0.hasPrefix("**Tool Call:") }
+    }
+
+    private func approvalStack(_ approvals: [NativeApproval]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(approvals) { NativeApprovalView(approval: $0) }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+        }
+        .background(ZLTheme.warning.opacity(0.07))
+        .overlay(alignment: .top) { Hairline() }
+    }
+
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !session.delivery.isEmpty {
+                Text(session.delivery).font(.caption).foregroundStyle(ZLTheme.muted)
+                    .lineLimit(2).accessibilityIdentifier("delivery-status")
+            }
+            if session.pending != nil { uncertainDelivery }
+            HStack(alignment: .bottom, spacing: 8) {
+                Button { showingCommands = true } label: {
+                    Image(systemName: "slash.circle").font(.title3).frame(width: 42, height: 42)
+                }
+                .foregroundStyle(session.commands.isEmpty ? ZLTheme.muted : .primary)
+                .disabled(session.commands.isEmpty)
+                .accessibilityLabel("Zed Agent commands")
+
+                TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
+                    .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
+                    .background(ZLTheme.surface)
+                    .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+                    .accessibilityLabel("Message to native Zed Agent")
+                    .accessibilityIdentifier("composer")
+
+                if session.canCancel {
+                    Button { Task { await session.cancelCurrentTurn() } } label: {
+                        Image(systemName: "stop.fill").font(.headline).frame(width: 42, height: 42)
+                    }
+                    .foregroundStyle(.white).background(ZLTheme.danger)
+                    .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
+                } else {
+                    Button { Task { await session.send() } } label: {
+                        Image(systemName: "arrow.up").font(.headline).frame(width: 42, height: 42)
+                    }
+                    .foregroundStyle(ZLTheme.background).background(.primary)
+                    .disabled(!session.canSend || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Send").accessibilityIdentifier("send-prompt")
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
+        .background(ZLTheme.background)
+        .overlay(alignment: .top) { Hairline() }
+    }
+
+    private var uncertainDelivery: some View {
+        HStack(spacing: 14) {
+            Text("Delivery needs review").font(.caption.monospaced()).foregroundStyle(ZLTheme.warning)
+            Spacer()
+            Button("Check") { Task { await session.reconcilePending() } }
+                .accessibilityIdentifier("check-request-status")
+            if session.pending?.text != nil {
+                Button("Retry") { Task { await session.retryPending() } }
+                    .accessibilityIdentifier("retry-same-request")
+            }
+            Button("Clear") { showingClearConfirmation = true }
+        }
+        .font(.caption)
+    }
+}
+
+private struct ActivityPanel: View {
+    let snapshot: ThreadSnapshot
+    @Binding var expanded: Bool
+
+    private var items: [NativeEntryPresentation] {
+        snapshot.activityEntries.enumerated().map { NativeEntryPresentation($0.element, index: $0.offset) }
+    }
+    private var reasoning: [String] { items.flatMap(\.reasoning) }
+    private var tools: [NativeEntryPresentation] { items.filter { $0.kind == .tool } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: snapshot.isBusy ? "waveform" : "clock.arrow.circlepath")
+                        .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.muted)
+                    Text(snapshot.isBusy ? "Zed is working" : "Recent activity").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(snapshot.isBusy ? "LIVE" : "DONE").font(.caption2.monospaced())
+                        .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.muted)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption)
+                }
+                .padding(11).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                Hairline()
+                VStack(alignment: .leading, spacing: 12) {
+                    if reasoning.isEmpty && tools.isEmpty {
+                        Text("Waiting for reasoning or tool activity shared by native Zed…")
+                            .font(.footnote).foregroundStyle(ZLTheme.muted)
+                    }
+                    ForEach(Array(reasoning.suffix(4).enumerated()), id: \.offset) { _, value in
+                        VStack(alignment: .leading, spacing: 5) {
+                            SectionLabel("Reasoning shared by Zed")
+                            NativeMarkdownView(markdown: value)
+                        }
+                    }
+                    ForEach(tools.suffix(4)) { tool in
+                        HStack {
+                            Image(systemName: "wrench.and.screwdriver")
+                            Text(tool.toolName ?? "Zed tool").lineLimit(1)
+                            Spacer()
+                            Text(tool.toolStatus ?? "Updated").font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                        }
+                        .font(.footnote)
+                    }
+                    if snapshot.activityTruncated {
+                        Text("Earlier activity is omitted from this live window.")
+                            .font(.caption).foregroundStyle(ZLTheme.muted)
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .background(ZLTheme.surface)
+        .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+        .accessibilityIdentifier("live-activity")
+    }
+}
+
+private struct NativeMessageView: View {
+    let message: NativeEntryPresentation
+
+    var body: some View {
+        switch message.kind {
+        case .user:
+            HStack {
+                Spacer(minLength: 42)
+                VStack(alignment: .leading, spacing: 7) {
+                    SectionLabel(message.label)
+                    NativeMarkdownView(markdown: message.body)
+                }
+                .padding(12).background(ZLTheme.raised)
+                .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+        case .tool:
+            ToolMessageView(message: message).padding(.horizontal, 14).padding(.vertical, 10)
+        default:
+            VStack(alignment: .leading, spacing: 10) {
+                SectionLabel(message.label)
+                ForEach(Array(message.reasoning.enumerated()), id: \.offset) { _, thought in
+                    DisclosureGroup("Reasoning") { NativeMarkdownView(markdown: thought).padding(.top, 8) }
+                        .font(.footnote).tint(ZLTheme.muted)
+                }
+                if !message.body.isEmpty { NativeMarkdownView(markdown: message.body) }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct ToolMessageView: View {
+    let message: NativeEntryPresentation
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "terminal").foregroundStyle(ZLTheme.muted)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(message.toolName ?? "Zed tool").font(.subheadline.weight(.medium)).lineLimit(2)
+                        Text(message.toolStatus ?? "Native tool activity")
+                            .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                    }
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded { Hairline(); NativeMarkdownView(markdown: message.body) }
+        }
+        .padding(12).background(ZLTheme.surface)
+        .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+    }
+}
+
+private struct NativeApprovalView: View {
+    let approval: NativeApproval
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "hand.raised.fill").foregroundStyle(ZLTheme.warning)
+                Text("NEEDS YOU").font(.caption2.monospaced().weight(.bold)).foregroundStyle(ZLTheme.warning)
+                Spacer()
+            }
+            Text(approval.display).font(.subheadline.weight(.medium)).lineLimit(expanded ? nil : 2)
+            Text(approval.toolName).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+            if let input = approval.rawInput, expanded {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(input).font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }
+            Button(expanded ? "Hide details" : "Review details") { expanded.toggle() }.font(.caption)
+            Text("Decide in desktop Zed").font(.caption2).foregroundStyle(ZLTheme.muted)
+        }
+        .padding(12).frame(width: 290, alignment: .leading)
+        .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.45), lineWidth: 1))
+        .accessibilityIdentifier("approval-unavailable")
+    }
+}
+
+private struct CommandPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var session: SessionManager
+    @State private var search = ""
+
+    private var commands: [NativeCommand] {
+        guard !search.isEmpty else { return session.commands }
+        return session.commands.filter { $0.name.localizedCaseInsensitiveContains(search) ||
+            $0.description.localizedCaseInsensitiveContains(search) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(commands) { command in
+                Button {
+                    session.insertCommand(command)
+                    dismiss()
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("/\(command.name)").font(.body.monospaced().weight(.semibold))
+                            Spacer()
+                            Text(command.category.uppercased()).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+                        }
+                        Text(command.description).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+            .scrollContentBackground(.hidden).background(ZLTheme.background)
+            .searchable(text: $search, prompt: "Search Zed commands")
+            .navigationTitle("Agent commands")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -223,33 +491,45 @@ struct ConnectionsView: View {
             List {
                 if profiles.profiles.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("No connections", systemImage: "network").font(.headline)
-                        Text("Add an HTTPS gateway profile, then pair this iPhone.")
-                            .font(.subheadline).foregroundStyle(.secondary)
+                        Text("No connections").font(.headline)
+                        Text("Scan the private pairing QR shown by your ZedLink workstation.")
+                            .font(.subheadline).foregroundStyle(ZLTheme.muted)
                     }
-                    .padding(.vertical, 10)
+                    .listRowBackground(ZLTheme.surface).padding(.vertical, 8)
                 }
                 ForEach(profiles.profiles) { profile in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(profile.name).font(.headline)
-                        Text(profile.route.rawValue).font(.caption).foregroundStyle(.secondary)
-                        Text(profile.endpoint).font(.footnote).textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 9) {
                         HStack {
-                            Button("Connect") { Task { await session.connect(profile) } }
-                                .buttonStyle(.borderedProminent)
-                                .accessibilityIdentifier("connect-\(profile.id)")
-                            Button("Forget") { profileToForget = profile }
-                                .foregroundStyle(.red)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(profile.name).font(.headline)
+                                Text(profile.route.rawValue.uppercased()).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+                            }
+                            Spacer()
+                            if session.profile?.id == profile.id { ConnectionStatusView(state: session.state) }
                         }
+                        Text(profile.endpoint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                            .textSelection(.enabled)
+                        HStack {
+                            Button(session.profile?.id == profile.id ? "Reconnect" : "Connect") {
+                                Task {
+                                    await session.connect(profile)
+                                    if session.state == .live { profiles.markUsed(profile) }
+                                }
+                            }
+                            .accessibilityIdentifier("connect-\(profile.id)")
+                            Spacer()
+                            Button("Forget", role: .destructive) { profileToForget = profile }
+                        }
+                        .font(.subheadline)
                     }
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 7).listRowBackground(ZLTheme.surface)
                 }
             }
+            .scrollContentBackground(.hidden).background(ZLTheme.background)
             .navigationTitle("Connections")
             .toolbar {
                 Button { showingAdd = true } label: { Image(systemName: "plus") }
-                    .accessibilityLabel("Add connection")
-                    .accessibilityIdentifier("add-connection")
+                    .accessibilityLabel("Add connection").accessibilityIdentifier("add-connection")
             }
             .sheet(isPresented: $showingAdd) { AddConnectionView() }
             .confirmationDialog("Forget this connection?", isPresented: Binding(
@@ -284,8 +564,8 @@ struct AddConnectionView: View {
     @State private var showingScanner = false
 
     private var candidate: ConnectionProfile {
-        ConnectionProfile(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                          route: route, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines),
+        ConnectionProfile(name: name.trimmingCharacters(in: .whitespacesAndNewlines), route: route,
+                          endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines),
                           gatewayID: expectedID.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
@@ -294,34 +574,30 @@ struct AddConnectionView: View {
             Form {
                 Section("Quick setup") {
                     Button("Scan workstation QR") { Task { await scanPairingLink() } }
-                        .disabled(!DataScannerViewController.isSupported || busy)
-                        .accessibilityIdentifier("scan-pairing-qr")
+                        .disabled(!DataScannerViewController.isSupported || busy).accessibilityIdentifier("scan-pairing-qr")
                     Button("Use pairing link from clipboard") {
                         if let link = UIPasteboard.general.string { applyPairingLink(link) }
                         else { issue = "Copy the desktop pairing link first." }
                     }
                     if !DataScannerViewController.isSupported {
-                        Text("QR scanning needs a supported iPhone camera. You can paste the desktop link or enter the address below.")
+                        Text("QR scanning needs a supported iPhone camera. Paste the desktop link or enter the address below.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 Section("Route") {
                     Picker("Connection type", selection: $route) {
-                        ForEach(RouteKind.allCases) { route in Text(route.rawValue).tag(route) }
+                        ForEach(RouteKind.allCases) { Text($0.rawValue).tag($0) }
                     }
                     Text(route.guidance).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Gateway") {
                     TextField("Name", text: $name)
                     TextField("https://hostname:port", text: $endpoint)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .keyboardType(.URL).accessibilityIdentifier("gateway-endpoint")
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        .accessibilityIdentifier("gateway-endpoint")
                     Button("Test HTTPS endpoint") { Task { await testEndpoint() } }
                         .disabled(busy).accessibilityIdentifier("test-connection")
-                    if !observedID.isEmpty {
-                        LabeledContent("Observed gateway ID", value: observedID)
-                            .textSelection(.enabled)
-                    }
+                    if !observedID.isEmpty { LabeledContent("Observed gateway ID", value: observedID).textSelection(.enabled) }
                     TextField("Expected gateway ID from workstation", text: $expectedID)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityIdentifier("expected-gateway-id")
@@ -329,33 +605,24 @@ struct AddConnectionView: View {
                 Section("Pair this iPhone") {
                     TextField("Device name", text: $deviceName)
                     SecureField("10-digit pairing code", text: $code)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.numberPad)
                         .accessibilityIdentifier("pairing-code")
-                    Text("Confirm that the observed ID matches the workstation ID before pairing. HTTPS certificate verification must succeed first.")
+                    Text("The observed identity must match before the one-use code is sent.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Button("Pair and save") { Task { await pair() } }
                         .disabled(busy || observedID.isEmpty || expectedID.isEmpty || code.isEmpty)
                         .accessibilityIdentifier("pair-and-save")
                 }
-                if !issue.isEmpty {
-                    Section("Connection diagnostic") { Text(issue).foregroundStyle(.orange) }
-                }
+                if !issue.isEmpty { Section("Connection diagnostic") { Text(issue).foregroundStyle(ZLTheme.warning) } }
             }
             .navigationTitle("Add connection")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showingScanner) {
                 NavigationStack {
-                    PairingQRScanner(onPayload: { payload in
-                        showingScanner = false
-                        applyPairingLink(payload)
-                    }, onError: { message in
-                        showingScanner = false
-                        issue = "Camera scanner unavailable: \(message)"
-                    })
-                    .navigationTitle("Scan desktop QR")
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) {
-                        Button("Cancel") { showingScanner = false }
-                    } }
+                    PairingQRScanner(onPayload: { showingScanner = false; applyPairingLink($0) },
+                                     onError: { showingScanner = false; issue = "Camera scanner unavailable: \($0)" })
+                        .navigationTitle("Scan desktop QR")
+                        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cancel") { showingScanner = false } } }
                 }
             }
         }
@@ -363,12 +630,10 @@ struct AddConnectionView: View {
 
     private func scanPairingLink() async {
         guard DataScannerViewController.isSupported else {
-            issue = "This iPhone does not support live QR scanning. Use the clipboard or manual fields."
-            return
+            issue = "This iPhone does not support live QR scanning. Use the clipboard or manual fields."; return
         }
         guard await AVCaptureDevice.requestAccess(for: .video), DataScannerViewController.isAvailable else {
-            issue = "Allow camera access for ZedLink in iPhone Settings, or use the clipboard."
-            return
+            issue = "Allow camera access for ZedLink in iPhone Settings, or use the clipboard."; return
         }
         showingScanner = true
     }
@@ -376,55 +641,48 @@ struct AddConnectionView: View {
     private func applyPairingLink(_ value: String) {
         guard let components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
               components.scheme == "https", components.host != nil,
-              components.user == nil, components.password == nil,
-              components.query == nil, components.path.isEmpty || components.path == "/",
-              let fragment = components.fragment,
+              components.user == nil, components.password == nil, components.query == nil,
+              components.path.isEmpty || components.path == "/", let fragment = components.fragment,
               let query = URLComponents(string: "?\(fragment)")?.queryItems,
-              query.count == 1, query[0].name == "gateway",
-              let gatewayID = query[0].value, UUID(uuidString: gatewayID) != nil else {
-            issue = "Scan the ZedLink desktop QR, or paste its HTTPS pairing link."
-            return
+              Set(query.map(\.name)).count == query.count,
+              (Set(query.map(\.name)) == Set(["gateway"]) || Set(query.map(\.name)) == Set(["v", "gateway", "pair"])),
+              let gatewayID = query.first(where: { $0.name == "gateway" })?.value,
+              UUID(uuidString: gatewayID) != nil,
+              (query.count == 1 || (query.first(where: { $0.name == "v" })?.value == "1" &&
+                                    query.first(where: { $0.name == "pair" })?.value?.count == 10 &&
+                                    query.first(where: { $0.name == "pair" })?.value?.allSatisfy(\.isNumber) == true)) else {
+            issue = "Scan the ZedLink desktop QR, or paste its HTTPS pairing link."; return
         }
         var endpointParts = components
         endpointParts.fragment = nil
-        guard let address = endpointParts.url?.absoluteString else {
-            issue = "The pairing address is invalid."
-            return
-        }
+        guard let address = endpointParts.url?.absoluteString else { issue = "The pairing address is invalid."; return }
         endpoint = address
         expectedID = gatewayID
+        code = query.first(where: { $0.name == "pair" })?.value ?? ""
         observedID = ""
         issue = "Address and gateway identity loaded. Checking HTTPS before pairing."
         Task { await testEndpoint() }
     }
 
     private func testEndpoint() async {
-        busy = true
-        defer { busy = false }
-        observedID = ""
+        busy = true; defer { busy = false }; observedID = ""
         do {
             observedID = try await GatewayClient(profile: candidate, token: nil).gatewayID()
-            issue = "HTTPS and protocol identity verified. Compare the ID with the workstation."
+            issue = "HTTPS and gateway identity verified."
         } catch { issue = error.localizedDescription }
     }
 
     private func pair() async {
-        busy = true
-        defer { busy = false }
+        busy = true; defer { busy = false }
         let profile = candidate
         guard !profile.name.isEmpty, observedID == profile.gatewayID else {
-            issue = "Gateway ID differs from the workstation value. No pairing code was sent."
-            return
+            issue = "Gateway ID differs from the workstation value. No pairing code was sent."; return
         }
-        let shortCode = code.count == 10 && code.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 })
-        let legacyCode = code.count == 64 && code.allSatisfy({ $0.isHexDigit })
-        guard shortCode || legacyCode else {
-            issue = "Enter the 10-digit one-use pairing code."
-            return
-        }
+        let shortCode = code.count == 10 && code.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+        let legacyCode = code.count == 64 && code.allSatisfy(\.isHexDigit)
+        guard shortCode || legacyCode else { issue = "Enter the 10-digit one-use pairing code."; return }
         do {
-            let paired = try await GatewayClient(profile: profile, token: nil)
-                .pair(code: code, deviceName: deviceName)
+            let paired = try await GatewayClient(profile: profile, token: nil).pair(code: code, deviceName: deviceName)
             try await CredentialVault.shared.write(paired.token, for: profile.id)
             code = ""
             profiles.save(profile)
@@ -435,18 +693,29 @@ struct AddConnectionView: View {
 }
 
 struct SettingsView: View {
+    @AppStorage("zedlink.appearance") private var appearance = "dark"
+
     var body: some View {
         NavigationStack {
             List {
-                Section("About") {
-                    LabeledContent("Protocol", value: "ZedLink v1")
-                    Text("Zed's native Agent owns the model, tools, permissions, and conversation. This app stores only its paired gateway credential.")
+                Section("Appearance") {
+                    Picker("Theme", selection: $appearance) {
+                        Text("OLED dark").tag("dark")
+                        Text("System").tag("system")
+                        Text("Light").tag("light")
+                    }
                 }
-                Section("Current adapter limits") {
-                    Text("Mobile approval, cancellation, and diff inspection are unavailable until their native adapter paths pass live validation.")
-                    Text("A private VPN route still requires verified HTTPS and device pairing.")
+                Section("Native runtime") {
+                    LabeledContent("Protocol", value: "ZedLink v1")
+                    Text("Your model, tools, MCP servers, permissions, and conversation remain inside native Zed.")
+                }
+                Section("Capability boundary") {
+                    Text("ZedLink shows native tool and terminal output, but does not expose an unrestricted remote shell.")
+                    Text("Files and Git changes appear only after the running adapter advertises scoped read-only capabilities.")
+                    Text("Tailscale or another private route still requires verified HTTPS and device pairing.")
                 }
             }
+            .scrollContentBackground(.hidden).background(ZLTheme.background)
             .navigationTitle("Settings")
         }
     }

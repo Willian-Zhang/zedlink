@@ -9,11 +9,19 @@ import Combine
     @Published private(set) var instanceID: String?
     @Published private(set) var epoch: String?
     @Published private(set) var capabilities: Set<String> = []
+    @Published private(set) var commands: [NativeCommand] = []
     @Published private(set) var selectedThreadID: String?
     @Published private(set) var delivery = ""
     @Published private(set) var issue = ""
     @Published private(set) var pending: PendingSend?
-    @Published var draft = ""
+    @Published var draft = "" {
+        didSet {
+            guard let profile, let selectedThreadID else { return }
+            let key = draftKey(profileID: profile.id, threadID: selectedThreadID)
+            if draft.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
+            else { UserDefaults.standard.set(draft, forKey: key) }
+        }
+    }
 
     private var client: GatewayClient?
     private var pollTask: Task<Void, Never>?
@@ -39,6 +47,7 @@ import Combine
         instanceID = nil
         epoch = nil
         capabilities = []
+        commands = []
         pending = nil
         delivery = ""
         issue = ""
@@ -75,6 +84,7 @@ import Combine
             if let previousThread, threads.contains(where: { $0.id == previousThread }) {
                 selectedThreadID = previousThread
                 try await loadSnapshot(previousThread)
+                try await loadCommands(previousThread)
             }
             guard current == generation else { return }
             state = .live
@@ -109,6 +119,7 @@ import Combine
         if let selectedThreadID, !threads.contains(where: { $0.id == selectedThreadID }) {
             self.selectedThreadID = nil
             snapshot = nil
+            commands = []
             issue = threadExposureIssue
         }
     }
@@ -117,7 +128,15 @@ import Combine
         guard threads.contains(where: { $0.id == id }) else { return }
         selectedThreadID = id
         snapshot = nil
-        do { try await loadSnapshot(id); issue = "" }
+        commands = []
+        if let profile {
+            draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, threadID: id)) ?? ""
+        }
+        do {
+            try await loadSnapshot(id)
+            try await loadCommands(id)
+            issue = ""
+        }
         catch { issue = error.localizedDescription; state = .stale }
     }
 
@@ -129,14 +148,43 @@ import Combine
               let entries = result["entries_markdown"] as? [String],
               let sequence = result["last_sequence"] as? Int else { throw GatewayFailure.invalidResponse }
         guard selectedThreadID == id else { return }
+        let approvals = (result["pending_approvals"] as? [[String: Any]] ?? []).compactMap { row -> NativeApproval? in
+            guard let approvalID = row["approval_id"] as? String else { return nil }
+            return NativeApproval(id: approvalID,
+                                  turnID: row["turn_id"] as? Int,
+                                  toolName: row["tool_name"] as? String ?? "Zed tool",
+                                  display: row["display"] as? String ?? "Permission requested",
+                                  rawInput: Self.jsonText(row["raw_input"]),
+                                  detailsTruncated: row["details_truncated"] as? Bool ?? true,
+                                  canApproveOnce: row["can_approve_once"] as? Bool ?? false,
+                                  canDenyOnce: row["can_deny_once"] as? Bool ?? false)
+        }
         snapshot = ThreadSnapshot(threadID: id,
                                   title: result["title"] as? String ?? "Untitled Agent thread",
                                   status: result["status"] as? String ?? "Unknown",
                                   currentTurnID: result["current_turn_id"] as? Int,
                                   instanceID: instanceID ?? "", epoch: epoch ?? "",
                                   lastSequence: sequence, entries: entries,
+                                  activityEntries: result["activity_entries_markdown"] as? [String] ?? entries,
                                   truncated: result["truncated"] as? Bool ?? false,
-                                  pendingApprovalCount: (result["pending_approvals"] as? [Any])?.count ?? 0)
+                                  activityTruncated: result["activity_truncated"] as? Bool ?? false,
+                                  pendingApprovals: approvals)
+    }
+
+    private func loadCommands(_ id: String) async throws {
+        guard capabilities.contains("thread.commands"), let client else { return }
+        let result = try await client.rpc("thread.commands", params: [
+            "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": id
+        ])
+        guard selectedThreadID == id, result["thread_id"] as? String == id,
+              let rows = result["commands"] as? [[String: Any]] else { return }
+        commands = rows.compactMap { row in
+            guard let name = row["name"] as? String else { return nil }
+            return NativeCommand(name: name,
+                                 description: row["description"] as? String ?? "Zed Agent command",
+                                 category: row["category"] as? String ?? "agent",
+                                 requiresArgument: row["requires_argument"] as? Bool ?? false)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private func checkIdentity(_ result: [String: Any]) throws {
@@ -155,13 +203,17 @@ import Combine
                     guard result["thread_id"] as? String == id else { throw GatewayFailure.invalidResponse }
                     if let events = result["events"] as? [Any], !events.isEmpty {
                         try await loadSnapshot(id)
+                    } else if snapshot?.isBusy == true {
+                        try await loadSnapshot(id)
                     } else if let sequence = result["last_sequence"] as? Int,
                               var old = snapshot, sequence >= old.lastSequence {
                         old = ThreadSnapshot(threadID: old.threadID, title: old.title, status: old.status,
                                              currentTurnID: old.currentTurnID,
                                              instanceID: old.instanceID, epoch: old.epoch,
                                              lastSequence: sequence, entries: old.entries,
-                                             truncated: old.truncated, pendingApprovalCount: old.pendingApprovalCount)
+                                             activityEntries: old.activityEntries,
+                                             truncated: old.truncated, activityTruncated: old.activityTruncated,
+                                             pendingApprovals: old.pendingApprovals)
                         snapshot = old
                     }
                 } else {
@@ -180,6 +232,7 @@ import Combine
                     guard current == generation else { break }
                     selectedThreadID = nil
                     snapshot = nil
+                    commands = []
                     do {
                         try await loadThreads()
                         guard current == generation else { break }
@@ -238,13 +291,12 @@ import Combine
                 "instance_id": pending.instanceID, "epoch": pending.epoch,
                 "thread_id": pending.threadID, "text": text
             ], requestID: pending.id)
-            if result["outcome"] as? String == "queued" {
-                draft = ""
-                clearPending()
-                delivery = "Queued in desktop Zed. Native execution is still being observed."
-            } else {
-                delivery = "Delivery unknown. Check the request status or retry this exact request ID."
-            }
+            let outcome = result["outcome"] as? String ?? "received"
+            draft = ""
+            settlePending()
+            delivery = outcome == "queued"
+                ? "Queued in desktop Zed. Native execution is being observed."
+                : "Received by desktop Zed. Watching the native conversation for progress."
             try await loadSnapshot(pending.threadID)
         } catch {
             delivery = "Delivery unknown: \(error.localizedDescription) No new request ID was sent."
@@ -276,7 +328,30 @@ import Combine
         delivery = "Uncertain delivery cleared locally. Check desktop Zed before sending similar text."
     }
 
+    func insertCommand(_ command: NativeCommand) {
+        draft = "/\(command.name)\(command.requiresArgument ? " " : "")"
+    }
+
+    private func settlePending() {
+        pending = nil
+        if let profile { UserDefaults.standard.removeObject(forKey: pendingKey(profile)) }
+    }
+
+    private static func jsonText(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let value = value as? String { return value }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]) else {
+            return String(describing: value)
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
     private func pendingKey(_ profile: ConnectionProfile) -> String { "zedlink.pending.\(profile.id)" }
+
+    private func draftKey(profileID: UUID, threadID: String) -> String {
+        "zedlink.draft.\(profileID.uuidString).\(threadID)"
+    }
 
     private func persistPending(for profile: ConnectionProfile) {
         if let pending, let data = try? JSONEncoder().encode(pending) {

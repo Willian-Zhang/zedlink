@@ -14,6 +14,7 @@ targets:
       - ZedLink
     scheme:
       testTargets:
+        - ZedLinkTests
         - ZedLinkUITests
     settings:
       base:
@@ -35,4 +36,15 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.zedlink.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+  ZedLinkTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - ZedLinkTests
+    dependencies:
+      - target: ZedLink
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zedlink.app.tests
         GENERATE_INFOPLIST_FILE: YES
