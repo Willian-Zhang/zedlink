@@ -1,4 +1,7 @@
 import SwiftUI
+import AVFoundation
+import UIKit
+import VisionKit
 
 private struct StatusBadge: View {
     let state: LinkState
@@ -7,6 +10,36 @@ private struct StatusBadge: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(state == .live ? .green : .secondary)
             .accessibilityLabel("Connection \(state.label)")
+    }
+}
+
+private struct NativeEntryPresentation {
+    enum Kind: Equatable { case user, assistant, tool, other }
+    let kind: Kind
+    let label: String
+    let body: String
+
+    init(_ markdown: String, index: Int) {
+        let prefixes: [(String, Kind, String)] = [
+            ("## User\n\n", .user, "You"),
+            ("## User (checkpoint)\n\n", .user, "You · checkpoint"),
+            ("## Assistant\n\n", .assistant, "Zed Agent"),
+            ("## Input Requested\n\n", .tool, "Input requested in Zed"),
+            ("## Plan\n\n", .tool, "Plan")
+        ]
+        if let match = prefixes.first(where: { markdown.hasPrefix($0.0) }) {
+            kind = match.1
+            label = match.2
+            body = String(markdown.dropFirst(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if markdown.hasPrefix("**Tool Call: ") {
+            kind = .tool
+            label = "Tool call"
+            body = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            kind = .other
+            label = "Native entry \(index + 1)"
+            body = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 }
 
@@ -81,15 +114,23 @@ struct ConversationView: View {
                                     .font(.footnote).foregroundStyle(.orange)
                             }
                             ForEach(Array(snapshot.entries.enumerated()), id: \.offset) { index, entry in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Native entry \(index + 1)")
-                                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                    Text(entry).textSelection(.enabled)
-                                        .font(.body.monospaced())
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                let message = NativeEntryPresentation(entry, index: index)
+                                HStack {
+                                    if message.kind == .user { Spacer(minLength: 40) }
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(message.label.uppercased())
+                                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                        Text(message.body).textSelection(.enabled)
+                                            .font(.body)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .padding(14)
+                                    .background(message.kind == .user ? Color.accentColor.opacity(0.15) :
+                                                Color(uiColor: .secondarySystemBackground),
+                                                in: RoundedRectangle(cornerRadius: 16))
+                                    if message.kind != .user { Spacer(minLength: 12) }
                                 }
-                                .padding(14)
-                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+                                .accessibilityElement(children: .combine)
                                 .id(index)
                             }
                         }
@@ -231,6 +272,7 @@ struct AddConnectionView: View {
     @State private var deviceName = "iPhone"
     @State private var issue = ""
     @State private var busy = false
+    @State private var showingScanner = false
 
     private var candidate: ConnectionProfile {
         ConnectionProfile(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -241,6 +283,19 @@ struct AddConnectionView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Quick setup") {
+                    Button("Scan workstation QR") { Task { await scanPairingLink() } }
+                        .disabled(!DataScannerViewController.isSupported || busy)
+                        .accessibilityIdentifier("scan-pairing-qr")
+                    Button("Use pairing link from clipboard") {
+                        if let link = UIPasteboard.general.string { applyPairingLink(link) }
+                        else { issue = "Copy the desktop pairing link first." }
+                    }
+                    if !DataScannerViewController.isSupported {
+                        Text("QR scanning needs a supported iPhone camera. You can paste the desktop link or enter the address below.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 Section("Route") {
                     Picker("Connection type", selection: $route) {
                         ForEach(RouteKind.allCases) { route in Text(route.rawValue).tag(route) }
@@ -279,7 +334,59 @@ struct AddConnectionView: View {
             }
             .navigationTitle("Add connection")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .sheet(isPresented: $showingScanner) {
+                NavigationStack {
+                    PairingQRScanner(onPayload: { payload in
+                        showingScanner = false
+                        applyPairingLink(payload)
+                    }, onError: { message in
+                        showingScanner = false
+                        issue = "Camera scanner unavailable: \(message)"
+                    })
+                    .navigationTitle("Scan desktop QR")
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                        Button("Cancel") { showingScanner = false }
+                    } }
+                }
+            }
         }
+    }
+
+    private func scanPairingLink() async {
+        guard DataScannerViewController.isSupported else {
+            issue = "This iPhone does not support live QR scanning. Use the clipboard or manual fields."
+            return
+        }
+        guard await AVCaptureDevice.requestAccess(for: .video), DataScannerViewController.isAvailable else {
+            issue = "Allow camera access for ZedLink in iPhone Settings, or use the clipboard."
+            return
+        }
+        showingScanner = true
+    }
+
+    private func applyPairingLink(_ value: String) {
+        guard let components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme == "https", components.host != nil,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.path.isEmpty || components.path == "/",
+              let fragment = components.fragment,
+              let query = URLComponents(string: "?\(fragment)")?.queryItems,
+              query.count == 1, query[0].name == "gateway",
+              let gatewayID = query[0].value, UUID(uuidString: gatewayID) != nil else {
+            issue = "Scan the ZedLink desktop QR, or paste its HTTPS pairing link."
+            return
+        }
+        var endpointParts = components
+        endpointParts.fragment = nil
+        guard let address = endpointParts.url?.absoluteString else {
+            issue = "The pairing address is invalid."
+            return
+        }
+        endpoint = address
+        expectedID = gatewayID
+        observedID = ""
+        issue = "Address and gateway identity loaded. Checking HTTPS before pairing."
+        Task { await testEndpoint() }
     }
 
     private func testEndpoint() async {
