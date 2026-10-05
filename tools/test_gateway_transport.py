@@ -458,6 +458,12 @@ def main():
                 assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                browser.find_element(By.ID, "tab-connections").click()
+                assert browser.find_element(By.ID, "connection-panel").is_displayed()
+                browser.find_element(By.ID, "tab-settings").click()
+                assert browser.find_element(By.ID, "settings-panel").is_displayed()
+                browser.find_element(By.ID, "tab-sessions").click()
+                assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 probe.extra_thread = True
                 browser.find_element(By.ID, "refresh").click()
                 wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".thread-item")) == 2)
@@ -514,7 +520,7 @@ def main():
                 assert admin(state, "revoke", quick_device["id"])["revoked"]
             finally:
                 browser.quit()
-            print("PASS: private bind/state, TLS identity, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
+            print("PASS: private bind/state, TLS identity, installable PWA shell/mobile navigation, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
         finally:
             server.terminate()
             try:

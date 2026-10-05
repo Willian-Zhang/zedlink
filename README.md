@@ -13,12 +13,12 @@ There are four parts:
 1. **Patched Zed** adds the `/remote-control` command to a native Agent thread.
 2. **ZedLink gateway** provides the private HTTPS connection used by your phone.
 3. **Tailscale or another private route** lets the phone reach your computer.
-4. **Phone browser** displays and controls the exposed Zed conversation.
+4. **Phone client** displays and controls the exposed Zed conversation through the installable web app, SwiftUI app, or Android app.
 
-A native SwiftUI client also lives under `ios/`. Its OLED workspace revision builds, launches, and passes unit/onboarding tests on a hosted iPhone simulator; Safari remains the verified physical-iPhone client until a signed native build is installed and tested on-device.
+A native SwiftUI client lives under `ios/`, and a matching Jetpack Compose client lives under `android/`. Both pass hosted builds and unit/UI or lint checks. The HTTPS browser is also an installable home-screen PWA. Safari remains the verified physical-phone client until the native packages complete signed physical-device tests.
 
 ```text
-iPhone browser ── private HTTPS through Tailscale ── ZedLink gateway
+Phone app or PWA ── private HTTPS through Tailscale ── ZedLink gateway
                                                        │
                                                   local socket
                                                        │
@@ -266,6 +266,25 @@ The QR code expires after five minutes and works once. Keep it private.
 
 Pairing is saved in normal Safari storage. Refreshing the page or opening a second normal tab should not require another code. Private Browsing may not preserve the pairing.
 
+### Install the website on the home screen
+
+The gateway page is a standalone Progressive Web App with an OLED icon and the same Sessions, Connections, Settings, conversation, activity, tool, command, and composer layout as the native clients. Its service worker caches only the static interface. It explicitly bypasses `/v1/`, so API responses, conversations, pairing exchanges, and credentials are never stored in the offline cache.
+
+On iPhone or iPad:
+
+1. Open the trusted ZedLink HTTPS address in Safari.
+2. Tap **Share**.
+3. Tap **Add to Home Screen**.
+4. Open ZedLink from its new icon. Your normal-Safari pairing should remain available for the same HTTPS origin.
+
+On Android Chrome:
+
+1. Open the trusted ZedLink HTTPS address.
+2. Open **Settings** inside ZedLink and tap **Install ZedLink** when available, or use Chrome's **Install app** menu item.
+3. Launch ZedLink from the home screen.
+
+The installed web app still requires the private route, gateway, and patched Zed to be online.
+
 ### 6. Send a test message
 
 On the phone:
@@ -475,4 +494,5 @@ Exact commands, evidence, unavailable tests, and current limitations are recorde
 - [Test plan](docs/TEST_PLAN.md)
 - [Validation report](docs/VALIDATION_REPORT.md)
 - [Native iPhone application](docs/IOS_APP.md)
+- [Native Android application](docs/ANDROID_APP.md)
 - [Zedra-inspired iOS feature map](docs/ZEDRA_FEATURE_PARITY.md)
