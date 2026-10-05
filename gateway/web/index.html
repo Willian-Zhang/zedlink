@@ -18,18 +18,18 @@
     <aside class="sidebar">
       <section class="panel" id="pair-panel">
         <h1>Connect to Zed</h1>
-        <p class="muted">Use the HTTPS address you trust. Pair this browser with a code from the workstation.</p>
+        <p class="muted">Scan the pairing QR shown on your workstation, then enter its 10-digit code.</p>
         <div class="identity"><span>Gateway identity</span><code id="gateway-id">Checking…</code></div>
         <form id="pair-form">
           <label for="expected-id">Expected gateway ID</label>
-          <input id="expected-id" name="expected-id" autocomplete="off" spellcheck="false" required placeholder="UUID shown by gateway admin">
+          <input id="expected-id" name="expected-id" autocomplete="off" spellcheck="false" required placeholder="Filled by desktop QR link">
           <label for="pair-code">One-time pairing code</label>
-          <input id="pair-code" name="pair-code" autocomplete="off" spellcheck="false" required maxlength="64" placeholder="64 hexadecimal characters">
+          <input id="pair-code" name="pair-code" autocomplete="one-time-code" inputmode="numeric" spellcheck="false" required maxlength="64" placeholder="10-digit code">
           <label for="device-name">Device name</label>
           <input id="device-name" name="device-name" maxlength="64" required value="Browser">
           <button id="pair-button" class="primary" type="submit">Pair browser</button>
         </form>
-        <p class="note">The code comes from <code>zedlink-gateway admin STATE_DIR pair-code</code>. The browser keeps its device token only for this tab session.</p>
+        <p class="note">The QR link fills the gateway identity without carrying the secret code. The browser keeps its device token only for this tab session.</p>
       </section>
       <section class="panel hidden" id="sessions-panel">
         <div class="section-head"><div><h1>Sessions</h1><p id="host-label" class="muted"></p></div><button id="refresh" type="button" class="quiet">Refresh</button></div>
@@ -38,7 +38,7 @@
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-head"><div><p class="eyebrow">EXPOSED NATIVE THREAD</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span></div>
+      <div class="conversation-head"><button id="show-sessions" class="quiet" type="button" aria-label="Show sessions">Sessions</button><div><p class="eyebrow">EXPOSED NATIVE THREAD</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <div id="messages" class="messages" aria-live="off"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your Zed thread will appear here</h3><p>Only threads explicitly exposed with <code>/remote-control</code> are listed.</p></div></div>
       <div class="composer-wrap">

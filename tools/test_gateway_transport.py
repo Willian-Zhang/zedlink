@@ -275,7 +275,8 @@ def main():
             status, _ = http(base, context, "/v1/rpc", "POST", request, token1)
             assert status == 401
             assert not admin(state, "devices")["devices"]
-            browser_code = admin(state, "pair-code")["code"]
+            browser_code = admin(state, "pair-short-code")["code"]
+            assert len(browser_code) == 10 and browser_code.isascii() and browser_code.isdecimal()
             accepted_before_browser = probe.accepted
             browser_options = FirefoxOptions()
             browser_options.add_argument("-headless")
@@ -285,8 +286,10 @@ def main():
                                         options=browser_options)
             try:
                 wait = WebDriverWait(browser, 8)
-                browser.get(base + "/")
+                browser.get(base + "/#gateway=" + info["gateway_id"])
                 wait.until(lambda driver: driver.find_element(By.ID, "gateway-id").text == info["gateway_id"])
+                assert browser.find_element(By.ID, "expected-id").get_attribute("value") == info["gateway_id"]
+                browser.find_element(By.ID, "expected-id").clear()
                 browser.find_element(By.ID, "expected-id").send_keys("wrong-gateway")
                 browser.find_element(By.ID, "pair-code").send_keys(browser_code)
                 browser.find_element(By.ID, "pair-button").click()
@@ -315,13 +318,18 @@ def main():
                 assert probe.accepted == accepted_before_browser + 1
                 browser.save_screenshot("/tmp/zedlink-browser-fixture.png")
                 browser.set_window_size(390, 844)
-                layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight}")
+                layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
                 assert layout["pageWidth"] <= layout["width"] + 1
                 assert layout["composerBottom"] <= layout["height"]
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
+                assert layout["messagesHeight"] >= 250 and layout["sidebarHidden"], layout
+                browser.find_element(By.ID, "show-sessions").click()
+                assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "messages").is_displayed())
                 browser.refresh()
                 wait.until(lambda driver: "A previous send has uncertain delivery" in
-                           driver.find_element(By.ID, "delivery").text)
+                           driver.execute_script("return document.getElementById('delivery').textContent"))
                 assert probe.accepted == accepted_before_browser + 1
                 browser_device = next(device for device in admin(state, "devices")["devices"]
                                       if device["name"] == "Browser")

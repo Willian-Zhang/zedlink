@@ -59,8 +59,14 @@ struct Device {
 }
 struct Pairing {
     digest: [u8; 32],
+    kind: PairingKind,
     expires: Instant,
     attempts: u8,
+}
+#[derive(Clone, Copy)]
+enum PairingKind {
+    Hex,
+    Decimal,
 }
 #[derive(Deserialize)]
 struct PairRequest {
@@ -116,9 +122,10 @@ async fn main() -> Result<()> {
         Some("admin") if args.len() >= 3 => {
             let command = match args[2].as_str() {
                 "pair-code" if args.len() == 3 => json!({"method":"pair-code"}),
+                "pair-short-code" if args.len() == 3 => json!({"method":"pair-short-code"}),
                 "devices" if args.len() == 3 => json!({"method":"devices"}),
                 "revoke" if args.len() == 4 => json!({"method":"revoke","device_id":args[3]}),
-                _ => bail!("admin STATE_DIR pair-code|devices|revoke DEVICE_ID"),
+                _ => bail!("admin STATE_DIR pair-code|pair-short-code|devices|revoke DEVICE_ID"),
             };
             let mut stream = UnixStream::connect(Path::new(&args[1]).join("admin.sock")).await?;
             stream
@@ -131,7 +138,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | admin STATE_DIR pair-code|devices|revoke DEVICE_ID"
+            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|revoke DEVICE_ID"
         ),
     }
 }
@@ -338,10 +345,21 @@ impl Gateway {
                 let code: [u8; 32] = rand::random();
                 *self.0.pairing.lock().await = Some(Pairing {
                     digest: digest(&code),
+                    kind: PairingKind::Hex,
                     expires: Instant::now() + PAIR_TTL,
                     attempts: 0,
                 });
                 json!({"code":hex::encode(code),"expires_seconds":PAIR_TTL.as_secs()})
+            }
+            Some("pair-short-code") => {
+                let code = format!("{:010}", rand::random_range(0..10_000_000_000_u64));
+                *self.0.pairing.lock().await = Some(Pairing {
+                    digest: digest(code.as_bytes()),
+                    kind: PairingKind::Decimal,
+                    expires: Instant::now() + PAIR_TTL,
+                    attempts: 0,
+                });
+                json!({"code":code,"expires_seconds":PAIR_TTL.as_secs()})
             }
             Some("devices") => {
                 let persisted = self.0.persisted.lock().await;
@@ -381,7 +399,6 @@ async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) ->
             Json(json!({"error":"INVALID_REQUEST"})),
         );
     }
-    let decoded = hex::decode(&request.code).unwrap_or_default();
     let mut pairing = state.0.pairing.lock().await;
     let Some(active) = pairing.as_mut() else {
         return (
@@ -397,7 +414,18 @@ async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) ->
         );
     }
     active.attempts += 1;
-    if decoded.len() != 32 || !bool::from(active.digest.ct_eq(&digest(&decoded))) {
+    let valid = match active.kind {
+        PairingKind::Hex => {
+            let decoded = hex::decode(&request.code).unwrap_or_default();
+            decoded.len() == 32 && bool::from(active.digest.ct_eq(&digest(&decoded)))
+        }
+        PairingKind::Decimal => {
+            request.code.len() == 10
+                && request.code.bytes().all(|byte| byte.is_ascii_digit())
+                && bool::from(active.digest.ct_eq(&digest(request.code.as_bytes())))
+        }
+    };
+    if !valid {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error":"PAIRING_INVALID"})),

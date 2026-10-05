@@ -95,6 +95,13 @@ async function loadGateway() {
     }
     state.gatewayId = result.gateway_id;
     $("gateway-id").textContent = result.gateway_id;
+    const expectedFromLink = new URLSearchParams(location.hash.slice(1)).get("gateway");
+    if (expectedFromLink) {
+      $("expected-id").value = expectedFromLink;
+      if (expectedFromLink !== result.gateway_id) {
+        throw new Error("The gateway identity differs from the desktop pairing link. Do not enter a code.");
+      }
+    }
     const token = safeSession.read(tokenKey());
     if (token) {
       state.token = token;
@@ -121,6 +128,7 @@ async function connect() {
     state.epoch = info.epoch;
     if (changed) {
       state.threadId = null;
+      document.body.classList.remove("thread-open", "mobile-sessions");
       state.sequence = 0;
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
     }
@@ -167,6 +175,7 @@ async function loadThreads() {
   }
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     state.threadId = null;
+    document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
     $("messages").replaceChildren();
     $("prompt").disabled = true;
@@ -181,6 +190,8 @@ async function selectThread(threadId) {
     return;
   }
   state.threadId = threadId;
+  document.body.classList.add("thread-open");
+  document.body.classList.remove("mobile-sessions");
   state.sequence = 0;
   $("prompt").disabled = false;
   $("send").disabled = !!state.pending;
@@ -306,7 +317,7 @@ $("pair-form").addEventListener("submit", async (event) => {
     return;
   }
   const code = $("pair-code").value.trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(code)) { notice("Enter the 64-character pairing code."); return; }
+  if (!/^([0-9]{10}|[0-9a-fA-F]{64})$/.test(code)) { notice("Enter the 10-digit pairing code from the workstation."); return; }
   $("pair-button").disabled = true;
   try {
     const response = await fetch("/v1/pair", {
@@ -328,12 +339,16 @@ $("pair-form").addEventListener("submit", async (event) => {
   finally { $("pair-button").disabled = false; }
 });
 $("refresh").addEventListener("click", () => connect());
+$("show-sessions").addEventListener("click", () => {
+  document.body.classList.add("mobile-sessions");
+});
 $("forget").addEventListener("click", () => {
   safeSession.remove(tokenKey());
   safeSession.remove(pendingKey());
   state.token = null;
   state.pending = null;
   state.threadId = null;
+  document.body.classList.remove("thread-open", "mobile-sessions");
   $("pair-panel").classList.remove("hidden");
   $("sessions-panel").classList.add("hidden");
   $("messages").replaceChildren();

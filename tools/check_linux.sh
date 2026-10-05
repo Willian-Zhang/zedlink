@@ -27,5 +27,6 @@ python3 -m py_compile "$project_root/tools/zedlink_probe_client.py" \
   "$project_root/tools/test_tailnet_bind.py" \
   "$project_root/tools/test_moshi_discovery.py" \
   "$project_root/tools/test_native_fixture.py" \
+  "$project_root/tools/pair_phone.py" \
   "$project_root/tools/deterministic_model_fixture.py"
 printf 'Linux checks passed. Gateway transport integration requires tools/test_gateway_transport.py with loopback access.\n'

@@ -264,7 +264,7 @@ struct AddConnectionView: View {
                 }
                 Section("Pair this iPhone") {
                     TextField("Device name", text: $deviceName)
-                    SecureField("One-use pairing code", text: $code)
+                    SecureField("10-digit pairing code", text: $code)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityIdentifier("pairing-code")
                     Text("Confirm that the observed ID matches the workstation ID before pairing. HTTPS certificate verification must succeed first.")
@@ -300,8 +300,10 @@ struct AddConnectionView: View {
             issue = "Gateway ID differs from the workstation value. No pairing code was sent."
             return
         }
-        guard code.count == 64, code.allSatisfy({ $0.isHexDigit }) else {
-            issue = "Enter the 64-character one-use pairing code."
+        let shortCode = code.count == 10 && code.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 })
+        let legacyCode = code.count == 64 && code.allSatisfy({ $0.isHexDigit })
+        guard shortCode || legacyCode else {
+            issue = "Enter the 10-digit one-use pairing code."
             return
         }
         do {
