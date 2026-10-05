@@ -1,6 +1,11 @@
 name: macOS smoke
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/macos-smoke.yml"
   workflow_dispatch:
     inputs:
       simulator:
