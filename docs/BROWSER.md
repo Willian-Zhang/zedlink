@@ -1,6 +1,6 @@
 # Browser access
 
-Status: a browser interface is embedded in the ZedLink gateway. It passed a paired, headless Firefox test against a **synthetic native-probe fixture** on localhost. A browser prompt through a real exposed native Zed thread and a remote Tailscale device are still NOT RUN.
+Status: a browser interface is embedded in the ZedLink gateway. It passed both a paired, headless Firefox test against a synthetic probe and a paired headless Firefox prompt into a real exposed native Zed thread over disposable localhost HTTPS. A remote Tailscale device and Moshi route are still NOT RUN.
 
 The page at `/` uses the existing gateway and native Zed probe. It has no model API or separate agent. It lists only threads exposed in desktop Zed with `/remote-control`, renders native snapshots as plain readable text, polls native events for updates, and sends through `thread.send`. It keeps a stable request ID for a retry and never resends automatically after a timeout or page reload. The native send receipt remains provisional; the UI says so. Cancellation, mobile approval, diffs, and attachments stay unavailable until their native adapter paths pass live checks.
 
@@ -45,4 +45,8 @@ Moshi documents [Browser Preview](https://getmoshi.app/docs/browser-preview) for
 
 `python3 tools/test_moshi_discovery.py` uses an isolated `XDG_CONFIG_HOME` and an exact scan port. It leaves the user's Moshi configuration untouched. It verifies a plain-HTTP control is found and reports whether the installed Moshi discovers ZedLink HTTPS. The current result is `false` for HTTPS, so direct browser access over Tailscale remains the usable intended route once its certificate and real native-thread tests pass.
 
+A separate live desktop test used the exposed disposable thread, paired a fresh headless Firefox profile to the loopback gateway, sent one harmless browser prompt, observed exactly one new native user entry and one assistant entry, and confirmed same-ID retry added no duplicate. The browser's certificate exception was confined to the disposable localhost test profile; this is not a trusted-certificate iPhone or tailnet result. The browser device credential was revoked afterward. The desktop user's visual confirmation applied to the earlier terminal-to-gateway prompt; the browser result was checked through the native snapshot.
+
 On 2026-10-04 the installed `moshi-hook` had updated to 0.4.16. Repeating the same isolated discovery test still found the plain-HTTP control and did not discover the disposable ZedLink HTTPS listener; `global_moshi_config_changed` remained `false`. The workstation's Tailscale backend was running, but no live ZedLink gateway or exposed native thread was listening during this check. This is not a remote Moshi-to-native-Zed test.
+
+The user subsequently approved and obtained a Tailscale certificate for `computer.example-tailnet.ts.net`. The gateway was bound only to `100.64.10.20:44679`; system-trusted HTTPS and native thread listing passed from that same host. An isolated Moshi 0.4.16 scan restricted to port 44679 still did not discover that trusted tailnet HTTPS listener. Direct Safari access at `https://computer.example-tailnet.ts.net:44679/` is the phone route to validate; a remote Moshi Browser Preview result is not claimed.

@@ -1,6 +1,6 @@
 # Local gateway setup
 
-Status: Linux development build. The TLS gateway passed a local transport fixture, and its RPC reached a real isolated Zed probe. A prompt has not yet been sent through the gateway to an exposed native thread.
+Status: Linux development build. The TLS gateway passed a local transport fixture and a paired loopback HTTPS prompt to an exposed, desktop-created native Zed thread. One native user and assistant entry appeared; the user confirmed both on desktop. This does not establish an iPhone or remote VPN route. See VALIDATION_REPORT.md.
 
 The gateway now serves its paired browser UI at `/`. See [BROWSER.md](BROWSER.md) for browser behavior, Tailscale certificate setup, and Moshi notes.
 
@@ -49,4 +49,6 @@ Authenticated `POST /v1/rpc` forwards version-1 JSON requests to Zed. Send the t
 
 The same HTTPS endpoint can be saved under Tailscale, WireGuard, another routed VPN, local HTTPS, or custom proxy profiles. These labels describe user-configured routes; the gateway does not start or inspect VPN clients. An alternate endpoint must verify the same gateway identity before receiving the device token. Do not silently fail over from private to public.
 
-Run `python3 tools/test_gateway_transport.py` for the synthetic transport fixture. It checks TLS hostname rejection, unauthenticated denial, pairing reuse, device isolation, WSS revocation, and forbidden methods. See [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for the separate real-Zed identity check. No external route, physical phone, approval race, or full same-thread prompt has passed through this gateway.
+Run `python3 tools/test_gateway_transport.py` for the synthetic transport fixture. It checks TLS hostname rejection, unauthenticated denial, pairing reuse, device isolation, WSS revocation, and forbidden methods. See [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for the separate real-Zed same-thread loopback prompt and browser check. No external route, physical phone, approval race, or provider-origin assertion has passed through this gateway.
+
+The user approved issuing a Tailscale certificate for `computer.example-tailnet.ts.net`; Tailscale records that hostname in public Certificate Transparency. A disposable gateway using that certificate was bound to the private Tailscale IP `100.64.10.20:44679`. System-trusted HTTPS, MagicDNS, pairing, and real exposed-thread listing passed **from the workstation to its own tailnet address**. Another tailnet device and phone prompt have not yet been verified. The certificate files are in a private temporary directory, expire on 2027-01-03, and require renewal before then. This is test setup, not a persistent service installation.

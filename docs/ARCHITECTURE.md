@@ -1,6 +1,6 @@
 # Architecture and feasibility
 
-Status: proposed full product design; a pinned patched-Zed local same-thread send/snapshot has been verified. A private TLS gateway has passed a transport fixture and reached a real Zed probe for identity and hidden-thread checks. Gateway same-thread execution and phone integration remain unverified or unimplemented.
+Status: proposed full product design; a pinned patched-Zed local same-thread send/snapshot has been verified. A private TLS gateway and its browser have now sent prompts to the same exposed, desktop-created native thread over disposable localhost HTTPS. The iPhone client builds and launches in a hosted simulator, but has not connected to the real gateway/Zed thread. Remote Tailscale, Moshi, physical phone, and release permissions gates remain unverified.
 
 ## Components
 

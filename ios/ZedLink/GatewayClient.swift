@@ -72,7 +72,26 @@ struct GatewayClient {
             guard let token else { throw GatewayFailure.native("UNAUTHENTICATED") }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let (data, response) = try await Self.session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await Self.session.data(for: request)
+        } catch let error as URLError {
+            switch error.code {
+            case .notConnectedToInternet:
+                throw GatewayFailure.native("No network connection. Check the phone's network settings.")
+            case .cannotFindHost, .dnsLookupFailed:
+                throw GatewayFailure.native("Gateway name could not be resolved. Check the saved hostname and VPN DNS route.")
+            case .timedOut, .cannotConnectToHost, .networkConnectionLost:
+                throw GatewayFailure.native("Gateway unreachable. Check the VPN connection, address, and route.")
+            case .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+                 .secureConnectionFailed:
+                throw GatewayFailure.native("HTTPS identity could not be verified. Check the hostname and certificate.")
+            default:
+                throw error
+            }
+        }
         guard let http = response as? HTTPURLResponse else { throw GatewayFailure.invalidResponse }
         if (300..<400).contains(http.statusCode) { throw GatewayFailure.redirected }
         guard data.count <= 1_048_576,
