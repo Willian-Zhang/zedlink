@@ -42,7 +42,7 @@ An application restart creates a new instance ID and event epoch. Persisted thre
 
 Run all adapter mutations through Zed's appropriate application context and normal action path. Hold weak references where needed; return explicit unavailable errors when entities close. Snapshot creation and event subscription need a common serialization boundary.
 
-Only explicitly exposed threads are remotely discoverable. A paired device may create a new native thread only when `thread.create` is advertised; creation itself explicitly exposes that new thread and fixes it to the gateway's configured project plus Zed's selected agent and model. Opening archived or unloaded threads requires a separate deliberate capability and must preserve Zed's native restore behavior.
+Only explicitly exposed threads are remotely discoverable. A paired device may create a new native thread only when `thread.create` is advertised; creation itself explicitly exposes that new thread and fixes it to the gateway's configured project plus Zed's native Agent and current model. Opening archived or unloaded threads requires a separate deliberate capability and must preserve Zed's native restore behavior.
 
 ## Trust and data
 

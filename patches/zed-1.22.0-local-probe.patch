@@ -205,10 +205,10 @@ index bfefb986bd..3f9c2d3a10 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..adb589814e
+index 0000000000..2aec646c07
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,1022 @@
+@@ -0,0 +1,1023 @@
 +use std::{
 +    cell::RefCell,
 +    collections::{HashMap, HashSet, VecDeque},
@@ -234,9 +234,9 @@ index 0000000000..adb589814e
 +use serde::Deserialize;
 +use serde_json::{Value, json};
 +
-+use crate::AgentThreadSource;
 +use crate::agent_panel::{AgentPanel, CreateThreadOptions};
 +use crate::conversation_view::ThreadView;
++use crate::{Agent, AgentThreadSource};
 +
 +const MAX_REQUEST_BYTES: u64 = 4096;
 +const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
@@ -748,6 +748,7 @@ index 0000000000..adb589814e
 +            let thread_id = panel.create_thread_with_options(
 +                CreateThreadOptions {
 +                    title: title.clone().map(Into::into),
++                    agent: Some(Agent::NativeAgent),
 +                    ..Default::default()
 +                },
 +                AgentThreadSource::AgentPanel,
