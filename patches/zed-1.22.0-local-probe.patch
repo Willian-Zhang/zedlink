@@ -205,10 +205,10 @@ index bfefb986bd..3f9c2d3a10 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..a8dde4f627
+index 0000000000..8e3d5b06f1
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,718 @@
+@@ -0,0 +1,738 @@
 +use std::{
 +    cell::RefCell,
 +    collections::{HashMap, HashSet, VecDeque},
@@ -239,6 +239,7 @@ index 0000000000..a8dde4f627
 +
 +const MAX_REQUEST_BYTES: u64 = 4096;
 +const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
++const MAX_APPROVAL_INPUT_BYTES: usize = 8192;
 +
 +#[derive(Deserialize)]
 +#[serde(deny_unknown_fields)]
@@ -579,7 +580,7 @@ index 0000000000..a8dde4f627
 +                    "title": thread.title().map(|title| title.to_string()),
 +                    "status": format!("{:?}", thread.status()),
 +                    "current_turn_id": thread.current_turn_id(),
-+                    "pending_approvals": pending_approvals(thread),
++                    "pending_approvals": pending_approvals(thread, cx),
 +                    "entries_markdown": entries,
 +                    "truncated": truncated,
 +                    "provisional": true,
@@ -643,7 +644,7 @@ index 0000000000..a8dde4f627
 +    }
 +}
 +
-+fn pending_approvals(thread: &AcpThread) -> Vec<Value> {
++fn pending_approvals(thread: &AcpThread, cx: &App) -> Vec<Value> {
 +    let turn_id = thread.current_turn_id();
 +    thread
 +        .entries()
@@ -659,10 +660,20 @@ index 0000000000..a8dde4f627
 +            if !matches!(kind, AuthorizationKind::PermissionGrant) {
 +                return None;
 +            }
++            let raw_input = tool_call
++                .raw_input
++                .as_ref()
++                .filter(|input| input.to_string().len() <= MAX_APPROVAL_INPUT_BYTES);
++            let tool_name = tool_call.tool_name.as_ref().map(|name| name.to_string());
++            let details_available = raw_input.is_some() && tool_name.is_some();
 +            Some(json!({
 +                "approval_id": tool_call.id.0.as_ref(),
 +                "turn_id": turn_id,
-+                "can_approve_once": options.allow_once_option_id().is_some(),
++                "tool_name": tool_name,
++                "display": tool_call.label.read(cx).source().chars().take(256).collect::<String>(),
++                "raw_input": raw_input,
++                "details_truncated": !details_available,
++                "can_approve_once": details_available && options.allow_once_option_id().is_some(),
 +                "can_deny_once": options.deny_once_option_id().is_some(),
 +            }))
 +        })
@@ -684,7 +695,7 @@ index 0000000000..a8dde4f627
 +    };
 +    success(
 +        &request.request_id,
-+        json!({"thread_id": thread_id, "approvals": pending_approvals(thread.read(cx)), "provisional": true}),
++        json!({"thread_id": thread_id, "approvals": pending_approvals(thread.read(cx), cx), "provisional": true}),
 +    )
 +}
 +
@@ -740,6 +751,15 @@ index 0000000000..a8dde4f627
 +            return error(&request.request_id, "APPROVAL_ALREADY_RESOLVED");
 +        };
 +        if !matches!(authorization_kind, AuthorizationKind::PermissionGrant) {
++            return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
++        }
++        if kind == acp::PermissionOptionKind::AllowOnce
++            && (tool_call.tool_name.is_none()
++                || !tool_call
++                    .raw_input
++                    .as_ref()
++                    .is_some_and(|input| input.to_string().len() <= MAX_APPROVAL_INPUT_BYTES))
++        {
 +            return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
 +        }
 +        let Some(option) = options.first_option_of_kind(kind) else {

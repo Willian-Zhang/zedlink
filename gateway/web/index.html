@@ -43,15 +43,16 @@
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-head"><button id="show-sessions" class="quiet back-button" type="button" aria-label="Show sessions">‹ Sessions</button><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span><button id="toggle-compose" class="quiet" type="button">Write</button></div>
+      <div class="conversation-head"><button id="show-sessions" class="quiet back-button" type="button" aria-label="Show sessions">‹ Sessions</button><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
       <div id="messages" class="messages" aria-live="off"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Pick up where you left off</h3><p>Select an exposed desktop Zed Agent thread to read and continue its conversation.</p></div></div>
+      <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
       <div class="composer-wrap">
         <form id="composer-form" class="composer">
           <label class="sr-only" for="prompt">Message to native Zed Agent</label>
-          <textarea id="prompt" rows="3" maxlength="3000" placeholder="Message your Zed Agent…" disabled></textarea>
-          <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="submit" disabled>Send</button></div>
+          <textarea id="prompt" rows="1" maxlength="3000" placeholder="Message Zed Agent…" disabled></textarea>
+          <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="submit" aria-label="Send message" disabled>↑</button></div>
         </form>
         <div class="delivery-actions"><button id="retry" class="quiet hidden" type="button">Retry same request ID</button><button id="clear-pending" class="quiet hidden" type="button">Clear uncertain status</button></div>
       </div>

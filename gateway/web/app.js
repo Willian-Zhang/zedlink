@@ -226,16 +226,12 @@ function renderThreads() {
 }
 
 async function selectThread(threadId) {
-  if (state.pending && state.pending.threadId !== threadId) {
-    notice("Resolve or clear the uncertain send before switching threads.");
-    return;
-  }
   state.threadId = threadId;
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
-  setReading(true);
   state.sequence = 0;
   $("prompt").disabled = false;
+  $("jump-latest").classList.add("hidden");
   $("send").disabled = !!state.pending;
   $("thread-title").textContent = state.threads.find((thread) => thread.thread_id === threadId)?.title || "Untitled Agent thread";
   await loadThreads();
@@ -243,12 +239,6 @@ async function selectThread(threadId) {
     await snapshot();
     notice("");
   } catch (error) { notice(error.message); }
-}
-
-function setReading(reading) {
-  document.body.classList.toggle("reading", reading);
-  $("toggle-compose").textContent = reading ? "Write" : "Read";
-  $("toggle-compose").setAttribute("aria-label", reading ? "Write a message" : "Read conversation");
 }
 
 function entryPresentation(markdown, index) {
@@ -366,22 +356,54 @@ async function snapshot() {
   state.sequence = result.last_sequence;
   const container = $("messages");
   const follow = container.scrollHeight - container.scrollTop - container.clientHeight < 90;
+  const expandedTools = new Set([...container.querySelectorAll(".message.tool details[open]")]
+    .map((details) => details.closest(".message")?.dataset.entryIndex));
   const fragment = document.createDocumentFragment();
   for (const [index, markdown] of result.entries_markdown.entries()) {
     const presentation = entryPresentation(markdown, index);
     const article = document.createElement("article");
     article.className = `message ${presentation.kind}`;
+    article.dataset.entryIndex = String(index);
+    const heading = document.createElement("div");
+    heading.className = "message-heading";
     const label = document.createElement("div");
     label.className = "message-label";
     label.textContent = presentation.label;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-copy";
+    copy.textContent = "Copy";
+    copy.setAttribute("aria-label", `Copy ${presentation.label} content`);
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(presentation.body);
+        copy.textContent = "Copied";
+      } catch { notice("Clipboard access is unavailable in this browser."); }
+    });
+    heading.append(label, copy);
     const content = document.createElement("div");
     content.className = "message-body";
-    renderBody(content, presentation.body);
-    article.append(label, content);
+    if (presentation.kind === "tool") {
+      const details = document.createElement("details");
+      details.open = expandedTools.has(String(index));
+      const summary = document.createElement("summary");
+      summary.textContent = "View tool details";
+      details.append(summary, content);
+      renderBody(content, presentation.body);
+      article.append(heading, details);
+    } else {
+      renderBody(content, presentation.body);
+      article.append(heading, content);
+    }
     fragment.append(article);
   }
   container.replaceChildren(fragment);
-  if (follow) container.scrollTop = container.scrollHeight;
+  if (follow) {
+    container.scrollTop = container.scrollHeight;
+    $("jump-latest").classList.add("hidden");
+  } else if (result.entries_markdown.length) {
+    $("jump-latest").classList.remove("hidden");
+  }
   $("thread-title").textContent = result.title || "Untitled Agent thread";
   $("thread-meta").textContent = result.truncated ? "Transcript truncated by native probe" : `Thread ${result.thread_id.slice(0, 12)}…`;
   $("thread-state").textContent = result.status;
@@ -462,7 +484,6 @@ async function sendPending() {
     }
     await snapshot();
     $("messages").scrollTop = $("messages").scrollHeight;
-    setReading(true);
   } catch (error) {
     delivery(`Delivery unknown: ${error.message} The same request ID can be retried; no automatic resend occurred.`, true);
   }
@@ -499,13 +520,24 @@ $("pair-form").addEventListener("submit", async (event) => {
 });
 $("refresh").addEventListener("click", () => connect());
 $("session-search").addEventListener("input", renderThreads);
+$("messages").addEventListener("scroll", () => {
+  const container = $("messages");
+  if (container.scrollHeight - container.scrollTop - container.clientHeight < 90) {
+    $("jump-latest").classList.add("hidden");
+  }
+});
+$("jump-latest").addEventListener("click", () => {
+  const container = $("messages");
+  container.scrollTop = container.scrollHeight;
+  $("jump-latest").classList.add("hidden");
+});
 $("show-sessions").addEventListener("click", () => {
   document.body.classList.add("mobile-sessions");
 });
-$("toggle-compose").addEventListener("click", () => {
-  const reading = !document.body.classList.contains("reading");
-  setReading(reading);
-  if (!reading) $("prompt").focus();
+$("prompt").addEventListener("input", () => {
+  const prompt = $("prompt");
+  prompt.style.height = "auto";
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
 });
 $("forget").addEventListener("click", () => {
   safeStore.remove(tokenKey());

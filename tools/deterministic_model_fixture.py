@@ -65,11 +65,17 @@ class Handler(BaseHTTPRequestHandler):
         with COUNTER_LOCK:
             TOOL_SHAPES[:] = shapes
         messages = request.get("messages", [])
+        if not isinstance(messages, list):
+            self.send_error(400)
+            return
+        last_user_index = next((index for index in range(len(messages) - 1, -1, -1)
+                                if isinstance(messages[index], dict) and messages[index].get("role") == "user"), 0)
+        current_turn = messages[last_user_index:]
         # Case markers are checked in memory. Prompts and tool arguments are never logged.
-        serialized = json.dumps(messages, ensure_ascii=False)
+        serialized = json.dumps(current_turn, ensure_ascii=False)
         names = {tool["name"] for tool in shapes}
         has_tool_result = any(isinstance(message, dict) and message.get("role") == "tool"
-                              for message in messages)
+                              for message in current_turn)
         if "ZEDLINK_FIXTURE_APPROVAL" in serialized and has_tool_result:
             case, pieces, pause = "approval_followup", ["Sentinel operation resolved."], 0
         elif "ZEDLINK_FIXTURE_APPROVAL" in serialized and FIXTURE_ROOT and "terminal" in names:
