@@ -262,10 +262,11 @@ Run **ZedLink: Status** again. The native socket and gateway admin should now re
 
 Run **ZedLink: Pair a device**.
 
-A private pairing page opens on the Zed computer. It supports two paths:
+A private pairing page opens on the Zed computer. It supports these paths:
 
-- **Browser on the Zed computer:** select **Pair this computer's browser**.
+- **New browser:** select **Pair a new browser**, scan the QR, or copy the secure pairing link.
 - **Phone, Windows PC, or another Linux computer:** scan the QR or select **Copy secure pairing link** and open it in the destination browser through a private channel.
+- **Already-installed iPhone home-screen app:** keep the ZedLink app open. Do not scan the QR because iOS sends camera links to the default browser. Compare the HTTPS address and Gateway ID shown on both screens, type the displayed 10-digit code into the installed app, check **I checked this gateway**, and select **Connect ZedLink**.
 
 Confirm Tailscale or your routed VPN is connected on the destination device and that the HTTPS page has no certificate warning. The link, QR, and 10-digit code expire after five minutes and work once. Keep them private.
 
@@ -291,7 +292,10 @@ On iPhone or iPad:
 1. Open the trusted ZedLink HTTPS address in Safari.
 2. Tap **Share**.
 3. Tap **Add to Home Screen**.
-4. Open ZedLink from its new icon. Your normal-Safari pairing should remain available for the same HTTPS origin.
+4. Open ZedLink from its new icon.
+5. If the installed app asks to pair, run **ZedLink: Pair a device** on the Zed computer. Leave the installed app open and manually enter the 10-digit code; scanning the QR opens the default iOS browser instead of the installed app.
+
+iOS may keep browser and home-screen credentials in separate website-data containers, particularly when the site was installed from a third-party browser. Pairing the installed app once is expected in that case. Its credential then remains scoped to the same trusted HTTPS origin and can be revoked independently.
 
 On Android Chrome:
 

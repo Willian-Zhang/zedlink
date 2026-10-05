@@ -24,19 +24,21 @@
     <aside class="sidebar">
       <section class="panel" id="pair-panel">
         <p class="eyebrow">PRIVATE BROWSER ACCESS</p>
-        <h1>Connect this browser</h1>
-        <p class="pair-intro">Continue your exposed native Zed Agent sessions from Firefox, Chrome, Edge, Safari, or an installed ZedLink web app.</p>
+        <h1>Connect ZedLink</h1>
+        <p class="pair-intro">Continue your exposed native Zed Agent sessions from a browser or the installed home-screen app.</p>
+        <p class="mobile-pair-help">On your Zed computer, run <b>ZedLink: Pair a device</b>. Keep this app open and enter the displayed code below.</p>
         <ol class="pair-steps" aria-label="Pairing steps">
-          <li><span>1</span><div><strong>Open the pairing page</strong><small>In desktop Zed, run <b>ZedLink: Pair a device</b>.</small></div></li>
-          <li><span>2</span><div><strong>Use the secure link or QR</strong><small>On this computer, click the link. On another device, scan the QR.</small></div></li>
-          <li><span>3</span><div><strong>Connect once</strong><small>This browser remembers its revocable credential for this HTTPS address.</small></div></li>
+          <li><span>1</span><div><strong>Get a fresh code</strong><small>In desktop Zed, run <b>ZedLink: Pair a device</b>.</small></div></li>
+          <li><span>2</span><div><strong>Keep this app open</strong><small>For a home-screen app, type the code below. The QR opens your default browser instead.</small></div></li>
+          <li><span>3</span><div><strong>Verify and connect</strong><small>Match the address and Gateway ID shown on the Zed computer.</small></div></li>
         </ol>
-        <div class="identity"><span>Gateway</span><code id="gateway-id">Checking…</code></div>
+        <div class="identity"><span>Gateway address</span><code id="pair-origin">Checking…</code><span>Gateway ID</span><code id="gateway-id">Checking…</code></div>
         <form id="pair-form">
-          <div class="pair-field full"><label for="expected-id">Verified gateway ID</label><input id="expected-id" name="expected-id" autocomplete="off" spellcheck="false" readonly required placeholder="Open the workstation pairing link first"></div>
+          <input id="expected-id" name="expected-id" type="hidden">
           <div class="pair-field"><label for="pair-code">One-time pairing code</label><input id="pair-code" class="pair-code" name="pair-code" autocomplete="one-time-code" inputmode="numeric" spellcheck="false" required maxlength="64" placeholder="00000 00000"></div>
           <div class="pair-field"><label for="device-name">Device name</label><input id="device-name" name="device-name" maxlength="64" required value="This browser"></div>
-          <button id="pair-button" class="primary" type="submit" disabled>Connect browser</button>
+          <label id="manual-confirm" class="trust-check full"><input id="verify-gateway" type="checkbox"><span><strong>I checked this gateway</strong><small>The HTTPS address and Gateway ID match the private pairing page on my Zed computer.</small></span></label>
+          <button id="pair-button" class="primary" type="submit" disabled>Connect ZedLink</button>
         </form>
         <div id="pair-notice" class="notice hidden" role="status" aria-live="polite"></div>
         <p class="note">The link and code are single use and expire after five minutes. Pair only a private browser. Model credentials always remain in desktop Zed.</p>
@@ -68,7 +70,7 @@
         <h1>Settings</h1>
         <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
         <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.5</code></div>
+        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.6</code></div>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
         <p class="note">The home-screen app uses this gateway’s trusted HTTPS address and saved browser pairing. Model credentials stay in desktop Zed.</p>

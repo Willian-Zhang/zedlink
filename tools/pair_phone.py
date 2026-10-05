@@ -71,7 +71,7 @@ def main() -> None:
         {"v": "1", "gateway": identity, "pair": code}))
     expires = datetime.now(timezone.utc) + timedelta(minutes=5)
     instructions = ("Open the manual page or scan the QR, then enter the code shown here."
-                    if args.manual_code else "Use the button on this computer, or scan the QR from another device.")
+                    if args.manual_code else "Use the button for a new browser, or type the code into an installed home-screen app.")
     page = f"""<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pair a ZedLink device</title>
@@ -80,15 +80,18 @@ def main() -> None:
 *{{box-sizing:border-box}}body{{margin:0;background:#000}}main{{width:min(100%,760px);margin:0 auto;padding:clamp(32px,7vh,72px) 24px 48px}}
 .eyebrow{{color:#797c82;font:600 11px ui-monospace,monospace;letter-spacing:.16em}}h1{{margin:10px 0;font-size:clamp(38px,7vw,64px);font-weight:500;letter-spacing:-.05em}}
 .intro{{max-width:620px;color:#a2a5aa;line-height:1.6}}.pair-grid{{display:grid;grid-template-columns:minmax(240px,340px) 1fr;gap:32px;align-items:center;margin-top:30px;padding:28px 0;border-block:1px solid #2b2d30}}
+.installed{{margin:24px 0 0;padding:15px;border:1px solid #505257;color:#d8d9da;line-height:1.55}}.installed strong{{display:block;margin-bottom:5px}}.details{{display:grid;gap:7px;margin:16px 0;color:#a2a5aa;font:12px ui-monospace,monospace}}.details code{{color:#f3f3f1;overflow-wrap:anywhere}}
 svg{{width:100%;background:#fff}}.code{{font:700 clamp(28px,5vw,46px) ui-monospace,monospace;letter-spacing:.12em;margin:15px 0}}
 .actions{{display:grid;gap:10px;margin:22px 0}}a,button{{display:grid;place-items:center;min-height:48px;padding:10px 15px;border:1px solid #f3f3f1;border-radius:0;font:700 15px system-ui;text-decoration:none;cursor:pointer}}
 a.primary{{background:#f3f3f1;color:#000}}button{{background:transparent;color:#f3f3f1}}a.secondary{{border-color:#505257;color:#f3f3f1}}small{{color:#a2a5aa;line-height:1.5}}#copy-status{{min-height:1.5em;color:#79c79b;font-size:13px}}
 @media(max-width:620px){{.pair-grid{{grid-template-columns:1fr}}}}
 </style>
 <main><p class="eyebrow">PRIVATE DEVICE PAIRING</p><h1>Connect ZedLink</h1><p class="intro">{html.escape(instructions)} The credential can be revoked later from ZedLink's paired-device task.</p>
+<div class="installed"><strong>Already using the iPhone home-screen app?</strong>Keep ZedLink open there. Do not scan the QR—it opens the default browser. Compare the address and Gateway ID below, type the 10-digit code in the app, check the confirmation box, and tap <b>Connect ZedLink</b>.</div>
 <div class="pair-grid"><div>{qr_svg(link)}</div><div><p class="eyebrow">ONE-TIME CODE</p><div class="code">{html.escape(code[:5])} {html.escape(code[5:])}</div>
 <p><small>One use · expires {expires.strftime('%H:%M UTC')} · keep this page private</small></p>
-<div class="actions"><a class="primary" href="{html.escape(link, quote=True)}">Pair this computer's browser</a>
+<div class="details"><span>HTTPS address <code>{html.escape(base)}</code></span><span>Gateway ID <code>{html.escape(identity)}</code></span></div>
+<div class="actions"><a class="primary" href="{html.escape(link, quote=True)}">Pair a new browser</a>
 <button id="copy-link" type="button">Copy secure pairing link</button>
 <a class="secondary" href="{html.escape(manual_link, quote=True)}">Open manual code entry</a></div><p id="copy-status" role="status"></p>
 <p><small>{'The QR contains no pairing code; enter the displayed digits after opening the page.' if args.manual_code else 'The QR and copied link contain this single-use code. Share them only with the device you are pairing.'}</small></p></div></div>

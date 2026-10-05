@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.5";
+const UI_BUILD = "2026.10.05.6";
 const state = {
   gatewayId: null,
   token: null,
@@ -28,6 +28,7 @@ const state = {
   snapshotPromise: null,
   snapshotQueued: false,
   lastSnapshotAt: 0,
+  gatewayVerified: false,
 };
 const safeStore = {
   read(key) {
@@ -62,6 +63,9 @@ function connection(message, status = "") {
   $("mobile-connection-state").textContent = message;
   showStop();
   showCreateAvailability();
+}
+function pairingStatus() {
+  return matchMedia("(display-mode: standalone)").matches ? "Pair this app" : "Pair this browser";
 }
 function showCreateAvailability() {
   const available = state.live && state.capabilities.includes("thread.create") && !state.creatingThread;
@@ -98,6 +102,24 @@ function updateSidebarToggle() {
   button.textContent = mobile ? "‹ Sessions" : collapsed ? "Sessions" : "Hide sessions";
   button.setAttribute("aria-label", mobile ? "Show sessions" : collapsed ? "Show sessions" : "Hide sessions");
   button.setAttribute("aria-expanded", String(mobile ? mobileOpen : !collapsed));
+}
+function requireManualGatewayVerification() {
+  state.gatewayVerified = false;
+  if (state.gatewayId) $("expected-id").value = state.gatewayId;
+  $("verify-gateway").checked = false;
+  $("manual-confirm").classList.remove("hidden");
+  $("pair-button").disabled = true;
+  requestAnimationFrame(() => {
+    window.scrollTo(0, 0);
+    $("main").scrollTop = 0;
+    $("pair-panel").scrollTop = 0;
+  });
+}
+function acceptLinkedGateway() {
+  state.gatewayVerified = true;
+  $("verify-gateway").checked = true;
+  $("manual-confirm").classList.add("hidden");
+  $("pair-button").disabled = false;
 }
 function savePending() {
   if (state.pending) {
@@ -188,10 +210,12 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     state.turnId = null;
     state.threadStatus = null;
     safeStore.remove(tokenKey());
+    requireManualGatewayVerification();
     document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
     $("pair-panel").classList.remove("hidden");
     $("sessions-panel").classList.add("hidden");
     document.body.classList.add("pairing");
+    connection(pairingStatus(), "offline");
   }
   if (!response.ok) {
     const error = new Error(apiError(data.error));
@@ -288,6 +312,9 @@ async function loadGateway() {
     state.gatewayId = result.gateway_id;
     $("gateway-id").textContent = result.gateway_id;
     $("mobile-gateway-id").textContent = result.gateway_id;
+    $("pair-origin").textContent = location.origin;
+    $("expected-id").value = result.gateway_id;
+    requireManualGatewayVerification();
     document.body.classList.toggle("sidebar-collapsed", safeStore.read(sidebarKey()) === "true");
     updateSidebarToggle();
     if (expectedFromLink) {
@@ -295,7 +322,7 @@ async function loadGateway() {
       if (expectedFromLink !== result.gateway_id) {
         throw new Error("The gateway identity differs from the desktop pairing link. Do not enter a code.");
       }
-      $("pair-button").disabled = false;
+      acceptLinkedGateway();
     }
     const token = safeStore.read(tokenKey());
     if (token) {
@@ -310,11 +337,11 @@ async function loadGateway() {
       try {
         await pairBrowser(oneScanCode, browserDeviceName());
       } catch (error) {
-        connection("Pair this browser");
+        connection(pairingStatus());
         notice(`Automatic pairing failed: ${error.message} Enter a fresh code from the workstation.`);
-      } finally { $("pair-button").disabled = false; }
+      } finally { $("pair-button").disabled = !state.gatewayVerified; }
     } else {
-      connection("Pair this browser");
+      connection(pairingStatus());
     }
   } catch (error) {
     connection(error.message.includes("gateway identity differs") ? "Gateway identity mismatch"
@@ -954,7 +981,8 @@ async function poll() {
     } else {
       notice(error.message);
     }
-    connection(error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable" : "Reconnecting…", "offline");
+    connection(error.code === "UNAUTHENTICATED" ? pairingStatus()
+      : error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable" : "Reconnecting…", "offline");
   } finally { state.polling = false; }
 }
 
@@ -1013,6 +1041,10 @@ async function sendPending() {
 $("pair-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!state.gatewayId) return;
+  if (!state.gatewayVerified) {
+    notice("Compare the HTTPS address and Gateway ID with the workstation pairing page, then check the confirmation box.");
+    return;
+  }
   if ($("expected-id").value.trim() !== state.gatewayId) {
     notice("Gateway ID differs from the workstation value. Pairing code was not sent.");
     return;
@@ -1023,7 +1055,11 @@ $("pair-form").addEventListener("submit", async (event) => {
   try {
     await pairBrowser(code, $("device-name").value.trim());
   } catch (error) { notice(error.message); }
-  finally { $("pair-button").disabled = false; }
+  finally { $("pair-button").disabled = !state.gatewayVerified; }
+});
+$("verify-gateway").addEventListener("change", () => {
+  state.gatewayVerified = $("verify-gateway").checked;
+  $("pair-button").disabled = !state.gatewayVerified;
 });
 $("refresh").addEventListener("click", () => connect());
 $("new-session").addEventListener("click", () => {
@@ -1106,6 +1142,7 @@ function forgetBrowser() {
   state.token = null;
   state.pending = null;
   state.threadId = null;
+  requireManualGatewayVerification();
   document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
   document.body.classList.add("pairing");
   $("pair-panel").classList.remove("hidden");

@@ -374,7 +374,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.5"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.6"
                 assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
                 assert browser.execute_script(
                     "return browserDeviceName(arguments[0])",
@@ -570,6 +570,29 @@ def main():
                         "connection:document.getElementById('connection').textContent}"
                     ))
                     raise
+                assert browser.find_element(By.ID, "expected-id").get_attribute("value") == info["gateway_id"]
+                assert browser.find_element(By.ID, "pair-origin").get_attribute("textContent") == base
+                assert browser.find_element(By.ID, "manual-confirm").is_displayed()
+                assert not browser.find_element(By.ID, "verify-gateway").is_selected()
+                manual_layout = browser.execute_script(
+                    "return {top:document.getElementById('pair-code').getBoundingClientRect().top,"
+                    "bottom:document.getElementById('pair-code').getBoundingClientRect().bottom,height:innerHeight}"
+                )
+                assert 0 <= manual_layout["top"] and manual_layout["bottom"] <= manual_layout["height"], manual_layout
+                browser.save_screenshot("/tmp/zedlink-browser-manual-pairing-mobile.png")
+                manual_code = admin(state, "pair-short-code")["code"]
+                browser.find_element(By.ID, "pair-code").send_keys(manual_code)
+                assert not browser.find_element(By.ID, "pair-button").is_enabled()
+                browser.find_element(By.ID, "verify-gateway").click()
+                assert browser.find_element(By.ID, "pair-button").is_enabled()
+                browser.find_element(By.ID, "pair-button").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                manual_device = next(device for device in admin(state, "devices")["devices"]
+                                     if device["name"] == "Firefox on Linux")
+                assert admin(state, "revoke", manual_device["id"])["revoked"]
+                WebDriverWait(browser, 15).until(
+                    lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed()
+                )
                 helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base, str(state), "--no-open"],
                                         capture_output=True, text=True, check=True, timeout=5)
                 pairing_page = Path(helper.stdout.splitlines()[0].split(": ", 1)[1])
@@ -582,6 +605,8 @@ def main():
                     {"v": "1", "gateway": info["gateway_id"], "pair": quick_code})
                 assert qr_svg(expected_link) in pairing_html
                 assert '<title>Pair a ZedLink device</title>' in pairing_html
+                assert "Already using the iPhone home-screen app?" in pairing_html
+                assert f"Gateway ID <code>{info['gateway_id']}</code>" in pairing_html
                 assert f'href="{html.escape(expected_link, quote=True)}"' in pairing_html
                 browser.get(base + "/?pair-test=wrong#v=1&gateway=wrong-gateway&pair=" + quick_code)
                 wait.until(lambda driver: "gateway identity differs" in
