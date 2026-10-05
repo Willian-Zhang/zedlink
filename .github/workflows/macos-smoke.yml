@@ -20,3 +20,13 @@ jobs:
         run: cargo test --manifest-path protocol-core/Cargo.toml --locked
       - name: Check gateway
         run: cargo check --manifest-path gateway/Cargo.toml --locked
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate iOS project
+        run: cd ios && xcodegen generate
+      - name: Build iPhone simulator app
+        run: >-
+          xcodebuild -project ios/ZedLink.xcodeproj -scheme ZedLink
+          -configuration Debug -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath /tmp/zedlink-derived CODE_SIGNING_ALLOWED=NO build

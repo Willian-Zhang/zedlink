@@ -13,3 +13,4 @@ __pycache__/
 *.xcarchive/
 DerivedData/
 .build/
+/ios/*.xcodeproj/
