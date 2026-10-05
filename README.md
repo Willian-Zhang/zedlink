@@ -466,7 +466,7 @@ The patch is pinned to Zed revision:
 76659a55a8c10ed355a070f8764a0b1733e3c115
 ```
 
-The stock extension API at that revision cannot enumerate or control an existing native Agent thread. [FEASIBILITY.md](docs/FEASIBILITY.md) records the inspected APIs and why the narrow Zed source patch is required.
+The stock extension API at that revision cannot enumerate or control an existing native Agent thread, which is why ZedLink requires the narrow, reviewable source patch under `patches/`.
 
 ## Validation and limitations
 
@@ -489,20 +489,3 @@ Still incomplete:
 - fully structured desktop-equivalent tool arguments, output, and diffs,
 - complete real approval-race validation through the paired gateway,
 - broader physical-device and VPN-provider coverage.
-
-Exact commands, evidence, unavailable tests, and current limitations are recorded in [VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md).
-
-## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Build plan](docs/BUILD_PLAN.md)
-- [Browser behavior and pairing](docs/BROWSER.md)
-- [Extension feasibility and IDE integration](docs/EXTENSION_INTEGRATION.md)
-- [Gateway operation](docs/GATEWAY.md)
-- [Networking and TLS](docs/NETWORKING.md)
-- [Protocol](docs/PROTOCOL.md)
-- [Test plan](docs/TEST_PLAN.md)
-- [Validation report](docs/VALIDATION_REPORT.md)
-- [Native iPhone application](docs/IOS_APP.md)
-- [Native Android application](docs/ANDROID_APP.md)
-- [Zedra-inspired iOS feature map](docs/ZEDRA_FEATURE_PARITY.md)

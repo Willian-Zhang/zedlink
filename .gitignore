@@ -1,6 +1,7 @@
 /protocol-core/target/
 /gateway/target/
 /zed-source/
+/docs/
 __pycache__/
 *.pyc
 .env
