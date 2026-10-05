@@ -12,6 +12,9 @@ targets:
     platform: iOS
     sources:
       - ZedLink
+    scheme:
+      testTargets:
+        - ZedLinkUITests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.zedlink.app
@@ -21,3 +24,14 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
+  ZedLinkUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - ZedLinkUITests
+    dependencies:
+      - target: ZedLink
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zedlink.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
