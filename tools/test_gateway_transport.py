@@ -31,6 +31,9 @@ class ProbeFixture:
         self.accepted = 0
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
         self.sequence = 0
+        self.extra_thread = False
+        self.active_turn_id = None
+        self.cancelled = 0
         self.stopped = False
         self.listener = socket.socket(socket.AF_UNIX)
         self.listener.bind(str(path))
@@ -55,12 +58,17 @@ class ProbeFixture:
                 result = {}
                 error = None
                 if method == "thread.list":
+                    threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread", "status": "Idle"}]
+                    if self.extra_thread:
+                        threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread", "status": "Idle"})
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
-                              "threads": [{"thread_id": "fixture-thread", "title": "Synthetic test thread", "status": "Idle"}]}
+                              "threads": threads}
                 elif method == "thread.snapshot":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
-                              "thread_id": "fixture-thread", "title": "Synthetic test thread",
-                              "status": "Idle", "truncated": False,
+                              "thread_id": params["thread_id"],
+                              "title": "Second synthetic thread" if params["thread_id"] == "fixture-second" else "Synthetic test thread",
+                              "status": "Generating" if self.active_turn_id is not None else "Idle",
+                              "current_turn_id": self.active_turn_id, "truncated": False,
                               "entries_markdown": list(self.entries), "pending_approvals": [],
                               "last_sequence": self.sequence}
                 elif method == "thread.events":
@@ -87,8 +95,22 @@ class ProbeFixture:
                 elif method == "request.status":
                     key = params["original_request_id"]
                     result = {"known": key in self.seen_sends, "outcome": "unknown"}
+                elif method == "thread.cancel":
+                    if (params.get("instance_id"), params.get("epoch")) != ("fixture-instance", "fixture-epoch"):
+                        error = {"code": "INSTANCE_UNAVAILABLE"}
+                    elif params.get("thread_id") not in ("fixture-thread", "fixture-second"):
+                        error = {"code": "THREAD_NOT_EXPOSED"}
+                    elif params.get("turn_id") != self.active_turn_id:
+                        error = {"code": "STALE_TURN"}
+                    else:
+                        self.active_turn_id = None
+                        self.cancelled += 1
+                        self.sequence += 1
+                        result = {"outcome": "requested", "turn_id": params["turn_id"]}
                 elif method == "instance.info":
-                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                              "capabilities": ["thread.list", "thread.snapshot", "thread.events",
+                                               "thread.send", "thread.cancel", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
                 response = {"version": 1, "request_id": request["request_id"]}
@@ -221,6 +243,13 @@ def main():
             denied = dict(request, method="approval.respond")
             status, _ = http(base, context, "/v1/rpc", "POST", denied, token1)
             assert status == 403
+            cancellation = {"version": 1, "request_id": "cancel-one", "method": "thread.cancel",
+                            "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                       "thread_id": "fixture-thread", "turn_id": 9}}
+            status, _ = http(base, context, "/v1/rpc", "POST", cancellation)
+            assert status == 401
+            status, stale = http(base, context, "/v1/rpc", "POST", cancellation, token1)
+            assert status == 200 and stale["error"]["code"] == "STALE_TURN"
             sent = {"version": 1, "request_id": "stable-send", "method": "thread.send",
                     "params": {"thread_id": "fixture-thread", "text": "harmless fixture"}}
             for _ in range(2):
@@ -331,6 +360,12 @@ def main():
                 browser.find_element(By.ID, "retry").click()
                 time.sleep(0.3)
                 assert probe.accepted == accepted_before_browser + 1
+                probe.active_turn_id = 9
+                probe.sequence += 1
+                wait.until(lambda driver: driver.find_element(By.ID, "stop-turn").is_displayed())
+                browser.find_element(By.ID, "stop-turn").click()
+                wait.until(lambda driver: probe.cancelled == 1)
+                wait.until(lambda driver: not driver.find_element(By.ID, "stop-turn").is_displayed())
                 browser.save_screenshot("/tmp/zedlink-browser-fixture.png")
                 browser.set_window_size(390, 844)
                 layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
@@ -338,14 +373,20 @@ def main():
                 assert layout["composerBottom"] <= layout["height"]
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
                 assert layout["messagesHeight"] >= 250 and layout["sidebarHidden"], layout
-                assert browser.find_element(By.ID, "toggle-compose").text == "Write"
-                browser.find_element(By.ID, "toggle-compose").click()
                 assert browser.find_element(By.ID, "prompt").is_displayed()
-                browser.find_element(By.ID, "toggle-compose").click()
+                assert browser.find_element(By.ID, "send").is_displayed()
+                assert not browser.find_elements(By.ID, "toggle-compose")
+                assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
-                browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
-                wait.until(lambda driver: driver.find_element(By.ID, "messages").is_displayed())
+                probe.extra_thread = True
+                browser.find_element(By.ID, "refresh").click()
+                wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".thread-item")) == 2)
+                browser.find_elements(By.CSS_SELECTOR, ".thread-item")[1].click()
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
+                assert browser.find_element(By.ID, "messages").is_displayed()
+                assert not browser.find_element(By.ID, "send").is_enabled()
+                assert probe.accepted == accepted_before_browser + 1
                 browser.refresh()
                 wait.until(lambda driver: "A previous send has uncertain delivery" in
                            driver.execute_script("return document.getElementById('delivery').textContent"))
@@ -354,7 +395,7 @@ def main():
                 browser.execute_script("window.open(arguments[0], '_blank')", base + "/#gateway=" + info["gateway_id"])
                 browser.switch_to.window(next(handle for handle in browser.window_handles if handle != original_tab))
                 wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
-                assert not browser.find_element(By.ID, "pair-panel").is_displayed()
+                wait.until(lambda driver: not driver.find_element(By.ID, "pair-panel").is_displayed())
                 assert probe.accepted == accepted_before_browser + 1
                 browser.close()
                 browser.switch_to.window(original_tab)
@@ -370,7 +411,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed())
             finally:
                 browser.quit()
-            print("PASS: private bind/state, TLS identity, paired browser UI, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
+            print("PASS: private bind/state, TLS identity, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
         finally:
             server.terminate()
             try:

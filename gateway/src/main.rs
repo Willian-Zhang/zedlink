@@ -494,6 +494,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.snapshot"
             | "thread.events"
             | "thread.send"
+            | "thread.cancel"
             | "request.status"
     ) {
         return (

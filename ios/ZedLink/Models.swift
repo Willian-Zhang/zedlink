@@ -32,12 +32,14 @@ struct NativeThread: Identifiable, Equatable {
     let id: String
     let title: String
     let status: String
+    let currentTurnID: Int?
 }
 
 struct ThreadSnapshot {
     let threadID: String
     let title: String
     let status: String
+    let currentTurnID: Int?
     let instanceID: String
     let epoch: String
     let lastSequence: Int

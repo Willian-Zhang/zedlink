@@ -179,6 +179,15 @@ struct ConversationView: View {
                     Text(session.snapshot?.status ?? "Unknown")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
+                    if session.canCancel {
+                        Button { Task { await session.cancelCurrentTurn() } } label: {
+                            Label("Stop", systemImage: "stop.circle.fill")
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .accessibilityIdentifier("stop-current-turn")
+                    }
                     Button { Task { await session.send() } } label: {
                         Label("Send", systemImage: "arrow.up")
                             .frame(minWidth: 76, minHeight: 44)

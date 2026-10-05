@@ -8,6 +8,7 @@ import Combine
     @Published private(set) var snapshot: ThreadSnapshot?
     @Published private(set) var instanceID: String?
     @Published private(set) var epoch: String?
+    @Published private(set) var capabilities: Set<String> = []
     @Published private(set) var selectedThreadID: String?
     @Published private(set) var delivery = ""
     @Published private(set) var issue = ""
@@ -20,6 +21,10 @@ import Combine
     private let threadExposureIssue = "The selected thread is no longer exposed in desktop Zed."
 
     var canSend: Bool { state == .live && selectedThreadID != nil && pending == nil }
+    var canCancel: Bool {
+        state == .live && capabilities.contains("thread.cancel") && snapshot?.threadID == selectedThreadID
+            && snapshot?.currentTurnID != nil
+    }
 
     func disconnect() {
         generation = UUID()
@@ -33,6 +38,7 @@ import Combine
         selectedThreadID = nil
         instanceID = nil
         epoch = nil
+        capabilities = []
         pending = nil
         delivery = ""
         issue = ""
@@ -60,6 +66,7 @@ import Combine
             client = nextClient
             instanceID = instance
             epoch = nextEpoch
+            capabilities = Set(info["capabilities"] as? [String] ?? [])
             restorePending(for: nextProfile)
             if let previousPending, pending?.id == previousPending.id {
                 pending?.text = previousPending.text
@@ -96,7 +103,8 @@ import Combine
         threads = rows.compactMap { row in
             guard let id = row["thread_id"] as? String else { return nil }
             return NativeThread(id: id, title: row["title"] as? String ?? "Untitled Agent thread",
-                                status: row["status"] as? String ?? "Unknown")
+                                status: row["status"] as? String ?? "Unknown",
+                                currentTurnID: row["current_turn_id"] as? Int)
         }
         if let selectedThreadID, !threads.contains(where: { $0.id == selectedThreadID }) {
             self.selectedThreadID = nil
@@ -106,7 +114,7 @@ import Combine
     }
 
     func select(_ id: String) async {
-        guard threads.contains(where: { $0.id == id }), pending == nil else { return }
+        guard threads.contains(where: { $0.id == id }) else { return }
         selectedThreadID = id
         snapshot = nil
         do { try await loadSnapshot(id); issue = "" }
@@ -124,6 +132,7 @@ import Combine
         snapshot = ThreadSnapshot(threadID: id,
                                   title: result["title"] as? String ?? "Untitled Agent thread",
                                   status: result["status"] as? String ?? "Unknown",
+                                  currentTurnID: result["current_turn_id"] as? Int,
                                   instanceID: instanceID ?? "", epoch: epoch ?? "",
                                   lastSequence: sequence, entries: entries,
                                   truncated: result["truncated"] as? Bool ?? false,
@@ -149,6 +158,7 @@ import Combine
                     } else if let sequence = result["last_sequence"] as? Int,
                               var old = snapshot, sequence >= old.lastSequence {
                         old = ThreadSnapshot(threadID: old.threadID, title: old.title, status: old.status,
+                                             currentTurnID: old.currentTurnID,
                                              instanceID: old.instanceID, epoch: old.epoch,
                                              lastSequence: sequence, entries: old.entries,
                                              truncated: old.truncated, pendingApprovalCount: old.pendingApprovalCount)
@@ -187,6 +197,24 @@ import Combine
             }
             do { try await Task.sleep(for: .seconds(state == .live ? 1 : 3)) }
             catch { break }
+        }
+    }
+
+    func cancelCurrentTurn() async {
+        guard canCancel, let client, let instanceID, let epoch,
+              let threadID = selectedThreadID, let turnID = snapshot?.currentTurnID else { return }
+        do {
+            let result = try await client.rpc("thread.cancel", params: [
+                "instance_id": instanceID, "epoch": epoch,
+                "thread_id": threadID, "turn_id": turnID
+            ])
+            guard result["outcome"] as? String == "requested",
+                  result["turn_id"] as? Int == turnID else { throw GatewayFailure.invalidResponse }
+            delivery = "Stop requested for this desktop Zed turn. Completed tool effects remain."
+            try await loadSnapshot(threadID)
+        } catch {
+            issue = error.localizedDescription
+            try? await loadSnapshot(threadID)
         }
     }
 

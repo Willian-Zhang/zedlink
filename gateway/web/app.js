@@ -6,10 +6,13 @@ const state = {
   token: null,
   instanceId: null,
   epoch: null,
+  capabilities: [],
   threads: [],
   threadId: null,
+  turnId: null,
   sequence: 0,
   polling: false,
+  live: false,
   pending: null,
 };
 const safeStore = {
@@ -38,9 +41,11 @@ const safeStore = {
 };
 
 function connection(message, status = "") {
+  state.live = status === "online";
   const element = $("connection");
   element.textContent = message;
   element.className = `connection ${status}`;
+  showStop();
 }
 function notice(message) {
   $("notice").textContent = message;
@@ -74,6 +79,10 @@ function identity(result) {
     error.code = "IDENTITY_CHANGED";
     throw error;
   }
+}
+function showStop() {
+  $("stop-turn").classList.toggle("hidden", !state.live || !state.threadId || !Number.isInteger(state.turnId)
+    || !state.capabilities.includes("thread.cancel"));
 }
 function apiError(code) {
   if (code === "UNAUTHENTICATED") return "Browser credential revoked or missing. Pair again.";
@@ -153,8 +162,11 @@ async function connect() {
     const changed = state.instanceId && (state.instanceId !== info.instance_id || state.epoch !== info.epoch);
     state.instanceId = info.instance_id;
     state.epoch = info.epoch;
+    state.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
     if (changed) {
       state.threadId = null;
+      state.turnId = null;
+      showStop();
       document.body.classList.remove("thread-open", "mobile-sessions");
       state.sequence = 0;
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
@@ -181,6 +193,8 @@ async function loadThreads() {
   renderThreads();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     state.threadId = null;
+    state.turnId = null;
+    showStop();
     document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
     $("messages").replaceChildren();
@@ -227,6 +241,8 @@ function renderThreads() {
 
 async function selectThread(threadId) {
   state.threadId = threadId;
+  state.turnId = null;
+  showStop();
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
   state.sequence = 0;
@@ -408,6 +424,8 @@ async function snapshot() {
   $("thread-meta").textContent = result.truncated ? "Transcript truncated by native probe" : `Thread ${result.thread_id.slice(0, 12)}…`;
   $("thread-state").textContent = result.status;
   $("thread-state").className = `state-pill ${result.status === "Idle" ? "online" : ""}`;
+  state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
+  showStop();
   if (result.pending_approvals?.length) {
     notice("Approval pending in desktop Zed. Remote approval controls are awaiting native race validation.");
   }
@@ -530,6 +548,25 @@ $("jump-latest").addEventListener("click", () => {
   const container = $("messages");
   container.scrollTop = container.scrollHeight;
   $("jump-latest").classList.add("hidden");
+});
+$("stop-turn").addEventListener("click", async () => {
+  const { instanceId, epoch, threadId, turnId } = state;
+  if (!threadId || !Number.isInteger(turnId) || !state.capabilities.includes("thread.cancel")) return;
+  $("stop-turn").disabled = true;
+  try {
+    const result = await rpc("thread.cancel", {
+      instance_id: instanceId, epoch, thread_id: threadId, turn_id: turnId,
+    });
+    if (result.outcome !== "requested" || result.turn_id !== turnId) {
+      throw new Error("Zed did not confirm the stop request for this turn.");
+    }
+    notice("Stop requested for the current desktop Zed turn. Completed tool effects remain.");
+  } catch (error) {
+    notice(error.message);
+  } finally {
+    try { await snapshot(); } catch (error) { notice(error.message); }
+    $("stop-turn").disabled = false;
+  }
 });
 $("show-sessions").addEventListener("click", () => {
   document.body.classList.add("mobile-sessions");
