@@ -374,7 +374,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.4"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.5"
                 assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
                 assert browser.execute_script(
                     "return browserDeviceName(arguments[0])",
@@ -436,7 +436,13 @@ def main():
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".message.tool .tool-title"))
                 assert "Run safe fixture command" in browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-title").text
                 assert "InProgress" in browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-state").text
-                assert browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details").get_attribute("open") == "true"
+                tool_details = browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details")
+                assert tool_details.get_attribute("open") is None
+                browser.execute_script(
+                    "arguments[0].querySelector('summary').click()", tool_details
+                )
+                assert tool_details.get_attribute("open") == "true"
+                assert "Hide tool output" in tool_details.find_element(By.TAG_NAME, "summary").text
                 outputs = browser.find_elements(By.CSS_SELECTOR, ".message.tool .tool-output")
                 assert len(outputs) == 2
                 assert "line two" in outputs[0].text
@@ -444,7 +450,9 @@ def main():
                 browser.execute_script("arguments[0].scrollIntoView({block:'center'})", browser.find_element(By.CSS_SELECTOR, ".message.tool"))
                 browser.save_screenshot("/tmp/zedlink-browser-tool-fixture.png")
                 probe.entries[-1] = probe.entries[-1].replace("Status: InProgress", "Status: Completed").replace("line two", "line two\nline three")
-                wait.until(lambda driver: "line three" in driver.find_element(By.CSS_SELECTOR, ".message.tool .tool-output").text)
+                wait.until(lambda driver: "line three" in driver.execute_script(
+                    "return document.querySelector('.message.tool .tool-output')?.textContent || ''"
+                ))
                 assert browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details").get_attribute("open") == "true"
                 probe.truncated = True
                 probe.sequence += 1
@@ -478,6 +486,17 @@ def main():
                 wait.until(lambda driver: probe.cancelled == 1)
                 wait.until(lambda driver: not driver.find_element(By.ID, "stop-turn").is_displayed())
                 browser.save_screenshot("/tmp/zedlink-browser-fixture.png")
+                browser.set_window_size(1920, 1080)
+                wide = browser.execute_script("return {width:innerWidth, layoutWidth:document.querySelector('.layout').getBoundingClientRect().width, sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width, workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width}")
+                assert wide["layoutWidth"] >= wide["width"] - 2 and wide["sidebarWidth"] >= 340, wide
+                browser.find_element(By.ID, "show-sessions").click()
+                collapsed = browser.execute_script("return {sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).visibility==='hidden', workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width, width:innerWidth}")
+                assert collapsed["sidebarHidden"] and collapsed["workspaceWidth"] >= collapsed["width"] - 20, collapsed
+                assert browser.find_element(By.ID, "show-sessions").text == "Sessions"
+                browser.save_screenshot("/tmp/zedlink-browser-fixture-wide-collapsed.png")
+                browser.find_element(By.ID, "show-sessions").click()
+                assert browser.find_element(By.ID, "show-sessions").text == "Hide sessions"
+                browser.save_screenshot("/tmp/zedlink-browser-fixture-wide.png")
                 browser.set_window_size(390, 844)
                 layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
                 assert layout["pageWidth"] <= layout["width"] + 1
@@ -513,27 +532,44 @@ def main():
                 assert browser.find_element(By.ID, "send").is_enabled()
                 assert probe.accepted == accepted_before_browser + 2
                 browser.refresh()
-                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "Second synthetic thread")
+                assert browser.find_element(By.ID, "messages").is_displayed()
                 assert not browser.find_element(By.ID, "delivery-details").is_displayed()
                 assert probe.accepted == accepted_before_browser + 2
                 original_tab = browser.current_window_handle
-                browser.execute_script("window.open(arguments[0], '_blank')", base + "/#gateway=" + info["gateway_id"])
+                second_tab_url = base + "/#gateway=" + info["gateway_id"]
+                browser.execute_script("window.open('about:blank', '_blank')")
                 browser.switch_to.window(next(handle for handle in browser.window_handles if handle != original_tab))
-                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                browser.get(second_tab_url)
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "Second synthetic thread")
+                assert browser.find_element(By.ID, "messages").is_displayed()
                 wait.until(lambda driver: not driver.find_element(By.ID, "pair-panel").is_displayed())
                 assert probe.accepted == accepted_before_browser + 2
                 browser.close()
                 browser.switch_to.window(original_tab)
                 probe.close()
-                wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").text)
+                wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 os.unlink(probe.path)
                 probe = ProbeFixture(probe_dir / "zedlink.sock")
-                wait.until(lambda driver: "Connected to Zed" in driver.find_element(By.ID, "connection").text)
-                assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                wait.until(lambda driver: "online" in driver.find_element(By.ID, "connection").get_attribute("class")
+                           and "Zed" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "Second synthetic thread")
+                assert browser.find_element(By.ID, "messages").is_displayed()
                 browser_device = next(device for device in admin(state, "devices")["devices"]
                                       if device["name"] == "Firefox on Linux")
                 assert admin(state, "revoke", browser_device["id"])["revoked"]
-                wait.until(lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed())
+                try:
+                    WebDriverWait(browser, 15).until(
+                        lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed()
+                    )
+                except TimeoutException:
+                    print("revocation browser state:", browser.execute_script(
+                        "return {pair:!document.getElementById('pair-panel').classList.contains('hidden'),"
+                        "pairDisplay:getComputedStyle(document.getElementById('pair-panel')).display,"
+                        "body:document.body.className, live:document.body.dataset.liveTransport,"
+                        "connection:document.getElementById('connection').textContent}"
+                    ))
+                    raise
                 helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base, str(state), "--no-open"],
                                         capture_output=True, text=True, check=True, timeout=5)
                 pairing_page = Path(helper.stdout.splitlines()[0].split(": ", 1)[1])

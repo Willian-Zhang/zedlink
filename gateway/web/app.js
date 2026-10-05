@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.4";
+const UI_BUILD = "2026.10.05.5";
 const state = {
   gatewayId: null,
   token: null,
@@ -88,6 +88,17 @@ function delivery(message, uncertain = false) {
 }
 function pendingKey() { return `zedlink.pending.${state.gatewayId}`; }
 function tokenKey() { return `zedlink.token.${state.gatewayId}`; }
+function selectedThreadKey() { return `zedlink.selectedThread.${state.gatewayId}`; }
+function sidebarKey() { return `zedlink.sidebarCollapsed.${state.gatewayId}`; }
+function updateSidebarToggle() {
+  const mobile = matchMedia("(max-width: 760px)").matches;
+  const collapsed = document.body.classList.contains("sidebar-collapsed");
+  const mobileOpen = document.body.classList.contains("mobile-sessions");
+  const button = $("show-sessions");
+  button.textContent = mobile ? "‹ Sessions" : collapsed ? "Sessions" : "Hide sessions";
+  button.setAttribute("aria-label", mobile ? "Show sessions" : collapsed ? "Show sessions" : "Hide sessions");
+  button.setAttribute("aria-expanded", String(mobile ? mobileOpen : !collapsed));
+}
 function savePending() {
   if (state.pending) {
     const { id, instanceId, epoch, threadId } = state.pending;
@@ -170,7 +181,14 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   if (response.status === 401) {
     closeEventStream();
     state.token = null;
+    state.instanceId = null;
+    state.epoch = null;
+    state.threadId = null;
+    state.commands = [];
+    state.turnId = null;
+    state.threadStatus = null;
     safeStore.remove(tokenKey());
+    document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
     $("pair-panel").classList.remove("hidden");
     $("sessions-panel").classList.add("hidden");
     document.body.classList.add("pairing");
@@ -220,7 +238,6 @@ function startEventStream() {
   socket.addEventListener("open", () => {
     if (state.eventSocket === socket) {
       document.body.dataset.liveTransport = "websocket";
-      connection("Live with Zed", "online");
     }
   });
   socket.addEventListener("message", (event) => {
@@ -231,6 +248,7 @@ function startEventStream() {
       const result = data.result;
       identity(result);
       if (result.thread_id !== threadId || !Array.isArray(result.events)) throw new Error("Invalid live event response.");
+      connection("Live with Zed", "online");
       if (Number.isInteger(result.last_sequence)) state.sequence = Math.max(state.sequence, result.last_sequence);
       if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle")) {
         refreshSnapshot().catch((error) => notice(error.message));
@@ -240,6 +258,7 @@ function startEventStream() {
         state.token = null;
         safeStore.remove(tokenKey());
       }
+      connection(error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable" : "Reconnecting…", "offline");
       socket.close();
     }
   });
@@ -269,6 +288,8 @@ async function loadGateway() {
     state.gatewayId = result.gateway_id;
     $("gateway-id").textContent = result.gateway_id;
     $("mobile-gateway-id").textContent = result.gateway_id;
+    document.body.classList.toggle("sidebar-collapsed", safeStore.read(sidebarKey()) === "true");
+    updateSidebarToggle();
     if (expectedFromLink) {
       $("expected-id").value = expectedFromLink;
       if (expectedFromLink !== result.gateway_id) {
@@ -356,6 +377,12 @@ async function connect() {
       if (state.pending) delivery("A previous message may have reached Zed. Check the conversation before continuing.", true);
     }
     await loadThreads();
+    if (!state.threadId) {
+      const selected = safeStore.read(selectedThreadKey());
+      if (selected && state.threads.some((thread) => thread.thread_id === selected)) {
+        await selectThread(selected);
+      }
+    }
     if (state.threadId) startEventStream();
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
   } catch (error) {
@@ -373,6 +400,7 @@ async function loadThreads() {
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     closeEventStream();
     state.threadId = null;
+    safeStore.remove(selectedThreadKey());
     state.commands = [];
     renderCommands();
     state.turnId = null;
@@ -384,6 +412,8 @@ async function loadThreads() {
     $("activity").classList.add("hidden");
     $("prompt").disabled = true;
     $("thread-title").textContent = "Choose a session";
+    $("thread-state").textContent = "Select session";
+    $("thread-state").className = "state-pill";
     notice("The selected thread is no longer exposed in desktop Zed.");
   }
 }
@@ -463,6 +493,7 @@ function renderThreads() {
 async function selectThread(threadId) {
   closeEventStream();
   state.threadId = threadId;
+  safeStore.write(selectedThreadKey(), threadId);
   state.commands = [];
   renderCommands();
   state.turnId = null;
@@ -470,6 +501,7 @@ async function selectThread(threadId) {
   showStop();
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
+  updateSidebarToggle();
   state.sequence = 0;
   state.renderedEntries = [];
   state.renderedThreadId = null;
@@ -696,7 +728,7 @@ function renderToolBody(target, body) {
   }
 }
 
-function makeEntry(markdown, index, total) {
+function makeEntry(markdown, index) {
   const presentation = entryPresentation(markdown, index);
   const article = document.createElement("article");
   article.className = `message ${presentation.kind}`;
@@ -728,9 +760,12 @@ function makeEntry(markdown, index, total) {
     preview.textContent = toolPreview(presentation.body, presentation.status);
     const details = document.createElement("details");
     details.className = "tool-details";
-    details.open = index >= total - 2 && !!presentation.body.trim();
+    details.open = false;
     const summary = document.createElement("summary");
     summary.textContent = "Read tool output";
+    details.addEventListener("toggle", () => {
+      summary.textContent = details.open ? "Hide tool output" : "Read tool output";
+    });
     const content = document.createElement("div");
     content.className = "tool-content";
     renderToolBody(content, presentation.body);
@@ -836,7 +871,7 @@ async function snapshot() {
   }
   for (const [index, markdown] of result.entries_markdown.entries()) {
     if (state.renderedEntries[index] === markdown) continue;
-    const article = makeEntry(markdown, index, result.entries_markdown.length);
+    const article = makeEntry(markdown, index);
     const previous = container.children[index];
     if (previous) {
       const oldDetails = previous.querySelector("details");
@@ -1032,7 +1067,13 @@ $("stop-turn").addEventListener("click", async () => {
   }
 });
 $("show-sessions").addEventListener("click", () => {
-  document.body.classList.add("mobile-sessions");
+  if (matchMedia("(max-width: 760px)").matches) {
+    document.body.classList.add("mobile-sessions");
+  } else {
+    document.body.classList.toggle("sidebar-collapsed");
+    safeStore.write(sidebarKey(), String(document.body.classList.contains("sidebar-collapsed")));
+  }
+  updateSidebarToggle();
 });
 $("prompt").addEventListener("input", () => {
   const prompt = $("prompt");
@@ -1061,6 +1102,7 @@ function forgetBrowser() {
   closeEventStream();
   safeStore.remove(tokenKey());
   safeStore.remove(pendingKey());
+  safeStore.remove(selectedThreadKey());
   state.token = null;
   state.pending = null;
   state.threadId = null;
@@ -1131,6 +1173,7 @@ function showMobileView(view) {
     document.body.classList.remove("mobile-sessions");
     document.body.classList.add("mobile-settings");
   }
+  updateSidebarToggle();
 }
 for (const button of document.querySelectorAll("[data-mobile-view]")) {
   button.addEventListener("click", () => showMobileView(button.dataset.mobileView));
@@ -1172,4 +1215,6 @@ if ("serviceWorker" in navigator) {
 $("ui-build").textContent = UI_BUILD;
 $("device-name").value = browserDeviceName();
 showInstallHelp();
+window.addEventListener("resize", updateSidebarToggle);
+updateSidebarToggle();
 loadGateway();
