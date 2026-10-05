@@ -13,8 +13,6 @@ struct NativeEntryPresentation: Identifiable, Equatable {
 
     init(_ markdown: String, index: Int) {
         id = index
-        reasoning = Self.extractReasoning(markdown)
-        let cleaned = Self.removingReasoning(markdown).trimmingCharacters(in: .whitespacesAndNewlines)
         let prefixes: [(String, Kind, String)] = [
             ("## User\n\n", .user, "You"),
             ("## User (checkpoint)\n\n", .user, "You · checkpoint"),
@@ -23,28 +21,34 @@ struct NativeEntryPresentation: Identifiable, Equatable {
             ("## Plan\n\n", .plan, "Plan"),
             ("## Context Compaction", .context, "Context")
         ]
-        if let match = prefixes.first(where: { cleaned.hasPrefix($0.0) }) {
+        if let match = prefixes.first(where: { markdown.hasPrefix($0.0) }) {
+            let payload = String(markdown.dropFirst(match.0.count))
             kind = match.1
             label = match.2
-            body = String(cleaned.dropFirst(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            reasoning = Self.extractReasoning(payload)
+            body = Self.removingReasoning(payload).trimmingCharacters(in: .whitespacesAndNewlines)
             toolName = nil
             toolStatus = nil
-        } else if cleaned.hasPrefix("**Tool Call: ") {
-            kind = .tool
-            let firstLine = cleaned.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? "Tool"
-            toolName = firstLine
-                .replacingOccurrences(of: "**Tool Call: ", with: "")
-                .replacingOccurrences(of: "**", with: "")
-            let statusLine = cleaned.split(separator: "\n").first { $0.hasPrefix("Status: ") }
-            toolStatus = statusLine.map { String($0.dropFirst("Status: ".count)) }
-            label = "Zed tool"
-            body = cleaned
         } else {
-            kind = .other
-            label = "Native entry \(index + 1)"
-            body = cleaned
-            toolName = nil
-            toolStatus = nil
+            let cleaned = Self.removingReasoning(markdown).trimmingCharacters(in: .whitespacesAndNewlines)
+            reasoning = Self.extractReasoning(markdown)
+            if cleaned.hasPrefix("**Tool Call: ") {
+                kind = .tool
+                let firstLine = cleaned.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? "Tool"
+                toolName = firstLine
+                    .replacingOccurrences(of: "**Tool Call: ", with: "")
+                    .replacingOccurrences(of: "**", with: "")
+                let statusLine = cleaned.split(separator: "\n").first { $0.hasPrefix("Status: ") }
+                toolStatus = statusLine.map { String($0.dropFirst("Status: ".count)) }
+                label = "Zed tool"
+                body = cleaned
+            } else {
+                kind = .other
+                label = "Native entry \(index + 1)"
+                body = cleaned
+                toolName = nil
+                toolStatus = nil
+            }
         }
     }
 
