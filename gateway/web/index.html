@@ -29,20 +29,20 @@
           <input id="device-name" name="device-name" maxlength="64" required value="Browser">
           <button id="pair-button" class="primary" type="submit">Pair browser</button>
         </form>
-        <p class="note">The QR link fills the gateway identity without carrying the secret code. The browser keeps its device token only for this tab session.</p>
+        <p class="note">The QR link fills the gateway identity without carrying the secret code. Pairing stays in this browser for this HTTPS site until you forget it or revoke the device. Avoid pairing in a shared browser.</p>
       </section>
       <section class="panel hidden" id="sessions-panel">
         <div class="section-head"><div><h1>Sessions</h1><p id="host-label" class="muted"></p></div><button id="refresh" type="button" class="quiet">Refresh</button></div>
         <div id="thread-list" class="thread-list" aria-label="Exposed Zed threads"></div>
-        <button id="forget" type="button" class="quiet danger">Forget this browser token</button>
+        <button id="forget" type="button" class="quiet danger">Forget this browser</button>
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-head"><button id="show-sessions" class="quiet" type="button" aria-label="Show sessions">Sessions</button><div><p class="eyebrow">EXPOSED NATIVE THREAD</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span></div>
+      <div class="conversation-head"><button id="show-sessions" class="quiet" type="button" aria-label="Show sessions">Sessions</button><div><p class="eyebrow">EXPOSED NATIVE THREAD</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Offline</span><button id="toggle-compose" class="quiet" type="button">Write</button></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
       <div id="messages" class="messages" aria-live="off"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your Zed thread will appear here</h3><p>Only threads explicitly exposed with <code>/remote-control</code> are listed.</p></div></div>
       <div class="composer-wrap">
-        <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
         <form id="composer-form" class="composer">
           <label class="sr-only" for="prompt">Message to native Zed Agent</label>
           <textarea id="prompt" rows="3" maxlength="3000" placeholder="Message your Zed Agent…" disabled></textarea>

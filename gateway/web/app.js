@@ -12,10 +12,29 @@ const state = {
   polling: false,
   pending: null,
 };
-const safeSession = {
-  read(key) { try { return sessionStorage.getItem(key); } catch { return null; } },
-  write(key, value) { try { sessionStorage.setItem(key, value); } catch { /* private storage unavailable */ } },
-  remove(key) { try { sessionStorage.removeItem(key); } catch { /* private storage unavailable */ } },
+const safeStore = {
+  read(key) {
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved !== null) return saved;
+    } catch { /* persistent storage unavailable */ }
+    try {
+      const prior = sessionStorage.getItem(key);
+      if (prior !== null) this.write(key, prior);
+      return prior;
+    } catch { return null; }
+  },
+  write(key, value) {
+    try { localStorage.setItem(key, value); sessionStorage.removeItem(key); return true; }
+    catch {
+      try { sessionStorage.setItem(key, value); } catch { /* storage unavailable */ }
+      return false;
+    }
+  },
+  remove(key) {
+    try { localStorage.removeItem(key); } catch { /* storage unavailable */ }
+    try { sessionStorage.removeItem(key); } catch { /* storage unavailable */ }
+  },
 };
 
 function connection(message, status = "") {
@@ -39,9 +58,9 @@ function tokenKey() { return `zedlink.token.${state.gatewayId}`; }
 function savePending() {
   if (state.pending) {
     const { id, instanceId, epoch, threadId } = state.pending;
-    safeSession.write(pendingKey(), JSON.stringify({ id, instanceId, epoch, threadId }));
+    safeStore.write(pendingKey(), JSON.stringify({ id, instanceId, epoch, threadId }));
   } else {
-    safeSession.remove(pendingKey());
+    safeStore.remove(pendingKey());
   }
 }
 function clearPending() {
@@ -51,7 +70,9 @@ function clearPending() {
 }
 function identity(result) {
   if (result.instance_id !== state.instanceId || result.epoch !== state.epoch) {
-    throw new Error("Zed instance or event epoch changed. Reconnect before sending.");
+    const error = new Error("Zed instance or event epoch changed. Reconnect before sending.");
+    error.code = "IDENTITY_CHANGED";
+    throw error;
   }
 }
 function apiError(code) {
@@ -70,11 +91,15 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   const data = await response.json();
   if (response.status === 401) {
     state.token = null;
-    safeSession.remove(tokenKey());
+    safeStore.remove(tokenKey());
     $("pair-panel").classList.remove("hidden");
     $("sessions-panel").classList.add("hidden");
   }
-  if (!response.ok) throw new Error(apiError(data.error));
+  if (!response.ok) {
+    const error = new Error(apiError(data.error));
+    error.code = data.error;
+    throw error;
+  }
   if (data.version !== 1 || data.request_id !== requestId || (!!data.result === !!data.error)) {
     throw new Error("Gateway response did not match this request.");
   }
@@ -102,7 +127,7 @@ async function loadGateway() {
         throw new Error("The gateway identity differs from the desktop pairing link. Do not enter a code.");
       }
     }
-    const token = safeSession.read(tokenKey());
+    const token = safeStore.read(tokenKey());
     if (token) {
       state.token = token;
       await connect();
@@ -118,6 +143,8 @@ async function loadGateway() {
 async function connect() {
   if (!state.token) return;
   connection("Connecting…");
+  $("pair-panel").classList.add("hidden");
+  $("sessions-panel").classList.remove("hidden");
   try {
     const info = await rpc("instance.info");
     if (typeof info.instance_id !== "string" || typeof info.epoch !== "string") {
@@ -133,18 +160,16 @@ async function connect() {
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
     }
     $("host-label").textContent = `Zed instance ${info.instance_id.slice(0, 8)}…`;
-    $("pair-panel").classList.add("hidden");
-    $("sessions-panel").classList.remove("hidden");
-    const prior = safeSession.read(pendingKey());
+    const prior = safeStore.read(pendingKey());
     if (prior && !state.pending) {
-      try { state.pending = { ...JSON.parse(prior), text: null }; } catch { safeSession.remove(pendingKey()); }
+      try { state.pending = { ...JSON.parse(prior), text: null }; } catch { safeStore.remove(pendingKey()); }
       if (state.pending) delivery("A previous send has uncertain delivery. Check its status before making another request.", true);
     }
     await loadThreads();
     connection("Connected to Zed", "online");
   } catch (error) {
-    connection("Reconnect needed", "offline");
-    notice(error.message);
+    connection("Zed unavailable", "offline");
+    notice(`Pairing is saved. ${error.message} Refresh when desktop Zed is ready.`);
   }
 }
 
@@ -192,6 +217,7 @@ async function selectThread(threadId) {
   state.threadId = threadId;
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
+  setReading(true);
   state.sequence = 0;
   $("prompt").disabled = false;
   $("send").disabled = !!state.pending;
@@ -203,11 +229,122 @@ async function selectThread(threadId) {
   } catch (error) { notice(error.message); }
 }
 
+function setReading(reading) {
+  document.body.classList.toggle("reading", reading);
+  $("toggle-compose").textContent = reading ? "Write" : "Read";
+  $("toggle-compose").setAttribute("aria-label", reading ? "Write a message" : "Read conversation");
+}
+
+function entryPresentation(markdown, index) {
+  const headings = [
+    [/^## User(?: \(checkpoint\))?\n\n/, "user", "You"],
+    [/^## Assistant\n\n/, "assistant", "Zed Agent"],
+    [/^## Input Requested\n\n/, "tool", "Input requested in Zed"],
+    [/^## Plan\n\n/, "tool", "Plan"],
+    [/^## Context Compaction[^\n]*\n\n/, "tool", "Context summary"],
+  ];
+  for (const [pattern, kind, label] of headings) {
+    const match = markdown.match(pattern);
+    if (match) return { kind, label, body: markdown.slice(match[0].length) };
+  }
+  const tool = markdown.match(/^\*\*Tool Call: ([^\n]*?)\*\*\nStatus: ([^\n]*)\n\n/);
+  if (tool) return { kind: "tool", label: `Tool · ${tool[1]} · ${tool[2]}`, body: markdown.slice(tool[0].length) };
+  return { kind: "native", label: `Native entry ${index + 1}`, body: markdown };
+}
+
+function appendInline(target, value) {
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  let cursor = 0;
+  for (const match of value.matchAll(pattern)) {
+    if (match.index > cursor) target.append(document.createTextNode(value.slice(cursor, match.index)));
+    const code = match[0].startsWith("`");
+    const element = document.createElement(code ? "code" : "strong");
+    element.textContent = code ? match[0].slice(1, -1) : match[0].slice(2, -2);
+    target.append(element);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < value.length) target.append(document.createTextNode(value.slice(cursor)));
+}
+
+function renderBody(target, source) {
+  const lines = source.trim().split(/\r?\n/);
+  for (let i = 0; i < lines.length;) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+    if (line.startsWith("```")) {
+      const block = [];
+      i += 1;
+      while (i < lines.length && !lines[i].startsWith("```")) block.push(lines[i++]);
+      if (i < lines.length) i += 1;
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = block.join("\n");
+      pre.append(code);
+      target.append(pre);
+      continue;
+    }
+    if (line === "<thinking>") {
+      const block = [];
+      i += 1;
+      while (i < lines.length && lines[i] !== "</thinking>") block.push(lines[i++]);
+      if (i < lines.length) i += 1;
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Reasoning";
+      const content = document.createElement("p");
+      content.textContent = block.join("\n");
+      details.append(summary, content);
+      target.append(details);
+      continue;
+    }
+    const heading = line.match(/^#{1,4} (.+)$/);
+    if (heading) {
+      const element = document.createElement("h3");
+      appendInline(element, heading[1]);
+      target.append(element);
+      i += 1;
+      continue;
+    }
+    const bullet = line.match(/^([-*] |\d+\. )/);
+    if (bullet) {
+      const ordered = /^\d/.test(bullet[0]);
+      const list = document.createElement(ordered ? "ol" : "ul");
+      while (i < lines.length && (ordered ? /^\d+\. / : /^[-*] /).test(lines[i])) {
+        const item = document.createElement("li");
+        appendInline(item, lines[i].replace(ordered ? /^\d+\. / : /^[-*] /, ""));
+        list.append(item);
+        i += 1;
+      }
+      target.append(list);
+      continue;
+    }
+    if (line.startsWith("> ")) {
+      const quote = document.createElement("blockquote");
+      while (i < lines.length && lines[i].startsWith("> ")) {
+        if (quote.childNodes.length) quote.append(document.createElement("br"));
+        appendInline(quote, lines[i].slice(2));
+        i += 1;
+      }
+      target.append(quote);
+      continue;
+    }
+    const paragraph = document.createElement("p");
+    while (i < lines.length && lines[i].trim() && !/^(?:```|#{1,4} |[-*] |\d+\. |> |<thinking>)/.test(lines[i])) {
+      if (paragraph.childNodes.length) paragraph.append(document.createElement("br"));
+      appendInline(paragraph, lines[i]);
+      i += 1;
+    }
+    if (paragraph.childNodes.length) target.append(paragraph);
+    else i += 1;
+  }
+}
+
 async function snapshot() {
   if (!state.threadId) return;
   const result = await rpc("thread.snapshot", { thread_id: state.threadId });
   identity(result);
-  if (result.thread_id !== state.threadId || !Array.isArray(result.entries_markdown)) {
+  if (result.thread_id !== state.threadId || !Array.isArray(result.entries_markdown)
+      || !result.entries_markdown.every((entry) => typeof entry === "string")) {
     throw new Error("Snapshot belongs to another thread.");
   }
   state.sequence = result.last_sequence;
@@ -215,13 +352,15 @@ async function snapshot() {
   const follow = container.scrollHeight - container.scrollTop - container.clientHeight < 90;
   const fragment = document.createDocumentFragment();
   for (const [index, markdown] of result.entries_markdown.entries()) {
+    const presentation = entryPresentation(markdown, index);
     const article = document.createElement("article");
-    article.className = "message";
+    article.className = `message ${presentation.kind}`;
     const label = document.createElement("div");
     label.className = "message-label";
-    label.textContent = `Native entry ${index + 1}`;
-    const content = document.createElement("pre");
-    content.textContent = markdown;
+    label.textContent = presentation.label;
+    const content = document.createElement("div");
+    content.className = "message-body";
+    renderBody(content, presentation.body);
     article.append(label, content);
     fragment.append(article);
   }
@@ -255,24 +394,26 @@ async function poll() {
   if (!state.token || state.polling) return;
   state.polling = true;
   try {
+    if (!state.instanceId) { await connect(); return; }
     if (state.threadId) {
       const result = await rpc("thread.events", { thread_id: state.threadId, after_sequence: state.sequence });
       identity(result);
       if (result.thread_id !== state.threadId) throw new Error("Event feed changed threads.");
       if (result.events?.length) await snapshot();
       else state.sequence = result.last_sequence;
-    }
+    } else await loadThreads();
     if (state.pending) await reconcilePending();
     connection("Connected to Zed", "online");
   } catch (error) {
     if (error.code === "RESYNC_REQUIRED") {
       try { await snapshot(); return; } catch (snapshotError) { notice(snapshotError.message); }
-    } else if (error.code === "THREAD_NOT_EXPOSED") {
-      await loadThreads().catch(() => {});
+    } else if (error.code === "THREAD_NOT_EXPOSED" || error.code === "IDENTITY_CHANGED") {
+      await connect();
+      return;
     } else {
       notice(error.message);
     }
-    connection("Reconnecting…", "offline");
+    connection(error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable" : "Reconnecting…", "offline");
   } finally { state.polling = false; }
 }
 
@@ -304,6 +445,8 @@ async function sendPending() {
       delivery("Sent to Zed, but native acceptance is unconfirmed. The draft remains here; do not send it under a new ID.", true);
     }
     await snapshot();
+    $("messages").scrollTop = $("messages").scrollHeight;
+    setReading(true);
   } catch (error) {
     delivery(`Delivery unknown: ${error.message} The same request ID can be retried; no automatic resend occurred.`, true);
   }
@@ -331,9 +474,9 @@ $("pair-form").addEventListener("submit", async (event) => {
       throw new Error("Pairing identity or token was invalid.");
     }
     state.token = result.token;
-    safeSession.write(tokenKey(), result.token);
+    const remembered = safeStore.write(tokenKey(), result.token);
     $("pair-code").value = "";
-    notice("");
+    notice(remembered ? "" : "This browser did not allow persistent storage; pairing may be needed after this tab closes.");
     await connect();
   } catch (error) { notice(error.message); }
   finally { $("pair-button").disabled = false; }
@@ -342,9 +485,14 @@ $("refresh").addEventListener("click", () => connect());
 $("show-sessions").addEventListener("click", () => {
   document.body.classList.add("mobile-sessions");
 });
+$("toggle-compose").addEventListener("click", () => {
+  const reading = !document.body.classList.contains("reading");
+  setReading(reading);
+  if (!reading) $("prompt").focus();
+});
 $("forget").addEventListener("click", () => {
-  safeSession.remove(tokenKey());
-  safeSession.remove(pendingKey());
+  safeStore.remove(tokenKey());
+  safeStore.remove(pendingKey());
   state.token = null;
   state.pending = null;
   state.threadId = null;

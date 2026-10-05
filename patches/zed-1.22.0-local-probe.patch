@@ -205,17 +205,17 @@ index bfefb986bd..3f9c2d3a10 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..6d616f4c1d
+index 0000000000..a8dde4f627
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,718 @@
 +use std::{
 +    cell::RefCell,
 +    collections::{HashMap, HashSet, VecDeque},
 +    fs::{self, DirBuilder, Permissions},
 +    io::{BufRead, BufReader, Read, Write},
 +    os::unix::{
-+        fs::{DirBuilderExt, PermissionsExt},
++        fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
 +        net::{UnixListener, UnixStream},
 +    },
 +    path::{Path, PathBuf},
@@ -303,10 +303,23 @@ index 0000000000..6d616f4c1d
 +
 +        let mut builder = DirBuilder::new();
 +        builder.mode(0o700);
-+        builder
-+            .create(&directory)
-+            .context("private socket directory unavailable")?;
++        match builder.create(&directory) {
++            Ok(()) => {}
++            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
++                let metadata = fs::symlink_metadata(&directory)?;
++                if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o077 != 0 {
++                    return Err(anyhow!("existing probe directory is not private"));
++                }
++            }
++            Err(error) => return Err(error).context("private socket directory unavailable"),
++        }
 +        let socket = directory.join("zedlink.sock");
++        if let Ok(metadata) = fs::symlink_metadata(&socket) {
++            if !metadata.file_type().is_socket() || UnixStream::connect(&socket).is_ok() {
++                return Err(anyhow!("probe socket path is occupied"));
++            }
++            fs::remove_file(&socket).context("stale probe socket unavailable")?;
++        }
 +        let listener = UnixListener::bind(&socket).context("socket unavailable")?;
 +        fs::set_permissions(&socket, Permissions::from_mode(0o600))
 +            .context("socket permissions unavailable")?;

@@ -78,7 +78,10 @@ class ProbeFixture:
                         if key not in self.seen_sends:
                             self.seen_sends[key] = text
                             self.accepted += 1
-                            self.entries.extend([text, "Synthetic fixture reply."])
+                            self.entries.extend([
+                                f"## User\n\n{text}\n\n",
+                                "## Assistant\n\n**Synthetic fixture reply.**\n\n- One\n- Two\n\n```text\nok\n```\n\n",
+                            ])
                             self.sequence += 1
                         result = {"outcome": "unknown"}
                 elif method == "request.status":
@@ -313,6 +316,10 @@ def main():
                           "accepted:", probe.accepted)
                     raise
                 assert probe.accepted == accepted_before_browser + 1
+                assert browser.find_elements(By.CSS_SELECTOR, ".message.user .message-label")[-1].get_attribute("textContent") == "You"
+                assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant .message-label")[-1].get_attribute("textContent") == "Zed Agent"
+                assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant strong")
+                assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant pre code")
                 browser.find_element(By.ID, "retry").click()
                 time.sleep(0.3)
                 assert probe.accepted == accepted_before_browser + 1
@@ -323,6 +330,10 @@ def main():
                 assert layout["composerBottom"] <= layout["height"]
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
                 assert layout["messagesHeight"] >= 250 and layout["sidebarHidden"], layout
+                assert browser.find_element(By.ID, "toggle-compose").text == "Write"
+                browser.find_element(By.ID, "toggle-compose").click()
+                assert browser.find_element(By.ID, "prompt").is_displayed()
+                browser.find_element(By.ID, "toggle-compose").click()
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
@@ -331,6 +342,20 @@ def main():
                 wait.until(lambda driver: "A previous send has uncertain delivery" in
                            driver.execute_script("return document.getElementById('delivery').textContent"))
                 assert probe.accepted == accepted_before_browser + 1
+                original_tab = browser.current_window_handle
+                browser.execute_script("window.open(arguments[0], '_blank')", base + "/#gateway=" + info["gateway_id"])
+                browser.switch_to.window(next(handle for handle in browser.window_handles if handle != original_tab))
+                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                assert not browser.find_element(By.ID, "pair-panel").is_displayed()
+                assert probe.accepted == accepted_before_browser + 1
+                browser.close()
+                browser.switch_to.window(original_tab)
+                probe.close()
+                wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").text)
+                os.unlink(probe.path)
+                probe = ProbeFixture(probe_dir / "zedlink.sock")
+                wait.until(lambda driver: "Connected to Zed" in driver.find_element(By.ID, "connection").text)
+                assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 browser_device = next(device for device in admin(state, "devices")["devices"]
                                       if device["name"] == "Browser")
                 assert admin(state, "revoke", browser_device["id"])["revoked"]
