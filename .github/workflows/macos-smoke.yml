@@ -30,6 +30,8 @@ jobs:
           -configuration Debug -sdk iphonesimulator
           -destination 'generic/platform=iOS Simulator'
           -derivedDataPath /tmp/zedlink-derived CODE_SIGNING_ALLOWED=NO build
+      - name: Verify launch screen declaration
+        run: plutil -extract UILaunchScreen json -o - /tmp/zedlink-derived/Build/Products/Debug-iphonesimulator/ZedLink.app/Info.plist
       - name: Launch on iPhone simulator
         run: |
           device_id="$(xcrun simctl list -j devices available | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((x["udid"] for devices in d["devices"].values() for x in devices if "iPhone" in x["name"] and x["state"] == "Shutdown"), ""))')"

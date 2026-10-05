@@ -38,7 +38,11 @@ import Combine
     }
 
     func connect(_ nextProfile: ConnectionProfile) async {
+        let sameProfile = profile?.id == nextProfile.id
+        let previousThread = sameProfile ? selectedThreadID : nil
+        let previousPending = sameProfile ? pending : nil
         disconnect()
+        if !sameProfile { draft = "" }
         let current = generation
         profile = nextProfile
         state = .connecting
@@ -56,7 +60,14 @@ import Combine
             instanceID = instance
             epoch = nextEpoch
             restorePending(for: nextProfile)
+            if let previousPending, pending?.id == previousPending.id {
+                pending?.text = previousPending.text
+            }
             try await loadThreads()
+            if let previousThread, threads.contains(where: { $0.id == previousThread }) {
+                selectedThreadID = previousThread
+                try await loadSnapshot(previousThread)
+            }
             guard current == generation else { return }
             state = .live
             issue = ""

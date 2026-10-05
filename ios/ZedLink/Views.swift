@@ -30,8 +30,12 @@ struct SessionsView: View {
                         Button("Reconnect") { Task { await session.refresh() } }
                             .accessibilityIdentifier("reconnect")
                     } else {
-                        ContentUnavailableView("Choose a connection", systemImage: "network",
-                                               description: Text("Add and pair a private HTTPS connection in the Connections tab."))
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Choose a connection", systemImage: "network").font(.headline)
+                            Text("Add and pair a private HTTPS connection in the Connections tab.")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 10)
                     }
                     if !session.issue.isEmpty {
                         Text(session.issue).foregroundStyle(.orange).font(.footnote)
@@ -168,8 +172,12 @@ struct ConnectionsView: View {
         NavigationStack {
             List {
                 if profiles.profiles.isEmpty {
-                    ContentUnavailableView("No connections", systemImage: "network",
-                                           description: Text("Add an HTTPS gateway profile, then pair this iPhone."))
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("No connections", systemImage: "network").font(.headline)
+                        Text("Add an HTTPS gateway profile, then pair this iPhone.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 10)
                 }
                 ForEach(profiles.profiles) { profile in
                     VStack(alignment: .leading, spacing: 8) {
