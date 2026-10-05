@@ -15,7 +15,7 @@ There are four parts:
 3. **Tailscale or another private route** lets the phone reach your computer.
 4. **Phone browser** displays and controls the exposed Zed conversation.
 
-A native SwiftUI client also lives under `ios/`. Its current OLED workspace revision is under active validation; Safari remains the verified physical-iPhone client.
+A native SwiftUI client also lives under `ios/`. Its OLED workspace revision builds, launches, and passes unit/onboarding tests on a hosted iPhone simulator; Safari remains the verified physical-iPhone client until a signed native build is installed and tested on-device.
 
 ```text
 iPhone browser ── private HTTPS through Tailscale ── ZedLink gateway
@@ -474,5 +474,5 @@ Exact commands, evidence, unavailable tests, and current limitations are recorde
 - [Protocol](docs/PROTOCOL.md)
 - [Test plan](docs/TEST_PLAN.md)
 - [Validation report](docs/VALIDATION_REPORT.md)
-- [Deferred native iPhone application](docs/IOS_APP.md)
+- [Native iPhone application](docs/IOS_APP.md)
 - [Zedra-inspired iOS feature map](docs/ZEDRA_FEATURE_PARITY.md)

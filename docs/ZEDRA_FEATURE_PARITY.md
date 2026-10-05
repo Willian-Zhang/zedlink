@@ -19,14 +19,14 @@ This difference controls feature scope:
 | Zedra pattern | ZedLink implementation | State |
 | --- | --- | --- |
 | QR pairing | Camera scanner, clipboard pairing link, verified gateway identity, Keychain credential | Implemented |
-| Reconnect after pairing | Preferred profile restoration, foreground identity verification, native reconciliation | Implemented; simulator build pending |
-| Agent/session dashboard | Searchable exposed native threads with live working/ready state | Implemented; runtime visual check pending |
-| Compact OLED workspace | Flat near-black surfaces, subtle rules, dense monospace metadata, semantic status color | Implemented; simulator visual check pending |
+| Reconnect after pairing | Preferred profile restoration, foreground identity verification, native reconciliation | Implemented; live gateway test pending |
+| Agent/session dashboard | Searchable exposed native threads with live working/ready state | Implemented; empty-state simulator visual check passed |
+| Compact OLED workspace | Flat near-black surfaces, subtle rules, dense monospace metadata, semantic status color | Implemented; simulator build/launch and visual check passed |
 | Agent chat | Persistent composer, Markdown, code blocks, delivery state, Stop, per-thread draft | Implemented; live native iPhone check pending |
 | Reasoning/activity | Separate bounded recent native activity projection, auto-visible live panel | Implemented in adapter, browser, and SwiftUI; physical app check pending |
 | Terminal activity | Expandable cards for native Zed tool command/output projections | Implemented from available native Markdown |
 | Approvals | Exact pending tool label/input displayed; decisions remain in desktop Zed | Display implemented; remote decision disabled pending paired race validation |
-| Agent commands | Runtime-discovered native/agent/MCP slash command picker | Implemented; simulator/live app check pending |
+| Agent commands | Runtime-discovered native/agent/MCP slash command picker | Implemented; live app command round trip pending |
 | Markdown preview | Native attributed Markdown plus fenced code surfaces | Implemented for conversation/activity content |
 | File browser and fuzzy search | Requires scoped adapter operations and pagination | Not implemented |
 | Code editor and Add to Chat | Requires safe project file reads, stable selection references, and mention mapping | Not implemented |
