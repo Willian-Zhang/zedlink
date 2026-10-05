@@ -100,6 +100,10 @@ struct EventQuery {
 struct UnsubscribeRequest {
     endpoint: String,
 }
+#[derive(Deserialize)]
+struct NotificationTestRequest {
+    endpoint: String,
+}
 
 #[derive(Clone, Default)]
 struct ThreadObservation {
@@ -154,6 +158,7 @@ async fn main() -> Result<()> {
                 .route("/v1/events", get(events))
                 .route("/v1/notifications/config", get(notification_config))
                 .route("/v1/notifications/subscribe", post(notification_subscribe))
+                .route("/v1/notifications/status", post(notification_status))
                 .route(
                     "/v1/notifications/unsubscribe",
                     post(notification_unsubscribe),
@@ -825,7 +830,41 @@ async fn notification_unsubscribe(
     (StatusCode::OK, Json(json!({"enabled":false})))
 }
 
-async fn notification_test(State(state): State<Gateway>, headers: HeaderMap) -> impl IntoResponse {
+async fn notification_status(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+    Json(request): Json<UnsubscribeRequest>,
+) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    if request.endpoint.is_empty() || request.endpoint.len() > 2048 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"INVALID_REQUEST"})),
+        );
+    }
+    let enabled = state
+        .0
+        .persisted
+        .lock()
+        .await
+        .push_subscriptions
+        .iter()
+        .any(|record| {
+            record.device_id == device_id && record.subscription.endpoint == request.endpoint
+        });
+    (StatusCode::OK, Json(json!({"enabled":enabled})))
+}
+
+async fn notification_test(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+    Json(request): Json<NotificationTestRequest>,
+) -> impl IntoResponse {
     let Some(device_id) = state.authorize(&headers).await else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -839,7 +878,9 @@ async fn notification_test(State(state): State<Gateway>, headers: HeaderMap) -> 
         .await
         .push_subscriptions
         .iter()
-        .find(|record| record.device_id == device_id)
+        .find(|record| {
+            record.device_id == device_id && record.subscription.endpoint == request.endpoint
+        })
         .cloned();
     let Some(subscription) = subscription else {
         return (

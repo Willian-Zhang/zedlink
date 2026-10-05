@@ -295,6 +295,11 @@ def main():
             status, notification_config = http(base, context, "/v1/notifications/config", token=token1)
             assert status == 200 and notification_config["supported"]
             assert not notification_config["enabled"] and notification_config["application_server_key"]
+            status, notification_status = http(
+                base, context, "/v1/notifications/status", "POST",
+                {"endpoint": "https://fcm.googleapis.com/device"}, token1,
+            )
+            assert status == 200 and not notification_status["enabled"]
             status, invalid_subscription = http(
                 base, context, "/v1/notifications/subscribe", "POST",
                 {"endpoint": "https://127.0.0.1/private", "keys": {"p256dh": "AA", "auth": "AA"}}, token1,

@@ -175,7 +175,16 @@ async function refreshNotifications() {
   state.notificationConfig = await notificationRequest("/v1/notifications/config");
   const registration = await navigator.serviceWorker.ready;
   const subscription = await registration.pushManager.getSubscription();
-  renderNotificationState(state.notificationConfig.enabled && subscription ? "enabled" : "off");
+  if (subscription) {
+    const status = await notificationRequest("/v1/notifications/status", {
+      method: "POST",
+      body: { endpoint: subscription.endpoint },
+    });
+    state.notificationConfig.enabled = status.enabled === true;
+  } else {
+    state.notificationConfig.enabled = false;
+  }
+  renderNotificationState(state.notificationConfig.enabled ? "enabled" : "off");
 }
 
 async function enableNotifications() {
@@ -234,7 +243,13 @@ async function disableNotifications(showNotice = true) {
 async function testNotifications() {
   $("test-notifications").disabled = true;
   try {
-    await notificationRequest("/v1/notifications/test", { method: "POST" });
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) throw new Error("This browser no longer has a push subscription.");
+    await notificationRequest("/v1/notifications/test", {
+      method: "POST",
+      body: { endpoint: subscription.endpoint },
+    });
     notice("Test notification sent through this browser's push service.");
   } catch (error) {
     notice(`Test notification failed: ${error.message}`);
