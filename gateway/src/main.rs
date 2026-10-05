@@ -109,6 +109,22 @@ struct NotificationTestRequest {
 struct ThreadObservation {
     status: String,
     approvals: usize,
+    had_error: bool,
+}
+
+fn thread_notification(
+    previous: &ThreadObservation,
+    current: &ThreadObservation,
+) -> Option<&'static str> {
+    if previous.approvals == 0 && current.approvals > 0 {
+        Some("A Zed Agent session needs your approval.")
+    } else if !previous.had_error && current.had_error {
+        Some("A Zed Agent session failed.")
+    } else if previous.status == "Generating" && current.status == "Idle" {
+        Some("A Zed Agent session finished.")
+    } else {
+        None
+    }
 }
 
 enum PushOutcome {
@@ -641,14 +657,11 @@ impl Gateway {
                 let observation = ThreadObservation {
                     status: status.to_owned(),
                     approvals,
+                    had_error: thread["had_error"].as_bool().unwrap_or(false),
                 };
                 if let Some(previous) = prior.get(thread_id) {
-                    if previous.approvals == 0 && observation.approvals > 0 {
-                        self.notify_all("A Zed Agent session needs your approval.", thread_id)
-                            .await;
-                    } else if previous.status == "Generating" && observation.status == "Idle" {
-                        self.notify_all("A Zed Agent session finished.", thread_id)
-                            .await;
+                    if let Some(body) = thread_notification(previous, &observation) {
+                        self.notify_all(body, thread_id).await;
                     }
                 }
                 current.insert(thread_id.to_owned(), observation);
@@ -1112,5 +1125,24 @@ mod tests {
         assert_eq!(state.gateway_id, gateway_id);
         assert!(state.vapid_private_key.is_empty());
         assert!(state.push_subscriptions.is_empty());
+    }
+
+    #[test]
+    fn chooses_failure_notification_before_generic_completion() {
+        let generating = ThreadObservation {
+            status: "Generating".into(),
+            approvals: 0,
+            had_error: false,
+        };
+        let failed = ThreadObservation {
+            status: "Idle".into(),
+            approvals: 0,
+            had_error: true,
+        };
+        assert_eq!(
+            thread_notification(&generating, &failed),
+            Some("A Zed Agent session failed.")
+        );
+        assert_eq!(thread_notification(&failed, &failed), None);
     }
 }

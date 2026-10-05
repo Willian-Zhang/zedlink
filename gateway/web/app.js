@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.13";
+const UI_BUILD = "2026.10.05.14";
 const state = {
   gatewayId: null,
   token: null,
@@ -188,11 +188,16 @@ function renderHeaderModel() {
     setHeaderRuntime("header-model", "No session", "", "Select a native Zed Agent session to see its current model.");
   } else if (!supported) {
     setHeaderRuntime("header-model", "Model · update Zed", "warning", "Restart the updated patched Zed build to report this session's model.");
-  } else if (state.settingsBusy) {
+  } else if (state.settingsBusy && !state.threadSettings?.model?.name) {
     setHeaderRuntime("header-model", "Model · loading…");
   } else if (state.threadSettings?.model?.name) {
     const model = state.threadSettings.model;
-    setHeaderRuntime("header-model", `Model · ${model.name}`, "", `${model.name} · ${model.provider_id || "provider unavailable"}`);
+    const suffix = state.retryStatus ? " · retrying" : state.threadError ? " · request failed" : "";
+    const status = state.retryStatus ? "warning" : state.threadError ? "error" : "";
+    const detail = state.retryStatus ? "Zed is retrying this native model request."
+      : state.threadError ? "The selected native model request failed. Open the conversation for details."
+        : `${model.name} · ${model.provider_id || "provider unavailable"}`;
+    setHeaderRuntime("header-model", `Model · ${model.name}${suffix}`, status, detail);
   } else {
     setHeaderRuntime("header-model", "Model unavailable", "error", "Desktop Zed did not return model identity for this session.");
   }
@@ -828,6 +833,16 @@ async function loadThreads() {
   const result = await rpc("thread.list");
   identity(result);
   if (!Array.isArray(result.threads)) throw new Error("Invalid thread list.");
+  const priorSelected = state.threads.find((thread) => thread.thread_id === state.threadId);
+  const nextSelected = result.threads.find((thread) => thread.thread_id === state.threadId);
+  const priorHealth = priorSelected ? JSON.stringify([
+    priorSelected.status, priorSelected.current_turn_id, priorSelected.had_error,
+    priorSelected.agent_error, priorSelected.retry_status,
+  ]) : null;
+  const nextHealth = nextSelected ? JSON.stringify([
+    nextSelected.status, nextSelected.current_turn_id, nextSelected.had_error,
+    nextSelected.agent_error, nextSelected.retry_status,
+  ]) : null;
   state.threads = result.threads;
   state.lastThreadsAt = Date.now();
   renderThreads();
@@ -854,6 +869,8 @@ async function loadThreads() {
     $("thread-state").textContent = "No session";
     $("thread-state").className = "state-pill";
     notice("The selected thread is no longer exposed in desktop Zed.");
+  } else if (state.threadId && priorHealth !== null && priorHealth !== nextHealth) {
+    await refreshSnapshot();
   }
 }
 
@@ -922,6 +939,7 @@ function renderAgentHealth() {
   const error = state.threadError;
   panel.classList.toggle("hidden", !retry && !error);
   panel.classList.toggle("retrying", !!retry);
+  renderHeaderModel();
   if (!retry && !error) return;
   if (retry) {
     const seconds = Math.max(1, Math.ceil(retry.nextAttemptMs / 1000));

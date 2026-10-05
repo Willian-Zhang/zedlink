@@ -421,7 +421,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.13"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.14"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -542,28 +542,33 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false")
                 probe.agent_error = {"kind": "stream_error", "title": "Model connection interrupted",
                                      "message": "The local model endpoint refused the connection.", "retrying": True}
-                probe.sequence += 1
+                assert browser.execute_async_script(
+                    "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
+                ) == "ok"
                 wait.until(lambda driver: driver.find_element(By.ID, "agent-health").is_displayed())
                 assert "local model endpoint" in browser.find_element(By.ID, "agent-health-message").text
                 assert browser.find_element(By.ID, "thread-state").text == "REQUEST FAILED"
+                assert "request failed" in browser.find_element(By.ID, "header-model").text.casefold()
+                assert "error" in browser.find_element(By.ID, "header-model").get_attribute("class")
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.error"))
                 probe.retry_status = {"last_error": "Local model connection refused", "attempt": 2,
                                       "max_attempts": 5, "next_attempt_in_ms": 3000}
                 probe.active_turn_id = 10
-                probe.sequence += 1
-                browser.execute_async_script(
-                    "const done=arguments[0]; refreshSnapshot().then(() => done('ok'), error => done(String(error)))"
-                )
+                assert browser.execute_async_script(
+                    "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
+                ) == "ok"
                 wait.until(lambda driver: "ATTEMPT 2 OF 5" in driver.find_element(By.ID, "agent-health-recovery").text)
                 assert browser.find_element(By.ID, "thread-state").text == "RETRYING"
+                assert "retrying" in browser.find_element(By.ID, "header-model").text.casefold()
+                assert "warning" in browser.find_element(By.ID, "header-model").get_attribute("class")
                 probe.agent_error = None
                 probe.retry_status = None
                 probe.active_turn_id = None
-                probe.sequence += 1
-                browser.execute_async_script(
-                    "const done=arguments[0]; refreshSnapshot().then(() => done('ok'), error => done(String(error)))"
-                )
+                assert browser.execute_async_script(
+                    "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
+                ) == "ok"
                 wait.until(lambda driver: not driver.find_element(By.ID, "agent-health").is_displayed())
+                assert "request failed" not in browser.find_element(By.ID, "header-model").text.casefold()
                 browser.find_element(By.ID, "show-commands").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
                 assert "/compact" in browser.find_element(By.ID, "command-menu").text
