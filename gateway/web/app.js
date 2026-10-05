@@ -166,6 +166,14 @@ function applicationServerKey(encoded) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
+function sameApplicationServerKey(subscription, expected) {
+  const actual = subscription?.options?.applicationServerKey;
+  if (!actual) return false;
+  const left = new Uint8Array(actual);
+  const right = applicationServerKey(expected);
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
 async function refreshNotifications() {
   renderNotificationState("loading");
   if (!state.token || !pushSupported()) {
@@ -203,6 +211,16 @@ async function enableNotifications() {
     const config = await notificationRequest("/v1/notifications/config");
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
+    if (subscription && !sameApplicationServerKey(subscription, config.application_server_key)) {
+      try {
+        await notificationRequest("/v1/notifications/unsubscribe", {
+          method: "POST",
+          body: { endpoint: subscription.endpoint },
+        });
+      } catch { /* The old endpoint may not exist in current gateway state. */ }
+      await subscription.unsubscribe();
+      subscription = null;
+    }
     if (!subscription) {
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
