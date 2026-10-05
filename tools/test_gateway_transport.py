@@ -44,6 +44,8 @@ class ProbeFixture:
         self.truncated = False
         self.activity_truncated = False
         self.active_turn_id = None
+        self.agent_error = None
+        self.retry_status = None
         self.cancelled = 0
         self.profile_id = "write"
         self.thinking_enabled = True
@@ -78,7 +80,10 @@ class ProbeFixture:
                 if method == "thread.list":
                     threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread",
                                 "status": "Generating" if self.active_turn_id is not None else "Idle",
-                                "current_turn_id": self.active_turn_id}]
+                                "current_turn_id": self.active_turn_id,
+                                "had_error": self.agent_error is not None,
+                                "agent_error": self.agent_error,
+                                "retry_status": self.retry_status}]
                     if self.extra_thread:
                         threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread", "status": "Idle"})
                     if self.created_thread:
@@ -102,6 +107,8 @@ class ProbeFixture:
                                         else "Synthetic test thread"),
                               "status": "Generating" if self.active_turn_id is not None else "Idle",
                               "current_turn_id": self.active_turn_id, "truncated": self.truncated,
+                              "had_error": self.agent_error is not None,
+                              "agent_error": self.agent_error, "retry_status": self.retry_status,
                               "entries_markdown": list(self.entries),
                               "activity_entries_markdown": list(self.entries[-8:]),
                               "activity_truncated": self.activity_truncated, "pending_approvals": [],
@@ -412,7 +419,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.10"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.11"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 assert len(browser.find_elements(By.ID, "sign-out")) == 1
@@ -524,6 +531,30 @@ def main():
                 probe.sequence += 1
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".thread-item.running"))
                 wait.until(lambda driver: driver.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false")
+                probe.agent_error = {"kind": "stream_error", "title": "Model connection interrupted",
+                                     "message": "The local model endpoint refused the connection.", "retrying": True}
+                probe.sequence += 1
+                wait.until(lambda driver: driver.find_element(By.ID, "agent-health").is_displayed())
+                assert "local model endpoint" in browser.find_element(By.ID, "agent-health-message").text
+                assert browser.find_element(By.ID, "thread-state").text == "REQUEST FAILED"
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.error"))
+                probe.retry_status = {"last_error": "Local model connection refused", "attempt": 2,
+                                      "max_attempts": 5, "next_attempt_in_ms": 3000}
+                probe.active_turn_id = 10
+                probe.sequence += 1
+                browser.execute_async_script(
+                    "const done=arguments[0]; refreshSnapshot().then(() => done('ok'), error => done(String(error)))"
+                )
+                wait.until(lambda driver: "ATTEMPT 2 OF 5" in driver.find_element(By.ID, "agent-health-recovery").text)
+                assert browser.find_element(By.ID, "thread-state").text == "RETRYING"
+                probe.agent_error = None
+                probe.retry_status = None
+                probe.active_turn_id = None
+                probe.sequence += 1
+                browser.execute_async_script(
+                    "const done=arguments[0]; refreshSnapshot().then(() => done('ok'), error => done(String(error)))"
+                )
+                wait.until(lambda driver: not driver.find_element(By.ID, "agent-health").is_displayed())
                 browser.find_element(By.ID, "show-commands").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
                 assert "/compact" in browser.find_element(By.ID, "command-menu").text
@@ -583,6 +614,10 @@ def main():
                 browser.find_element(By.ID, "show-sessions").click()
                 browser.find_element(By.ID, "tab-connections").click()
                 assert browser.find_element(By.ID, "connection-panel").is_displayed()
+                assert browser.find_element(By.ID, "device-network-state").text.casefold() == "online"
+                assert browser.find_element(By.ID, "gateway-connection-state").text.casefold() == "reachable"
+                assert browser.find_element(By.ID, "zed-connection-state").text.casefold() == "connected"
+                assert browser.find_element(By.ID, "stream-connection-state").text.casefold() in ("live", "connecting…", "polling")
                 browser.find_element(By.ID, "tab-settings").click()
                 assert browser.find_element(By.ID, "settings-panel").is_displayed()
                 browser.find_element(By.ID, "tab-sessions").click()
@@ -613,11 +648,13 @@ def main():
                 browser.switch_to.window(original_tab)
                 probe.close()
                 wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                assert browser.find_element(By.ID, "zed-connection-state").get_attribute("textContent") == "Unavailable"
                 os.unlink(probe.path)
                 probe = ProbeFixture(probe_dir / "zedlink.sock")
                 probe.extra_thread = True
                 wait.until(lambda driver: "online" in driver.find_element(By.ID, "connection").get_attribute("class")
                            and "Zed" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                assert browser.find_element(By.ID, "zed-connection-state").get_attribute("textContent") == "Connected"
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "Second synthetic thread")
                 assert browser.find_element(By.ID, "messages").is_displayed()
                 browser_device = next(device for device in admin(state, "devices")["devices"]

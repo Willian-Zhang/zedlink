@@ -111,8 +111,16 @@ def zedlink_tasks() -> list:
         ("Paired devices", "devices"),
         ("Revoke device", "revoke"),
     ):
-        tasks.append({"label": f"ZedLink: {label}", "command": "python3",
-                      "args": [manager, action], **common})
+        task = {"label": f"ZedLink: {label}", "command": "python3",
+                "args": [manager, action], **common}
+        if action == "pair":
+            task.update({
+                "reveal": "never",
+                "hide": "on_success",
+                "show_summary": False,
+                "show_command": False,
+            })
+        tasks.append(task)
     return tasks
 
 

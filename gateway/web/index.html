@@ -59,9 +59,15 @@
       <section class="panel hidden" id="connection-panel">
         <p class="eyebrow">PRIVATE CONNECTION</p>
         <h1>Connection</h1>
-        <div class="settings-row"><span>Status</span><strong id="mobile-connection-state">Checking…</strong></div>
+        <div class="settings-row"><span>Overall</span><strong id="mobile-connection-state">Checking…</strong></div>
+        <div class="settings-row"><span>This device</span><strong id="device-network-state">Checking…</strong></div>
+        <div class="settings-row"><span>Gateway HTTPS</span><strong id="gateway-connection-state">Checking…</strong></div>
+        <div class="settings-row"><span>Desktop Zed</span><strong id="zed-connection-state">Checking…</strong></div>
+        <div class="settings-row"><span>Live updates</span><strong id="stream-connection-state">Not started</strong></div>
+        <div class="settings-row"><span>Selected Agent</span><strong id="agent-connection-state">No session</strong></div>
+        <div class="settings-row"><span>Last live update</span><strong id="last-live-update">None yet</strong></div>
         <div class="settings-row"><span>Gateway</span><code id="mobile-gateway-id">Unknown</code></div>
-        <p class="muted">ZedLink connects only to this saved HTTPS origin. Tailscale or your routed VPN must already be connected.</p>
+        <p class="muted">Gateway, desktop Zed, live updates, and the selected Agent are checked separately. A green gateway does not mean the configured model is reachable.</p>
         <p class="note">To remove this browser’s saved access, open Settings and select Sign out.</p>
       </section>
       <section class="panel hidden" id="settings-panel">
@@ -84,7 +90,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.10</code></div>
+          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.11</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
@@ -95,6 +101,7 @@
     <section class="workspace" aria-label="Native Zed conversation">
       <div class="conversation-head"><button id="show-sessions" class="quiet back-button" type="button" aria-label="Hide sessions" aria-expanded="true">Hide sessions</button><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Select session</span></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <section id="agent-health" class="agent-health hidden" role="alert" aria-live="assertive"><div><strong id="agent-health-title">Agent request failed</strong><p id="agent-health-message"></p></div><span id="agent-health-recovery"></span></section>
       <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Pick up where you left off</h3><p>Select an exposed desktop Zed Agent thread to read and continue its conversation.</p></div></div><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
       <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
       <div class="composer-wrap">

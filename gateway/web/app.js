@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.10";
+const UI_BUILD = "2026.10.05.11";
 const state = {
   gatewayId: null,
   token: null,
@@ -26,6 +26,16 @@ const state = {
   eventSocket: null,
   eventThreadId: null,
   eventReconnectTimer: null,
+  eventConnectTimer: null,
+  streamState: "idle",
+  streamReconnectAttempt: 0,
+  lastLiveEventAt: 0,
+  gatewayReachable: null,
+  desktopReachable: null,
+  connectionMessage: "Checking gateway…",
+  connectionStatus: "",
+  threadError: null,
+  retryStatus: null,
   snapshotPromise: null,
   snapshotQueued: false,
   lastSnapshotAt: 0,
@@ -63,12 +73,59 @@ const safeStore = {
 
 function connection(message, status = "") {
   state.live = status === "online";
+  state.desktopReachable = status === "online" ? true : status === "offline" ? false : null;
+  state.connectionMessage = message;
+  state.connectionStatus = status;
+  renderConnectionHealth();
+  updateComposerAction();
+  showCreateAvailability();
+}
+function setHealthText(id, text, status = "") {
+  const element = $(id);
+  element.textContent = text;
+  element.className = status;
+}
+function relativeLiveTime() {
+  if (!state.lastLiveEventAt) return "None yet";
+  const seconds = Math.max(0, Math.round((Date.now() - state.lastLiveEventAt) / 1000));
+  if (seconds < 2) return "Just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
+}
+function renderConnectionHealth() {
+  const deviceOnline = navigator.onLine !== false;
+  let message = state.connectionMessage;
+  let status = state.connectionStatus;
+  if (!deviceOnline) {
+    message = "Device offline";
+    status = "offline";
+  } else if (state.live && state.threadId && state.streamState === "reconnecting") {
+    message = "Zed connected · restoring live updates";
+    status = "warning";
+  } else if (state.live && state.threadId && state.streamState === "timed_out") {
+    message = "Zed connected · live updates timed out";
+    status = "warning";
+  }
   const element = $("connection");
   element.textContent = message;
   element.className = `connection ${status}`;
   $("mobile-connection-state").textContent = message;
-  updateComposerAction();
-  showCreateAvailability();
+  setHealthText("device-network-state", deviceOnline ? "Online" : "Offline", deviceOnline ? "online" : "offline");
+  setHealthText("gateway-connection-state", state.gatewayReachable === true ? "Reachable" : state.gatewayReachable === false ? "Unavailable" : "Checking…", state.gatewayReachable === true ? "online" : state.gatewayReachable === false ? "offline" : "");
+  setHealthText("zed-connection-state", state.desktopReachable === true ? "Connected" : state.desktopReachable === false ? "Unavailable" : "Checking…", state.desktopReachable === true ? "online" : state.desktopReachable === false ? "offline" : "");
+  const stream = state.streamState === "live" ? ["Live", "online"]
+    : state.streamState === "connecting" ? ["Connecting…", "warning"]
+      : state.streamState === "reconnecting" ? [`Reconnecting · attempt ${state.streamReconnectAttempt}`, "warning"]
+        : state.streamState === "timed_out" ? ["Timed out · polling", "offline"]
+          : state.streamState === "paused" ? ["Paused while app is hidden", "warning"]
+            : state.threadId ? ["Polling", "warning"] : ["No session", ""];
+  setHealthText("stream-connection-state", stream[0], stream[1]);
+  const agent = state.retryStatus ? ["Retrying model request", "warning"]
+    : state.threadError ? ["Last request failed", "error"]
+      : state.threadId && state.threadStatus && state.threadStatus !== "Idle" ? ["Working", "online"]
+        : state.threadId ? ["Idle · model not probed", ""] : ["No session", ""];
+  setHealthText("agent-connection-state", agent[0], agent[1]);
+  $("last-live-update").textContent = relativeLiveTime();
 }
 function pairingStatus() {
   return matchMedia("(display-mode: standalone)").matches ? "Pair this app" : "Pair this browser";
@@ -344,7 +401,8 @@ function updateComposerAction() {
   button.title = stopping ? "Stop current Zed Agent turn" : "Send message";
   button.disabled = stopping
     ? state.stoppingTurn
-    : !state.threadId || !!state.pending || !state.token;
+    : !state.threadId || !!state.pending || !state.token || !state.live
+      || navigator.onLine === false || state.gatewayReachable === false;
 }
 function apiError(code) {
   if (code === "UNAUTHENTICATED") return "Browser credential revoked or missing. Pair again.";
@@ -393,7 +451,11 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.token}` },
       body: JSON.stringify({ version: 1, request_id: requestId, method, params }),
     });
+    state.gatewayReachable = true;
+    renderConnectionHealth();
   } catch (cause) {
+    state.gatewayReachable = false;
+    renderConnectionHealth();
     const error = new Error(cause?.name === "AbortError" ? "The gateway request timed out." : "The gateway connection was interrupted.");
     error.code = "TRANSPORT_UNAVAILABLE";
     throw error;
@@ -408,6 +470,9 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     state.commands = [];
     state.turnId = null;
     state.threadStatus = null;
+    state.threadError = null;
+    state.retryStatus = null;
+    renderAgentHealth();
     safeStore.remove(tokenKey());
     requireManualGatewayVerification();
     document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
@@ -434,33 +499,53 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   return data.result;
 }
 
-function closeEventStream() {
+function closeEventStream(nextState = "idle") {
   if (state.eventReconnectTimer) clearTimeout(state.eventReconnectTimer);
+  if (state.eventConnectTimer) clearTimeout(state.eventConnectTimer);
   state.eventReconnectTimer = null;
+  state.eventConnectTimer = null;
   const socket = state.eventSocket;
   state.eventSocket = null;
   state.eventThreadId = null;
+  state.streamState = nextState;
   document.body.dataset.liveTransport = "polling";
   if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "Client view changed");
+  renderConnectionHealth();
 }
 
 function startEventStream() {
   if (!state.token || !state.threadId || document.visibilityState === "hidden") return;
+  if (state.eventReconnectTimer) return;
   if (state.eventSocket && state.eventThreadId === state.threadId
       && state.eventSocket.readyState <= WebSocket.OPEN) return;
-  closeEventStream();
+  closeEventStream("connecting");
   const threadId = state.threadId;
   const url = new URL("/v1/events", location.href);
   url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("thread_id", threadId);
   url.searchParams.set("after_sequence", String(state.sequence));
   const socket = new WebSocket(url, ["zedlink-v1", `zedlink-token-${state.token}`]);
+  state.streamState = state.streamReconnectAttempt ? "reconnecting" : "connecting";
   document.body.dataset.liveTransport = "connecting";
   state.eventSocket = socket;
   state.eventThreadId = threadId;
+  renderConnectionHealth();
+  state.eventConnectTimer = setTimeout(() => {
+    if (state.eventSocket === socket && socket.readyState !== WebSocket.OPEN) {
+      state.streamState = "timed_out";
+      renderConnectionHealth();
+      socket.close(4000, "Live update connection timed out");
+    }
+  }, 8000);
   socket.addEventListener("open", () => {
     if (state.eventSocket === socket) {
+      if (state.eventConnectTimer) clearTimeout(state.eventConnectTimer);
+      state.eventConnectTimer = null;
+      state.streamState = "live";
+      state.streamReconnectAttempt = 0;
+      state.lastLiveEventAt = Date.now();
       document.body.dataset.liveTransport = "websocket";
+      renderConnectionHealth();
     }
   });
   socket.addEventListener("message", (event) => {
@@ -471,6 +556,8 @@ function startEventStream() {
       const result = data.result;
       identity(result);
       if (result.thread_id !== threadId || !Array.isArray(result.events)) throw new Error("Invalid live event response.");
+      state.streamState = "live";
+      state.lastLiveEventAt = Date.now();
       connection("Live with Zed", "online");
       if (Number.isInteger(result.last_sequence)) state.sequence = Math.max(state.sequence, result.last_sequence);
       if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle")) {
@@ -481,18 +568,33 @@ function startEventStream() {
         state.token = null;
         safeStore.remove(tokenKey());
       }
-      connection(error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable" : "Reconnecting…", "offline");
+      if (error.code === "INSTANCE_UNAVAILABLE") connection("Zed unavailable", "offline");
+      else {
+        state.streamState = "reconnecting";
+        renderConnectionHealth();
+      }
       socket.close();
     }
   });
   socket.addEventListener("close", () => {
     if (state.eventSocket !== socket) return;
+    if (state.eventConnectTimer) clearTimeout(state.eventConnectTimer);
+    state.eventConnectTimer = null;
     state.eventSocket = null;
     state.eventThreadId = null;
     document.body.dataset.liveTransport = "polling";
     if (state.token && state.threadId === threadId && document.visibilityState !== "hidden") {
-      state.eventReconnectTimer = setTimeout(startEventStream, 1200);
+      state.streamReconnectAttempt += 1;
+      if (state.streamState !== "timed_out") state.streamState = "reconnecting";
+      const delay = Math.min(10000, 800 * (2 ** Math.min(state.streamReconnectAttempt, 4)));
+      state.eventReconnectTimer = setTimeout(() => {
+        state.eventReconnectTimer = null;
+        startEventStream();
+      }, delay);
+    } else {
+      state.streamState = document.visibilityState === "hidden" ? "paused" : "idle";
     }
+    renderConnectionHealth();
   });
   socket.addEventListener("error", () => { /* Close triggers bounded polling and reconnect. */ });
 }
@@ -504,6 +606,8 @@ async function loadGateway() {
   if (oneScanCode) history.replaceState(null, "", location.pathname + location.search);
   try {
     const response = await fetch("/v1/gateway", { cache: "no-store", redirect: "error" });
+    state.gatewayReachable = true;
+    renderConnectionHealth();
     const result = await response.json();
     if (!response.ok || result.version !== 1 || typeof result.gateway_id !== "string") {
       throw new Error("Unsupported gateway identity response.");
@@ -543,6 +647,8 @@ async function loadGateway() {
       connection(pairingStatus());
     }
   } catch (error) {
+    state.gatewayReachable = false;
+    renderConnectionHealth();
     connection(error.message.includes("gateway identity differs") ? "Gateway identity mismatch"
       : error.message.includes("pairing link") ? "Pairing link invalid" : "Gateway unavailable", "offline");
     notice(error.message);
@@ -550,11 +656,20 @@ async function loadGateway() {
 }
 
 async function pairBrowser(code, deviceName) {
-  const response = await fetch("/v1/pair", {
-    method: "POST", cache: "no-store", redirect: "error",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, device_name: deviceName }),
-  });
+  let response;
+  try {
+    response = await fetch("/v1/pair", {
+      method: "POST", cache: "no-store", redirect: "error",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, device_name: deviceName }),
+    });
+    state.gatewayReachable = true;
+  } catch {
+    state.gatewayReachable = false;
+    renderConnectionHealth();
+    throw new Error("The gateway connection was interrupted while pairing.");
+  }
+  renderConnectionHealth();
   const result = await response.json();
   if (!response.ok) throw new Error(apiError(result.error));
   if (result.gateway_id !== state.gatewayId || !/^[0-9a-f]{64}$/.test(result.token)) {
@@ -592,6 +707,9 @@ async function connect() {
       renderCommands();
       state.turnId = null;
       state.threadStatus = null;
+      state.threadError = null;
+      state.retryStatus = null;
+      renderAgentHealth();
       state.threadSettings = null;
       updateComposerAction();
       renderThreadSettings();
@@ -640,6 +758,9 @@ async function loadThreads() {
     renderCommands();
     state.turnId = null;
     state.threadStatus = null;
+    state.threadError = null;
+    state.retryStatus = null;
+    renderAgentHealth();
     state.threadSettings = null;
     updateComposerAction();
     renderThreadSettings();
@@ -692,6 +813,50 @@ async function createSession(event) {
   }
 }
 
+function validAgentError(error) {
+  if (!error || typeof error !== "object") return null;
+  if (typeof error.title !== "string" || typeof error.message !== "string") return null;
+  return {
+    kind: typeof error.kind === "string" ? error.kind : "agent_error",
+    title: error.title,
+    message: error.message,
+    retrying: error.retrying === true,
+  };
+}
+
+function validRetryStatus(retry) {
+  if (!retry || typeof retry !== "object") return null;
+  if (!Number.isInteger(retry.attempt) || !Number.isInteger(retry.max_attempts)) return null;
+  return {
+    lastError: typeof retry.last_error === "string" ? retry.last_error : "The model request failed.",
+    attempt: retry.attempt,
+    maxAttempts: retry.max_attempts,
+    nextAttemptMs: Number.isFinite(retry.next_attempt_in_ms) ? Math.max(0, retry.next_attempt_in_ms) : 0,
+  };
+}
+
+function renderAgentHealth() {
+  const panel = $("agent-health");
+  const retry = state.retryStatus;
+  const error = state.threadError;
+  panel.classList.toggle("hidden", !retry && !error);
+  panel.classList.toggle("retrying", !!retry);
+  if (!retry && !error) return;
+  if (retry) {
+    const seconds = Math.max(1, Math.ceil(retry.nextAttemptMs / 1000));
+    $("agent-health-title").textContent = "Zed is retrying the model request";
+    $("agent-health-message").textContent = retry.lastError;
+    $("agent-health-recovery").textContent = `Attempt ${retry.attempt} of ${retry.maxAttempts} · ${seconds}s`;
+  } else {
+    $("agent-health-title").textContent = error.title;
+    $("agent-health-message").textContent = error.message;
+    $("agent-health-recovery").textContent = error.retrying
+      ? "Zed may retry · restore the model endpoint"
+      : "Check desktop Zed";
+  }
+  renderConnectionHealth();
+}
+
 function renderThreads() {
   const list = $("thread-list");
   list.replaceChildren();
@@ -711,22 +876,24 @@ function renderThreads() {
     const button = document.createElement("button");
     button.type = "button";
     const busy = thread.status && thread.status !== "Idle";
-    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${busy ? "running" : ""}`;
+    const retrying = !!validRetryStatus(thread.retry_status);
+    const failed = !busy && !retrying && (thread.had_error === true || !!validAgentError(thread.agent_error));
+    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${busy || retrying ? "running" : ""} ${failed ? "error" : ""}`;
     const badge = document.createElement("span");
     badge.className = "thread-badge";
     badge.textContent = "ZED AGENT";
     const status = document.createElement("span");
-    status.className = `thread-status ${busy ? "busy" : ""}`;
-    if (busy) {
+    status.className = `thread-status ${busy || retrying ? "busy" : ""} ${failed ? "error" : ""}`;
+    if (busy || retrying) {
       const progress = document.createElement("span");
       progress.className = "thread-progress";
       progress.setAttribute("aria-hidden", "true");
       progress.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
       const label = document.createElement("span");
-      label.textContent = "Working";
-      status.setAttribute("aria-label", `Agent is active: ${thread.status}`);
+      label.textContent = retrying ? "Retrying" : "Working";
+      status.setAttribute("aria-label", retrying ? "Zed is retrying the model request" : `Agent is active: ${thread.status}`);
       status.append(progress, label);
-    } else status.textContent = thread.status || "Unknown";
+    } else status.textContent = failed ? "Request failed" : thread.status || "Unknown";
     const title = document.createElement("strong");
     title.textContent = thread.title || "Untitled Agent thread";
     const detail = document.createElement("small");
@@ -738,13 +905,16 @@ function renderThreads() {
 }
 
 async function selectThread(threadId) {
-  closeEventStream();
+  closeEventStream("connecting");
   state.threadId = threadId;
   safeStore.write(selectedThreadKey(), threadId);
   state.commands = [];
   renderCommands();
   state.turnId = null;
   state.threadStatus = null;
+  state.threadError = null;
+  state.retryStatus = null;
+  renderAgentHealth();
   state.threadSettings = null;
   updateComposerAction();
   renderThreadSettings();
@@ -1354,6 +1524,9 @@ async function snapshot() {
   while (container.children.length > result.entries_markdown.length) container.lastElementChild.remove();
   state.renderedEntries.length = result.entries_markdown.length;
   const busy = result.status !== "Idle";
+  state.threadError = validAgentError(result.agent_error);
+  state.retryStatus = validRetryStatus(result.retry_status);
+  renderAgentHealth();
   for (const details of container.querySelectorAll("details.thinking-block")) details.open = false;
   if (busy) {
     const assistants = container.querySelectorAll(".message.assistant");
@@ -1361,8 +1534,9 @@ async function snapshot() {
   }
   $("thread-title").textContent = result.title || "Untitled Agent thread";
   $("thread-meta").textContent = result.truncated ? "Older conversation omitted here · Full history remains in Zed" : `Thread ${result.thread_id.slice(0, 12)}…`;
-  $("thread-state").textContent = result.status;
-  $("thread-state").className = `state-pill ${result.status === "Idle" ? "online" : ""}`;
+  const failed = !busy && !state.retryStatus && (result.had_error === true || !!state.threadError);
+  $("thread-state").textContent = state.retryStatus ? "Retrying" : failed ? "Request failed" : result.status;
+  $("thread-state").className = `state-pill ${result.status === "Idle" && !failed ? "online" : ""} ${failed ? "offline" : ""}`;
   const activityEntries = Array.isArray(result.activity_entries_markdown)
     && result.activity_entries_markdown.every((entry) => typeof entry === "string")
     ? result.activity_entries_markdown : result.entries_markdown;
@@ -1376,9 +1550,14 @@ async function snapshot() {
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
   state.threadStatus = result.status;
   const summary = state.threads.find((thread) => thread.thread_id === result.thread_id);
-  if (summary && (summary.status !== result.status || summary.current_turn_id !== state.turnId)) {
+  if (summary && (summary.status !== result.status || summary.current_turn_id !== state.turnId
+      || summary.had_error !== result.had_error || summary.agent_error !== result.agent_error
+      || summary.retry_status !== result.retry_status)) {
     summary.status = result.status;
     summary.current_turn_id = state.turnId;
+    summary.had_error = result.had_error === true;
+    summary.agent_error = result.agent_error || null;
+    summary.retry_status = result.retry_status || null;
     renderThreads();
   }
   if (state.threadSettings && state.threadSettings.status !== result.status) {
@@ -1442,7 +1621,9 @@ async function poll() {
       notice(error.message);
     }
     connection(error.code === "UNAUTHENTICATED" ? pairingStatus()
-      : error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable" : "Reconnecting…", "offline");
+      : error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable"
+        : error.message.includes("timed out") ? "Gateway request timed out"
+          : navigator.onLine === false ? "Device offline" : "Gateway disconnected", "offline");
   } finally { state.polling = false; }
 }
 
@@ -1610,6 +1791,10 @@ async function signOut() {
   state.token = null;
   state.pending = null;
   state.threadId = null;
+  state.threadStatus = null;
+  state.threadError = null;
+  state.retryStatus = null;
+  state.desktopReachable = null;
   state.threadSettings = null;
   requireManualGatewayVerification();
   document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
@@ -1619,6 +1804,7 @@ async function signOut() {
   $("settings-panel").classList.add("hidden");
   $("transcript-entries").replaceChildren();
   $("activity").classList.add("hidden");
+  renderAgentHealth();
   $("prompt").disabled = true;
   delivery("");
   renderThreadSettings();
@@ -1671,12 +1857,21 @@ function resumeLiveUpdates() {
   poll();
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") closeEventStream();
+  if (document.visibilityState === "hidden") closeEventStream("paused");
   else resumeLiveUpdates();
 });
 window.addEventListener("pageshow", resumeLiveUpdates);
 window.addEventListener("focus", resumeLiveUpdates);
-window.addEventListener("online", resumeLiveUpdates);
+window.addEventListener("online", () => {
+  renderConnectionHealth();
+  resumeLiveUpdates();
+});
+window.addEventListener("offline", () => {
+  state.gatewayReachable = false;
+  if (state.threadId) state.streamState = "reconnecting";
+  renderConnectionHealth();
+  updateComposerAction();
+});
 
 function showMobileView(view) {
   document.body.classList.remove("mobile-connections", "mobile-settings");

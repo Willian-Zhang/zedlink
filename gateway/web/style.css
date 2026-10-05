@@ -43,6 +43,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .connection.online::before { background: var(--online); }
 .connection.offline { color: #e4a2a2; }
 .connection.offline::before { background: #e4a2a2; }
+.connection.warning { color: var(--warning); }
+.connection.warning::before { background: var(--warning); }
 
 .layout { display: grid; grid-template-columns: clamp(340px, 22vw, 430px) minmax(0, 1fr); width: 100%; min-height: calc(100dvh - 68px); }
 .sidebar { min-width: 0; border-right: 1px solid var(--line); background: var(--bg); }
@@ -109,6 +111,8 @@ input[type=search] { appearance: none; }
 .thread-status::before { background: currentColor; }
 .thread-status.busy { color: #99b7e2; }
 .thread-status.busy::before { display: none; }
+.thread-status.error { color: #e99b9b; }
+.thread-item.error { border-left-color: #b75f5f; background: linear-gradient(90deg, #211011 0, transparent 72%); }
 .thread-progress { display: inline-flex; align-items: center; gap: 2px; width: 15px; height: 13px; }
 .thread-progress i { display: block; width: 3px; height: 4px; background: currentColor; animation: session-working .9s ease-in-out infinite alternate; }
 .thread-progress i:nth-child(2) { animation-delay: -.3s; }
@@ -131,6 +135,12 @@ input[type=search] { appearance: none; }
 .notice, .delivery { border: 1px solid #735f43; background: #1c1915; color: #edcf9d; font-size: .76rem; line-height: 1.45; }
 .notice { margin: 12px max(24px, calc((100% - 1220px) / 2)) 0; padding: 9px 12px; }
 .panel .notice { margin: 14px 0 0; }
+.agent-health { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; margin: 12px max(24px, calc((100% - 1220px) / 2)) 0; padding: 12px 14px; border: 1px solid #7f4545; background: #1d0f10; color: #ffd0d0; }
+.agent-health strong { display: block; font-size: .82rem; }
+.agent-health p { margin: 5px 0 0; color: #dfb0b0; font-size: .76rem; line-height: 1.45; overflow-wrap: anywhere; }
+.agent-health > span { color: #e2bc80; font: .68rem ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; }
+.agent-health.retrying { border-color: #735f43; background: #1c1915; color: #edcf9d; }
+.agent-health.retrying p { color: #cdb78f; }
 
 .messages { display: flex; flex: 1; flex-direction: column; gap: 0; min-height: 0; overflow: auto; padding: 22px max(24px, calc((100% - 1180px) / 2)) 26px; scroll-behavior: smooth; overscroll-behavior: contain; }
 .transcript-entries { display: contents; }
@@ -256,6 +266,9 @@ input[type=search] { appearance: none; }
 .notification-actions .primary, .notification-actions .quiet { width: auto !important; min-height: 42px; margin: 0 !important; }
 #notification-state.enabled { color: var(--online); }
 #notification-state.blocked { color: #e0a2a2; }
+#device-network-state.offline, #gateway-connection-state.offline, #zed-connection-state.offline, #stream-connection-state.offline, #agent-connection-state.error { color: #e4a2a2; }
+#device-network-state.online, #gateway-connection-state.online, #zed-connection-state.online, #stream-connection-state.online, #agent-connection-state.online { color: var(--online); }
+#stream-connection-state.warning, #agent-connection-state.warning { color: var(--warning); }
 #sign-out { width: 100%; margin-top: 26px; border-color: #6f4545; font-size: .76rem; }
 
 body.pairing .layout { grid-template-columns: minmax(0, 1fr); }
@@ -307,6 +320,8 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   #show-sessions { display: inline-flex; align-items: center; justify-content: center; flex: none; min-height: 38px; padding: 6px 8px; font-size: .72rem; }
   .state-pill { font-size: .62rem; }
   .notice { max-height: 58px; overflow: auto; margin: 6px 11px 0; padding: 7px 9px; font-size: .72rem; }
+  .agent-health { grid-template-columns: 1fr; gap: 7px; margin: 6px 11px 0; padding: 9px 10px; }
+  .agent-health p { font-size: .72rem; }
   .messages { padding: 7px 12px 12px; }
   .message { padding: 14px 0; }
   .message.user { width: min(92%, 540px); padding: 10px 12px; margin: 9px 0 6px; }

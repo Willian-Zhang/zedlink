@@ -7,7 +7,7 @@ index 9f641fb384..24840eec03 100644
 +> Remove this line to confirm you've reviewed this PR before submitting.
 +
  # Zed
- 
+
  [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
 index 24c44be6f4..ee395e851a 100644
@@ -16,7 +16,7 @@ index 24c44be6f4..ee395e851a 100644
 @@ -2680,6 +2680,10 @@ impl AcpThread {
          }
      }
- 
+
 +    pub fn current_turn_id(&self) -> Option<u32> {
 +        self.running_turn.as_ref().map(|turn| turn.id)
 +    }
@@ -41,7 +41,7 @@ index 135c970ce0..798331b0a5 100644
 +            cx,
 +        )
      }
- 
+
      fn handle_thread_events(
 +        events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
 +        acp_thread: WeakEntity<AcpThread>,
@@ -90,7 +90,7 @@ index c9e823bd26..ba1edd24bc 100644
  mod unicode_confusables;
 +#[cfg(unix)]
 +mod zedlink_probe;
- 
+
  use std::rc::Rc;
  use std::sync::Arc;
 @@ -614,6 +616,10 @@ pub fn init(
@@ -115,7 +115,7 @@ index 6b6196c438..d156a03abe 100644
 +    #[cfg(unix)]
 +    RemoteControl,
  }
- 
+
  impl PromptLocalCommand {
 @@ -206,6 +208,8 @@ impl PromptLocalCommand {
          match self {
@@ -125,7 +125,7 @@ index 6b6196c438..d156a03abe 100644
 +            Self::RemoteControl => "remote-control",
          }
      }
- 
+
 @@ -213,6 +217,8 @@ impl PromptLocalCommand {
          match self {
              Self::ThumbsUp => "Positive Feedback",
@@ -134,7 +134,7 @@ index 6b6196c438..d156a03abe 100644
 +            Self::RemoteControl => "Remote Control",
          }
      }
- 
+
 @@ -224,6 +230,8 @@ impl PromptLocalCommand {
              Self::ThumbsDown => {
                  "Rate this response as not helpful. Sends the current conversation to the Zed team."
@@ -143,7 +143,7 @@ index 6b6196c438..d156a03abe 100644
 +            Self::RemoteControl => "Expose or stop exposing this native Agent thread to ZedLink.",
          }
      }
- 
+
 @@ -231,6 +239,8 @@ impl PromptLocalCommand {
          match self {
              Self::ThumbsUp => IconName::ThumbsUp,
@@ -154,7 +154,7 @@ index 6b6196c438..d156a03abe 100644
      }
  }
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index bfefb986bd..3f9c2d3a10 100644
+index bfefb986bd..e341fa6a35 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -1163,6 +1163,19 @@ impl ThreadView {
@@ -176,11 +176,11 @@ index bfefb986bd..3f9c2d3a10 100644
 +            }
          }
      }
- 
+
 @@ -1552,6 +1565,10 @@ impl ThreadView {
          self.send_impl(message_editor, window, cx)
      }
- 
+
 +    pub(crate) fn is_loading_message_contents(&self) -> bool {
 +        self.is_loading_contents
 +    }
@@ -188,10 +188,136 @@ index bfefb986bd..3f9c2d3a10 100644
      /// Sends a bare `/command` turn and queues everything the user typed after
      /// it as a follow-up message. The queued remainder auto-processes when the
      /// command turn stops, so e.g. `/compact do X` compacts and then runs `do X`
-@@ -6984,6 +7001,14 @@ impl ThreadView {
+@@ -1861,6 +1878,125 @@ impl ThreadView {
+         cx.notify();
+     }
+
++    pub(crate) fn zedlink_error_summary(&self) -> Option<(&'static str, String, String, bool)> {
++        self.thread_error.as_ref().map(|error| match error {
++            ThreadError::ZedPaymentRequired => (
++                "payment_required",
++                "Usage limit reached".into(),
++                "Zed reached its configured usage limit.".into(),
++                false,
++            ),
++            ThreadError::DataRetentionConsentRequired => (
++                "data_retention_consent_required",
++                "Model unavailable".into(),
++                "The selected model is unavailable with the current data retention setting."
++                    .into(),
++                false,
++            ),
++            ThreadError::Refusal => (
++                "refusal",
++                "Request refused".into(),
++                "The selected model refused this request.".into(),
++                false,
++            ),
++            ThreadError::AuthenticationRequired(message) => (
++                "authentication_required",
++                "Authentication required".into(),
++                message.to_string(),
++                false,
++            ),
++            ThreadError::RateLimitExceeded { provider } => (
++                "rate_limit_exceeded",
++                "Rate limit reached".into(),
++                format!("{provider}'s rate limit was reached. Zed will retry automatically."),
++                true,
++            ),
++            ThreadError::ServerOverloaded { provider } => (
++                "server_overloaded",
++                "Provider unavailable".into(),
++                format!("{provider}'s servers are temporarily unavailable. Zed will retry automatically."),
++                true,
++            ),
++            ThreadError::PromptTooLarge => (
++                "prompt_too_large",
++                "Context too large".into(),
++                "The request exceeded the model's context window.".into(),
++                false,
++            ),
++            ThreadError::NoCredentials { provider } => (
++                "no_credentials",
++                "Credentials missing".into(),
++                format!("No credentials are configured for {provider}."),
++                false,
++            ),
++            ThreadError::StreamError { provider } => (
++                "stream_error",
++                "Model connection interrupted".into(),
++                format!("The connection to {provider}'s API was interrupted. Zed will retry automatically."),
++                true,
++            ),
++            ThreadError::AuthenticationFailed { provider } => (
++                "authentication_failed",
++                "Authentication failed".into(),
++                format!("Zed could not authenticate with {provider}."),
++                false,
++            ),
++            ThreadError::PermissionDenied { provider, message } => (
++                "permission_denied",
++                "Permission denied".into(),
++                message
++                    .as_ref()
++                    .map(ToString::to_string)
++                    .unwrap_or_else(|| format!("{provider} rejected the request.")),
++                false,
++            ),
++            ThreadError::ProviderRejection { message } => (
++                "provider_rejection",
++                "Model request failed".into(),
++                message.to_string(),
++                true,
++            ),
++            ThreadError::MaxOutputTokens => (
++                "max_output_tokens",
++                "Output limit reached".into(),
++                "The model reached its maximum output length.".into(),
++                false,
++            ),
++            ThreadError::NoModelSelected => (
++                "no_model_selected",
++                "No model selected".into(),
++                "Select a model in desktop Zed before sending another message.".into(),
++                false,
++            ),
++            ThreadError::ApiError { provider } => (
++                "api_error",
++                "Model API error".into(),
++                format!("{provider}'s API returned an unexpected error."),
++                true,
++            ),
++            ThreadError::Other { message, .. } => (
++                "other",
++                "Agent request failed".into(),
++                message.to_string(),
++                true,
++            ),
++        })
++    }
++
++    pub(crate) fn zedlink_retry_status(&self) -> Option<(String, usize, usize, u64)> {
++        self.thread_retry_status.as_ref().map(|status| {
++            let remaining = status
++                .duration
++                .saturating_sub(Instant::now().saturating_duration_since(status.started_at));
++            (
++                status.last_error.to_string(),
++                status.attempt,
++                status.max_attempts,
++                remaining.as_millis().try_into().unwrap_or(u64::MAX),
++            )
++        })
++    }
++
+     fn emit_thread_error_telemetry(&self, error: &ThreadError, cx: &mut Context<Self>) {
+         let (error_kind, acp_error_code, message): (&str, Option<SharedString>, SharedString) =
+             match error {
+@@ -6984,6 +7120,14 @@ impl ThreadView {
              commands.push(PromptLocalCommand::ThumbsDown);
          }
- 
+
 +        #[cfg(unix)]
 +        if self.parent_session_id.is_none()
 +            && self.as_native_thread(cx).is_some()
@@ -202,13 +328,13 @@ index bfefb986bd..3f9c2d3a10 100644
 +
          commands
      }
- 
+
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..cb3ec998a9
+index 0000000000..53c96a97e4
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,1157 @@
+@@ -0,0 +1,1205 @@
 +use std::{
 +    cell::RefCell,
 +    collections::{HashMap, HashSet, VecDeque},
@@ -538,18 +664,27 @@ index 0000000000..cb3ec998a9
 +        }
 +        "thread.list" => {
 +            let mut seen = HashSet::new();
-+            let threads = loaded_threads(&state.project_root, cx)
++            let threads = loaded_thread_views(&state.project_root, cx)
 +                .into_iter()
-+                .filter_map(|thread| {
++                .filter_map(|(thread, view)| {
 +                    let thread = thread.read(cx);
 +                    let id = thread.session_id().to_string();
 +                    (state.exposed_threads.borrow().contains(&id) && seen.insert(id.clone())).then(
 +                        || {
++                            let agent_error = zedlink_error_value(
++                                thread.had_error(),
++                                view.read(cx).zedlink_error_summary(),
++                            );
++                            let retry_status =
++                                zedlink_retry_value(view.read(cx).zedlink_retry_status());
 +                            json!({
 +                                "thread_id": id,
-+                            "title": thread.title().map(|title| title.to_string()),
-+                            "status": format!("{:?}", thread.status()),
-+                            "current_turn_id": thread.current_turn_id(),
++                                "title": thread.title().map(|title| title.to_string()),
++                                "status": format!("{:?}", thread.status()),
++                                "current_turn_id": thread.current_turn_id(),
++                                "had_error": thread.had_error(),
++                                "agent_error": agent_error,
++                                "retry_status": retry_status,
 +                            })
 +                        },
 +                    )
@@ -572,13 +707,16 @@ index 0000000000..cb3ec998a9
 +            if !state.exposed_threads.borrow().contains(id) {
 +                return error(&request.request_id, "THREAD_NOT_EXPOSED");
 +            }
-+            let Some(thread) = loaded_threads(&state.project_root, cx)
++            let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
 +                .into_iter()
-+                .find(|thread| thread.read(cx).session_id().to_string() == id)
++                .find(|(thread, _)| thread.read(cx).session_id().to_string() == id)
 +            else {
 +                return error(&request.request_id, "THREAD_NOT_EXPOSED");
 +            };
 +            let thread = thread.read(cx);
++            let agent_error =
++                zedlink_error_value(thread.had_error(), view.read(cx).zedlink_error_summary());
++            let retry_status = zedlink_retry_value(view.read(cx).zedlink_retry_status());
 +            let mut used = 0;
 +            let mut entries = Vec::new();
 +            let mut truncated = false;
@@ -623,6 +761,9 @@ index 0000000000..cb3ec998a9
 +                    "title": thread.title().map(|title| title.to_string()),
 +                    "status": format!("{:?}", thread.status()),
 +                    "current_turn_id": thread.current_turn_id(),
++                    "had_error": thread.had_error(),
++                    "agent_error": agent_error,
++                    "retry_status": retry_status,
 +                    "pending_approvals": pending_approvals(thread, cx),
 +                    "entries_markdown": entries,
 +                    "truncated": truncated,
@@ -1307,6 +1448,39 @@ index 0000000000..cb3ec998a9
 +
 +fn send_result(request_id: &str, outcome: &str) -> Value {
 +    success(request_id, json!({"outcome": outcome, "provisional": true}))
++}
++
++fn zedlink_error_value(
++    had_error: bool,
++    error: Option<(&'static str, String, String, bool)>,
++) -> Value {
++    match error {
++        Some((kind, title, message, retrying)) => json!({
++            "kind": kind,
++            "title": title,
++            "message": message.chars().take(2048).collect::<String>(),
++            "retrying": retrying,
++        }),
++        None if had_error => json!({
++            "kind": "agent_error",
++            "title": "Agent request failed",
++            "message": "The last native Zed Agent turn failed. Open desktop Zed for any additional detail.",
++            "retrying": false,
++        }),
++        None => Value::Null,
++    }
++}
++
++fn zedlink_retry_value(retry: Option<(String, usize, usize, u64)>) -> Value {
++    match retry {
++        Some((last_error, attempt, max_attempts, next_attempt_in_ms)) => json!({
++            "last_error": last_error.chars().take(1024).collect::<String>(),
++            "attempt": attempt,
++            "max_attempts": max_attempts,
++            "next_attempt_in_ms": next_attempt_in_ms,
++        }),
++        None => Value::Null,
++    }
 +}
 +
 +fn loaded_threads(project_root: &Path, cx: &App) -> Vec<Entity<AcpThread>> {

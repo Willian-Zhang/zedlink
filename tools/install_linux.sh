@@ -16,8 +16,10 @@ if [[ ! -d "$source_root/.git" ]]; then
 fi
 
 actual_revision="$(git -C "$source_root" rev-parse HEAD)"
-if [[ "$actual_revision" != "$pinned_revision" ]]; then
-  printf 'Expected Zed revision %s; found %s. No changes made.\n' "$pinned_revision" "$actual_revision" >&2
+if [[ "$actual_revision" != "$pinned_revision" ]] &&
+  ! git -C "$source_root" merge-base --is-ancestor "$pinned_revision" "$actual_revision"; then
+  printf 'Expected Zed revision %s or a ZedLink fork branch based on it; found %s. No changes made.\n' \
+    "$pinned_revision" "$actual_revision" >&2
   exit 1
 fi
 

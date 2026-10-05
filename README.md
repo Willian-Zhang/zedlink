@@ -346,6 +346,8 @@ Live reasoning and tool progress appear inside the conversation after the curren
 
 Sessions that are running show an animated three-bar **Working** indicator in the Sessions list. The list reconciles with native Zed every two seconds while a conversation is open, while the selected conversation continues to receive immediate WebSocket updates. Browsers that request reduced motion receive a static activity indicator.
 
+ZedLink reports four health layers separately: the browser's network, the HTTPS gateway, desktop Zed, and the selected native Agent. Open **Connections** on a phone to see each one. An Idle thread means no turn is currently running; it does not prove that the configured model endpoint is reachable. If Zed's last native turn failed, the session changes to **Request failed** and the same native error appears inline in the conversation. Native model retries show the current attempt and next retry delay. The error clears when Zed starts a later turn successfully or the desktop error is dismissed.
+
 The square control at the bottom right of the composer shows an up arrow while the thread is ready to receive a message. When the native snapshot reports an exact active turn, it changes to a red Stop square. Selecting it sends a guarded cancellation for that Zed instance, event epoch, thread, and turn, then returns to Send when the thread becomes idle. The separate thread-header Stop button has been removed so the control stays beside the text field on phones and desktop browsers.
 
 Open **Settings** from the gear beside Sessions or the phone's Settings tab. For the selected exposed thread, ZedLink displays the actual model reported by native Zed and lets you change the native Agent profile and model-thinking toggle while the thread is idle. These controls call Zed's thread settings paths; they do not store model credentials in the browser. Model selection remains in desktop Zed for now. **Sign out** appears once in Settings and removes this device's saved browser credential; use the desktop paired-device task when the server-side device record must also be revoked.
@@ -377,6 +379,8 @@ Use these tasks for management:
 | **ZedLink: Configure** | Changes the project, route, TLS paths, or Zed profile |
 | **ZedLink: Rebuild patched Zed** | Rebuilds the pinned patch and gateway |
 | **ZedLink: Guided setup / update** | Runs the complete guided workflow again |
+
+**ZedLink: Pair a device** opens the private pairing page without focusing a task terminal. Its temporary task tab closes after success and remains visible only when pairing fails. The `/bin/sh -i -c 'python3'` line shown by older task definitions was Zed's task wrapper; a blank cursor after “finished successfully” did not mean Python was still running. Run **ZedLink: Guided setup / update** once to refresh an older global task definition.
 
 Closing the gateway terminal stops remote browser access. Closing patched Zed makes the native thread unavailable. Neither action deletes the conversation or pairing records.
 
@@ -458,7 +462,11 @@ Use a normal browser window rather than private or incognito mode. Pairing is sc
 
 ### The conversation stops updating on a phone
 
-Refresh once to load the latest web build, then reopen the thread. The connection label should become **Live with Zed**, and the thread header should change between Idle and the native running state. ZedLink reconnects when Safari or Chrome returns to the foreground. If it remains offline, confirm Tailscale is connected and run **ZedLink: Status** on the workstation.
+Refresh once to load the latest web build, then reopen the thread. Open **Connections** to identify the failing layer. **Gateway unavailable** points to the phone route, TLS service, or gateway process. **Zed unavailable** means the gateway is reachable but its private native socket is not. **Live updates: Reconnecting** or **Timed out · polling** means HTTPS reconciliation continues while the WebSocket reconnects with bounded backoff. ZedLink reconnects when Safari or Chrome returns to the foreground. If it remains offline, confirm Tailscale is connected and run **ZedLink: Status** on the workstation.
+
+### ZedLink says Idle while the local model is offline
+
+Idle describes the native thread's execution state. The model is contacted only when Zed runs a turn, so ZedLink does not invent a background model-health result. After a native request fails, the browser shows **Request failed** with Zed's native error and preserves it while the thread is idle. Restore the configured model endpoint, then send or retry through Zed's normal Agent path. A later native retry is shown as **Retrying** with its attempt and delay.
 
 ### A message may have been sent during a disconnect
 
