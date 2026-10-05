@@ -9,7 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 MAX_BODY = 1024 * 1024
-COUNTERS = {"stream": 0, "delay": 0, "approval": 0, "approval_followup": 0, "fallback": 0}
+COUNTERS = {"stream": 0, "delay": 0, "browser_stop": 0,
+            "approval": 0, "approval_followup": 0, "fallback": 0, "disconnected": 0}
 COUNTER_LOCK = threading.Lock()
 TOOL_SHAPES = []
 FIXTURE_ROOT = None
@@ -80,6 +81,8 @@ class Handler(BaseHTTPRequestHandler):
             case, pieces, pause = "approval_followup", ["Sentinel operation resolved."], 0
         elif "ZEDLINK_FIXTURE_APPROVAL" in serialized and FIXTURE_ROOT and "terminal" in names:
             case, pieces, pause = "approval", [], 0
+        elif "ZEDLINK_FIXTURE_BROWSER_STOP" in serialized:
+            case, pieces, pause = "browser_stop", ["Browser stop fixture ", "response complete."], 15
         elif "ZEDLINK_FIXTURE_DELAY" in serialized:
             case, pieces, pause = "delay", ["Delayed fixture ", "response complete."], 1.5
         elif "ZEDLINK_FIXTURE_STREAM" in serialized:
@@ -129,7 +132,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            with COUNTER_LOCK:
+                COUNTERS["disconnected"] += 1
 
     def respond_json(self, payload):
         encoded = json.dumps(payload).encode()

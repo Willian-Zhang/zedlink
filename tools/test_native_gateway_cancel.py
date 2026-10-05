@@ -9,6 +9,7 @@ import time
 import urllib.request
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from test_native_fixture import counters
 
@@ -19,9 +20,13 @@ def main():
     parser.add_argument("--gateway-id", required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--fixture-url", default="http://127.0.0.1:54259")
+    parser.add_argument("--allow-shared-gateway", action="store_true",
+                        help="Explicitly permit testing a non-loopback gateway with existing pairings")
     args = parser.parse_args()
     if not args.base_url.startswith("https://") or not args.fixture_url.startswith("http://127.0.0.1:"):
         parser.error("verified HTTPS gateway and loopback model fixture are required")
+    if urlparse(args.base_url).hostname not in ("localhost", "127.0.0.1") and not args.allow_shared_gateway:
+        parser.error("use an isolated localhost gateway for fixture tests; --allow-shared-gateway overrides this guard")
     binary = Path(__file__).resolve().parents[1] / "gateway/target/debug/zedlink-gateway"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                          urllib.request.HTTPSHandler(context=ssl.create_default_context()))
