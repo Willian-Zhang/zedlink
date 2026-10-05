@@ -421,9 +421,15 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.12"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.13"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
+                wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
+                assert "checking" not in browser.find_element(By.ID, "header-notifications").text.casefold()
+                assert browser.execute_script(
+                    "return document.getElementById('show-sessions').closest('.topbar') !== null"
+                )
+                assert not browser.find_elements(By.CSS_SELECTOR, ".workspace #show-sessions")
                 assert len(browser.find_elements(By.ID, "sign-out")) == 1
                 assert not browser.find_elements(By.ID, "forget")
                 assert not browser.find_elements(By.ID, "mobile-forget")
@@ -452,9 +458,10 @@ def main():
                 assert browser.find_element(By.CSS_SELECTOR, ".thread-badge").text == "ZED AGENT"
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
-                wait.until(lambda driver: "Live with Zed" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                wait.until(lambda driver: "Zed connected · live updates" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 browser.find_element(By.ID, "open-settings").click()
                 wait.until(lambda driver: "Local GLM fixture" in driver.find_element(By.ID, "zed-model").get_attribute("value"))
+                assert "Local GLM fixture" in browser.find_element(By.ID, "header-model").text
                 assert Select(browser.find_element(By.ID, "zed-profile")).first_selected_option.get_attribute("value") == "write"
                 Select(browser.find_element(By.ID, "zed-profile")).select_by_value("ask")
                 browser.find_element(By.ID, "zed-thinking").click()
@@ -599,7 +606,7 @@ def main():
                 assert layout["pageWidth"] <= layout["width"] + 1
                 assert layout["composerBottom"] <= layout["height"]
                 assert not browser.find_element(By.ID, "tab-sessions").is_displayed()
-                assert not browser.find_element(By.CSS_SELECTOR, ".topbar").is_displayed()
+                assert browser.find_element(By.CSS_SELECTOR, ".topbar").is_displayed()
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
                 assert layout["messagesHeight"] >= 390 and layout["sidebarHidden"], layout
                 assert browser.find_element(By.ID, "prompt").is_displayed()

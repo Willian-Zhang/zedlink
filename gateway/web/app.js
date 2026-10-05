@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.12";
+const UI_BUILD = "2026.10.05.13";
 const state = {
   gatewayId: null,
   token: null,
@@ -92,6 +92,19 @@ function relativeLiveTime() {
   if (seconds < 60) return `${seconds}s ago`;
   return `${Math.floor(seconds / 60)}m ago`;
 }
+function compactConnectionMessage(message) {
+  if (!matchMedia("(max-width: 760px)").matches) return message;
+  const compact = {
+    "Zed connected · live updates": "Zed · Live",
+    "Zed connected · polling": "Zed · Polling",
+    "Zed connected · restoring live updates": "Zed · Reconnecting",
+    "Zed connected · live updates timed out": "Zed · Polling",
+    "Checking gateway…": "Checking…",
+    "Gateway unavailable": "Gateway offline",
+    "Device offline": "Device offline",
+  };
+  return compact[message] || message;
+}
 function renderConnectionHealth() {
   const deviceOnline = navigator.onLine !== false;
   let message = state.connectionMessage;
@@ -107,8 +120,9 @@ function renderConnectionHealth() {
     status = "warning";
   }
   const element = $("connection");
-  element.textContent = message;
+  element.textContent = compactConnectionMessage(message);
   element.className = `connection ${status}`;
+  element.title = "Browser, gateway, and desktop Zed connection. Model availability is shown separately.";
   $("mobile-connection-state").textContent = message;
   setHealthText("device-network-state", deviceOnline ? "Online" : "Offline", deviceOnline ? "online" : "offline");
   setHealthText("gateway-connection-state", state.gatewayReachable === true ? "Reachable" : state.gatewayReachable === false ? "Unavailable" : "Checking…", state.gatewayReachable === true ? "online" : state.gatewayReachable === false ? "offline" : "");
@@ -161,6 +175,29 @@ function pushSupported() {
   return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 }
 
+function setHeaderRuntime(id, text, status = "", title = text) {
+  const element = $(id);
+  element.textContent = text;
+  element.className = `runtime-item ${status}`.trim();
+  element.title = title;
+}
+
+function renderHeaderModel() {
+  const supported = state.capabilities.includes("thread.settings");
+  if (!state.threadId) {
+    setHeaderRuntime("header-model", "No session", "", "Select a native Zed Agent session to see its current model.");
+  } else if (!supported) {
+    setHeaderRuntime("header-model", "Model · update Zed", "warning", "Restart the updated patched Zed build to report this session's model.");
+  } else if (state.settingsBusy) {
+    setHeaderRuntime("header-model", "Model · loading…");
+  } else if (state.threadSettings?.model?.name) {
+    const model = state.threadSettings.model;
+    setHeaderRuntime("header-model", `Model · ${model.name}`, "", `${model.name} · ${model.provider_id || "provider unavailable"}`);
+  } else {
+    setHeaderRuntime("header-model", "Model unavailable", "error", "Desktop Zed did not return model identity for this session.");
+  }
+}
+
 function renderNotificationState(status) {
   const label = $("notification-state");
   const enable = $("enable-notifications");
@@ -168,11 +205,20 @@ function renderNotificationState(status) {
   label.className = "";
   test.classList.add("hidden");
   enable.disabled = true;
+  if (!window.isSecureContext) {
+    label.textContent = "Secure URL required";
+    label.classList.add("blocked");
+    enable.textContent = "Use trusted HTTPS";
+    $("notification-help").textContent = "Open ZedLink at its trusted HTTPS hostname. Push notifications cannot run from an untrusted IP address.";
+    setHeaderRuntime("header-notifications", "Notifications · secure URL", "error", "Notifications require the gateway's trusted HTTPS hostname.");
+    return;
+  }
   if (!pushSupported()) {
     label.textContent = "Not supported";
     $("notification-help").textContent = /iPhone|iPad/i.test(navigator.userAgent || "")
       ? "Add ZedLink to the Home Screen, open that app, and enable notifications there."
       : "This browser does not expose standards-based Web Push.";
+    setHeaderRuntime("header-notifications", "Notifications unavailable", "warning", label.textContent);
     return;
   }
   if (Notification.permission === "denied") {
@@ -180,6 +226,7 @@ function renderNotificationState(status) {
     label.classList.add("blocked");
     enable.textContent = "Blocked by browser";
     $("notification-help").textContent = "Allow notifications for this site in the browser or system settings, then return here.";
+    setHeaderRuntime("header-notifications", "Notifications blocked", "error", "Notifications are blocked by this browser.");
     return;
   }
   if (status === "enabled") {
@@ -188,33 +235,63 @@ function renderNotificationState(status) {
     enable.textContent = "Disable notifications";
     enable.disabled = false;
     test.classList.remove("hidden");
+    setHeaderRuntime("header-notifications", "Notifications · On", "enabled", "Notifications are enabled for this browser app.");
   } else if (status === "loading") {
     label.textContent = "Checking…";
     enable.textContent = "Enable notifications";
+    setHeaderRuntime("header-notifications", "Notifications · checking…");
   } else if (status === "unavailable") {
     label.textContent = "Gateway unavailable";
     enable.textContent = "Enable notifications";
+    setHeaderRuntime("header-notifications", "Notifications unavailable", "warning", "Notification status could not be checked.");
   } else {
     label.textContent = "Off";
     enable.textContent = "Enable notifications";
     enable.disabled = !state.token;
+    setHeaderRuntime("header-notifications", "Notifications · Off", "", "Notifications are off for this browser app.");
   }
 }
 
 async function notificationRequest(path, options = {}) {
-  const response = await fetch(path, {
-    method: options.method || "GET",
-    cache: "no-store",
-    redirect: "error",
-    headers: {
-      Authorization: `Bearer ${state.token}`,
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  let response;
+  try {
+    response = await fetch(path, {
+      method: options.method || "GET",
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${state.token}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+  } catch (error) {
+    throw new Error(error?.name === "AbortError" ? "Notification status timed out." : "Notification service is unavailable.");
+  } finally {
+    clearTimeout(timeout);
+  }
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(apiError(result.error || "INTERNAL_ERROR"));
   return result;
+}
+
+async function readyServiceWorker() {
+  if (!window.isSecureContext) throw new Error("Use the gateway's trusted HTTPS hostname.");
+  await navigator.serviceWorker.register("/service-worker.js");
+  let timeout;
+  try {
+    return await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("The browser app did not finish starting notifications.")), 8000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function applicationServerKey(encoded) {
@@ -238,7 +315,7 @@ async function refreshNotifications() {
     return;
   }
   state.notificationConfig = await notificationRequest("/v1/notifications/config");
-  const registration = await navigator.serviceWorker.ready;
+  const registration = await readyServiceWorker();
   const subscription = await registration.pushManager.getSubscription();
   if (subscription) {
     const status = await notificationRequest("/v1/notifications/status", {
@@ -266,7 +343,7 @@ async function enableNotifications() {
       return;
     }
     const config = await notificationRequest("/v1/notifications/config");
-    const registration = await navigator.serviceWorker.ready;
+    const registration = await readyServiceWorker();
     let subscription = await registration.pushManager.getSubscription();
     if (subscription && !sameApplicationServerKey(subscription, config.application_server_key)) {
       try {
@@ -299,7 +376,7 @@ async function enableNotifications() {
 
 async function disableNotifications(showNotice = true) {
   if (!pushSupported()) return;
-  const registration = await navigator.serviceWorker.ready;
+  const registration = await readyServiceWorker();
   const subscription = await registration.pushManager.getSubscription();
   if (subscription && state.token) {
     await notificationRequest("/v1/notifications/unsubscribe", {
@@ -318,7 +395,7 @@ async function disableNotifications(showNotice = true) {
 async function testNotifications() {
   $("test-notifications").disabled = true;
   try {
-    const registration = await navigator.serviceWorker.ready;
+    const registration = await readyServiceWorker();
     const subscription = await registration.pushManager.getSubscription();
     if (!subscription) throw new Error("This browser no longer has a push subscription.");
     await notificationRequest("/v1/notifications/test", {
@@ -338,9 +415,11 @@ function updateSidebarToggle() {
   const collapsed = document.body.classList.contains("sidebar-collapsed");
   const mobileOpen = document.body.classList.contains("mobile-sessions");
   const button = $("show-sessions");
-  button.querySelector(".sidebar-toggle-glyph").textContent = mobile || !collapsed ? "‹" : "☰";
-  button.querySelector(".sidebar-toggle-text").textContent = "Sessions";
-  button.setAttribute("aria-label", mobile ? "Show sessions" : collapsed ? "Show sessions" : "Hide sessions");
+  const sessionsVisible = mobile ? mobileOpen || !state.threadId : !collapsed;
+  const label = sessionsVisible && mobile && state.threadId ? "Return to conversation"
+    : sessionsVisible ? "Hide sessions" : "Show sessions";
+  button.setAttribute("aria-label", label);
+  button.title = label;
   button.setAttribute("aria-expanded", String(mobile ? mobileOpen : !collapsed));
 }
 function requireManualGatewayVerification() {
@@ -559,7 +638,7 @@ function startEventStream() {
       if (result.thread_id !== threadId || !Array.isArray(result.events)) throw new Error("Invalid live event response.");
       state.streamState = "live";
       state.lastLiveEventAt = Date.now();
-      connection("Live with Zed", "online");
+      connection("Zed connected · live updates", "online");
       if (Number.isInteger(result.last_sequence)) state.sequence = Math.max(state.sequence, result.last_sequence);
       if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle")) {
         refreshSnapshot().catch((error) => notice(error.message));
@@ -738,7 +817,7 @@ async function connect() {
     }
     if (!state.threadId && state.threads.length) await selectThread(state.threads[0].thread_id);
     if (state.threadId) startEventStream();
-    connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
+    connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Zed connected · live updates" : "Zed connected · polling", "online");
   } catch (error) {
     connection("Zed unavailable", "offline");
     notice(`Pairing is saved. ${error.message} Refresh when desktop Zed is ready.`);
@@ -988,6 +1067,7 @@ function renderThreadSettings() {
   const supported = state.capabilities.includes("thread.settings")
     && state.capabilities.includes("thread.settings.update");
   const busy = state.threadStatus && state.threadStatus !== "Idle";
+  renderHeaderModel();
   const stateLabel = $("zed-settings-state");
   $("zed-settings-thread").textContent = selected?.title || "Select an exposed session to manage its native Zed options.";
   $("zed-model").value = settings?.model
@@ -1612,7 +1692,7 @@ async function poll() {
     }
     if (!state.threadId || Date.now() - state.lastThreadsAt > 2000) await loadThreads();
     if (state.pending) await reconcilePending();
-    connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
+    connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Zed connected · live updates" : "Zed connected · polling", "online");
   } catch (error) {
     if (error.code === "RESYNC_REQUIRED") {
       try { await refreshSnapshot(); return; } catch (snapshotError) { notice(snapshotError.message); }
@@ -1754,7 +1834,9 @@ $("send").addEventListener("click", () => {
 });
 $("show-sessions").addEventListener("click", () => {
   if (matchMedia("(max-width: 760px)").matches) {
-    document.body.classList.add("mobile-sessions");
+    document.body.classList.remove("mobile-connections", "mobile-settings");
+    if (state.threadId) document.body.classList.toggle("mobile-sessions");
+    else document.body.classList.add("mobile-sessions");
   } else {
     document.body.classList.toggle("sidebar-collapsed");
     safeStore.write(sidebarKey(), String(document.body.classList.contains("sidebar-collapsed")));
@@ -1939,6 +2021,9 @@ if ("clearAppBadge" in navigator) navigator.clearAppBadge().catch(() => {});
 $("ui-build").textContent = UI_BUILD;
 $("device-name").value = browserDeviceName();
 showInstallHelp();
-window.addEventListener("resize", updateSidebarToggle);
+window.addEventListener("resize", () => {
+  updateSidebarToggle();
+  renderConnectionHealth();
+});
 updateSidebarToggle();
 loadGateway();

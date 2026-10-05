@@ -17,8 +17,14 @@
 <body class="pairing">
   <a class="skip" href="#main">Skip to conversation</a>
   <header class="topbar">
-    <div class="brand"><span class="mark" aria-hidden="true">Z</span><div><strong>ZedLink</strong><small>Native Agent / remote access</small></div></div>
-    <div class="topbar-right"><span class="private-label">PRIVATE CONNECTION</span><div id="connection" class="connection" role="status" aria-live="polite">Checking gateway…</div></div>
+    <div class="brand"><button id="show-sessions" class="mark" type="button" aria-label="Hide sessions" aria-expanded="true" title="Hide sessions">Z</button><div><strong>ZedLink</strong><small>Native Agent / remote access</small></div></div>
+    <div class="topbar-right">
+      <div class="runtime-summary" aria-label="Selected Zed Agent status">
+        <span id="header-model" class="runtime-item">No session</span>
+        <span id="header-notifications" class="runtime-item">Notifications · checking…</span>
+      </div>
+      <div id="connection" class="connection" role="status" aria-live="polite" title="Browser, gateway, and desktop Zed connection">Checking gateway…</div>
+    </div>
   </header>
   <main id="main" class="layout">
     <aside class="sidebar">
@@ -90,7 +96,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.12</code></div>
+          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.13</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
@@ -99,7 +105,7 @@
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-toolbar"><button id="show-sessions" class="sidebar-toggle" type="button" aria-label="Hide sessions" aria-expanded="true"><span class="sidebar-toggle-glyph" aria-hidden="true">‹</span><span class="sidebar-toggle-text">Sessions</span></button><div class="conversation-head"><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Zed Agent</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">No session</span></div></div>
+      <div class="conversation-toolbar"><div class="conversation-head"><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Zed Agent</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">No session</span></div></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <section id="agent-health" class="agent-health hidden" role="alert" aria-live="assertive"><div><strong id="agent-health-title">Agent request failed</strong><p id="agent-health-message"></p></div><span id="agent-health-recovery"></span></section>
       <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your workspace is ready</h3><p>Expose a thread in desktop Zed or start a new session from the sidebar.</p></div></div><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
