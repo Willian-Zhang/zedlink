@@ -108,6 +108,10 @@ async fn main() -> Result<()> {
                 .route("/", get(browser_page))
                 .route("/app.js", get(browser_script))
                 .route("/style.css", get(browser_style))
+                .route("/manifest.webmanifest", get(browser_manifest))
+                .route("/service-worker.js", get(browser_service_worker))
+                .route("/icons/icon-192.png", get(browser_icon_192))
+                .route("/icons/icon-512.png", get(browser_icon_512))
                 .route("/v1/gateway", get(info))
                 .route("/v1/pair", post(pair))
                 .route("/v1/rpc", post(rpc))
@@ -162,7 +166,7 @@ fn static_response(content_type: &'static str, body: &'static str) -> Response {
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
         ),
     );
     response
@@ -181,6 +185,35 @@ async fn browser_script() -> Response {
 }
 async fn browser_style() -> Response {
     static_response("text/css; charset=utf-8", include_str!("../web/style.css"))
+}
+async fn browser_manifest() -> Response {
+    static_response(
+        "application/manifest+json; charset=utf-8",
+        include_str!("../web/manifest.webmanifest"),
+    )
+}
+async fn browser_service_worker() -> Response {
+    static_response(
+        "text/javascript; charset=utf-8",
+        include_str!("../web/service-worker.js"),
+    )
+}
+fn static_bytes(content_type: &'static str, body: &'static [u8]) -> Response {
+    let mut response = Response::new(Body::from(body));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+async fn browser_icon_192() -> Response {
+    static_bytes("image/png", include_bytes!("../web/icons/icon-192.png"))
+}
+async fn browser_icon_512() -> Response {
+    static_bytes("image/png", include_bytes!("../web/icons/icon-512.png"))
 }
 fn private_ip(ip: IpAddr) -> bool {
     match ip {
@@ -493,6 +526,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.list"
             | "thread.snapshot"
             | "thread.events"
+            | "thread.commands"
             | "thread.send"
             | "thread.cancel"
             | "request.status"

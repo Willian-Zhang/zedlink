@@ -2,6 +2,7 @@
 """Local gateway transport fixture; this does not test native Zed behavior."""
 import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -10,15 +11,18 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 from websockets.sync.client import connect
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.support.ui import WebDriverWait
+from pair_phone import qr_svg
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "gateway/target/debug/zedlink-gateway"
@@ -32,8 +36,11 @@ class ProbeFixture:
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
         self.sequence = 0
         self.extra_thread = False
+        self.truncated = False
+        self.activity_truncated = False
         self.active_turn_id = None
         self.cancelled = 0
+        self.drop_send_before_accept_once = False
         self.stopped = False
         self.listener = socket.socket(socket.AF_UNIX)
         self.listener.bind(str(path))
@@ -55,6 +62,9 @@ class ProbeFixture:
                 request = json.loads(connection.makefile("rb").readline())
                 method = request["method"]
                 params = request["params"]
+                if method == "thread.send" and self.drop_send_before_accept_once:
+                    self.drop_send_before_accept_once = False
+                    continue
                 result = {}
                 error = None
                 if method == "thread.list":
@@ -68,8 +78,10 @@ class ProbeFixture:
                               "thread_id": params["thread_id"],
                               "title": "Second synthetic thread" if params["thread_id"] == "fixture-second" else "Synthetic test thread",
                               "status": "Generating" if self.active_turn_id is not None else "Idle",
-                              "current_turn_id": self.active_turn_id, "truncated": False,
-                              "entries_markdown": list(self.entries), "pending_approvals": [],
+                              "current_turn_id": self.active_turn_id, "truncated": self.truncated,
+                              "entries_markdown": list(self.entries),
+                              "activity_entries_markdown": list(self.entries[-8:]),
+                              "activity_truncated": self.activity_truncated, "pending_approvals": [],
                               "last_sequence": self.sequence}
                 elif method == "thread.events":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
@@ -77,6 +89,11 @@ class ProbeFixture:
                               "events": [{"sequence": self.sequence, "kind": "entry.added"}]
                               if params["after_sequence"] < self.sequence else [],
                               "last_sequence": self.sequence}
+                elif method == "thread.commands":
+                    result = {"thread_id": params["thread_id"], "commands": [
+                        {"name": "compact", "description": "Compact context", "category": "native", "requires_argument": False},
+                        {"name": "help", "description": "Show agent help", "category": "agent", "requires_argument": False},
+                    ]}
                 elif method == "thread.send":
                     key = request["request_id"]
                     text = params["text"]
@@ -110,7 +127,7 @@ class ProbeFixture:
                 elif method == "instance.info":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "capabilities": ["thread.list", "thread.snapshot", "thread.events",
-                                               "thread.send", "thread.cancel", "request.status"]}
+                                               "thread.commands", "thread.send", "thread.cancel", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
                 response = {"version": 1, "request_id": request["request_id"]}
@@ -198,6 +215,16 @@ def main():
             with urllib.request.urlopen(base + "/app.js", context=context, timeout=5) as script_response:
                 assert "thread.send" in script_response.read().decode()
                 assert script_response.headers["Content-Type"].startswith("text/javascript")
+            with urllib.request.urlopen(base + "/manifest.webmanifest", context=context, timeout=5) as manifest_response:
+                manifest = json.load(manifest_response)
+                assert manifest["display"] == "standalone" and manifest["theme_color"] == "#000000"
+                assert manifest_response.headers["Content-Type"].startswith("application/manifest+json")
+            with urllib.request.urlopen(base + "/service-worker.js", context=context, timeout=5) as worker_response:
+                worker = worker_response.read().decode()
+                assert 'url.pathname.startsWith("/v1/")' in worker and "SHELL_CACHE" in worker
+            with urllib.request.urlopen(base + "/icons/icon-192.png", context=context, timeout=5) as icon_response:
+                assert icon_response.headers["Content-Type"] == "image/png"
+                assert icon_response.read(8) == b"\x89PNG\r\n\x1a\n"
             try:
                 http(f"https://127.0.0.1:{port}", context, "/v1/gateway")
             except urllib.error.URLError as error:
@@ -357,9 +384,60 @@ def main():
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant .message-label")[-1].get_attribute("textContent") == "Zed Agent"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant strong")
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant pre code")
+                assert not browser.find_element(By.ID, "delivery-details").is_displayed()
+                assert browser.find_element(By.ID, "send").is_enabled()
+                probe.entries[-1] = "## Assistant\n\n<thinking>\nChecking the fixture stream\n</thinking>\n\n**Synthetic fixture reply.**\n\n"
+                probe.sequence += 1
+                wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "activity-content").text)
+                assert browser.find_element(By.ID, "activity").is_displayed()
+                assert browser.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "true"
+                assert "REASONING SHARED BY ZED" in browser.find_element(By.ID, "activity-content").text
+                probe.activity_truncated = True
+                probe.sequence += 1
+                wait.until(lambda driver: "Earlier activity is omitted" in driver.find_element(By.ID, "activity-content").text)
+                probe.activity_truncated = False
+                probe.sequence += 1
+                probe.active_turn_id = 8
+                probe.entries.append("**Tool Call: Run safe fixture command**\nStatus: InProgress\n\nTerminal:\n```\nline one\nline two\n```\n\nDiff: fixture.txt\n```\nnew file content\n```\n")
+                probe.sequence += 1
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".message.tool .tool-title"))
+                assert "Run safe fixture command" in browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-title").text
+                assert "InProgress" in browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-state").text
+                assert browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details").get_attribute("open") == "true"
+                outputs = browser.find_elements(By.CSS_SELECTOR, ".message.tool .tool-output")
+                assert len(outputs) == 2
+                assert "line two" in outputs[0].text
+                assert "File content · fixture.txt" in outputs[1].text
+                browser.execute_script("arguments[0].scrollIntoView({block:'center'})", browser.find_element(By.CSS_SELECTOR, ".message.tool"))
+                browser.save_screenshot("/tmp/zedlink-browser-tool-fixture.png")
+                probe.entries[-1] = probe.entries[-1].replace("Status: InProgress", "Status: Completed").replace("line two", "line two\nline three")
+                wait.until(lambda driver: "line three" in driver.find_element(By.CSS_SELECTOR, ".message.tool .tool-output").text)
+                assert browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details").get_attribute("open") == "true"
+                probe.truncated = True
+                probe.sequence += 1
+                wait.until(lambda driver: "Older conversation omitted here" in driver.find_element(By.ID, "thread-meta").text)
+                assert not browser.find_elements(By.ID, "snapshot-warning")
+                probe.truncated = False
+                probe.sequence += 1
+                wait.until(lambda driver: "Thread fixture-thre" in driver.find_element(By.ID, "thread-meta").text)
+                probe.active_turn_id = None
+                probe.sequence += 1
+                browser.find_element(By.ID, "show-commands").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
+                assert "/compact" in browser.find_element(By.ID, "command-menu").text
+                browser.find_element(By.ID, "prompt").send_keys("unknown")
+                assert not browser.find_elements(By.CSS_SELECTOR, ".command-option")
+                browser.find_element(By.ID, "prompt").send_keys(Keys.ESCAPE)
+                browser.find_element(By.ID, "prompt").clear()
+                probe.drop_send_before_accept_once = True
+                browser.find_element(By.ID, "prompt").send_keys("Connection loss fixture prompt")
+                browser.find_element(By.ID, "send").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "delivery-details").is_displayed())
+                accepted_after_drop = probe.accepted
+                browser.find_element(By.ID, "delivery-details").find_element(By.TAG_NAME, "summary").click()
                 browser.find_element(By.ID, "retry").click()
-                time.sleep(0.3)
-                assert probe.accepted == accepted_before_browser + 1
+                wait.until(lambda driver: not driver.find_element(By.ID, "delivery-details").is_displayed())
+                assert probe.accepted == accepted_after_drop + 1
                 probe.active_turn_id = 9
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_element(By.ID, "stop-turn").is_displayed())
@@ -371,6 +449,7 @@ def main():
                 layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
                 assert layout["pageWidth"] <= layout["width"] + 1
                 assert layout["composerBottom"] <= layout["height"]
+                assert browser.find_element(By.ID, "tab-sessions").is_displayed()
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
                 assert layout["messagesHeight"] >= 250 and layout["sidebarHidden"], layout
                 assert browser.find_element(By.ID, "prompt").is_displayed()
@@ -385,18 +464,18 @@ def main():
                 browser.find_elements(By.CSS_SELECTOR, ".thread-item")[1].click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
                 assert browser.find_element(By.ID, "messages").is_displayed()
-                assert not browser.find_element(By.ID, "send").is_enabled()
-                assert probe.accepted == accepted_before_browser + 1
+                assert browser.find_element(By.ID, "send").is_enabled()
+                assert probe.accepted == accepted_before_browser + 2
                 browser.refresh()
-                wait.until(lambda driver: "A previous send has uncertain delivery" in
-                           driver.execute_script("return document.getElementById('delivery').textContent"))
-                assert probe.accepted == accepted_before_browser + 1
+                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                assert not browser.find_element(By.ID, "delivery-details").is_displayed()
+                assert probe.accepted == accepted_before_browser + 2
                 original_tab = browser.current_window_handle
                 browser.execute_script("window.open(arguments[0], '_blank')", base + "/#gateway=" + info["gateway_id"])
                 browser.switch_to.window(next(handle for handle in browser.window_handles if handle != original_tab))
                 wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
                 wait.until(lambda driver: not driver.find_element(By.ID, "pair-panel").is_displayed())
-                assert probe.accepted == accepted_before_browser + 1
+                assert probe.accepted == accepted_before_browser + 2
                 browser.close()
                 browser.switch_to.window(original_tab)
                 probe.close()
@@ -409,6 +488,30 @@ def main():
                                       if device["name"] == "Browser")
                 assert admin(state, "revoke", browser_device["id"])["revoked"]
                 wait.until(lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed())
+                helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base, str(state), "--no-open"],
+                                        capture_output=True, text=True, check=True, timeout=5)
+                pairing_page = Path(helper.stdout.splitlines()[0].split(": ", 1)[1])
+                assert pairing_page.stat().st_mode & 0o077 == 0
+                pairing_html = pairing_page.read_text()
+                match = re.search(r'<div class="code">(\d{5}) (\d{5})</div>', pairing_html)
+                assert match is not None
+                quick_code = "".join(match.groups())
+                expected_link = base + "/#" + urllib.parse.urlencode(
+                    {"v": "1", "gateway": info["gateway_id"], "pair": quick_code})
+                assert qr_svg(expected_link) in pairing_html
+                browser.get(base + "/?pair-test=wrong#v=1&gateway=wrong-gateway&pair=" + quick_code)
+                wait.until(lambda driver: "gateway identity differs" in
+                           driver.find_element(By.ID, "notice").get_attribute("textContent").lower())
+                assert not admin(state, "devices")["devices"]
+                assert "pair=" not in browser.current_url
+                browser.get(base + "/?pair-test=correct#v=1&gateway=" + info["gateway_id"] + "&pair=" + quick_code)
+                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                assert "pair=" not in browser.current_url
+                quick_device = next(device for device in admin(state, "devices")["devices"]
+                                    if device["name"] == "Phone browser")
+                browser.refresh()
+                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                assert admin(state, "revoke", quick_device["id"])["revoked"]
             finally:
                 browser.quit()
             print("PASS: private bind/state, TLS identity, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")

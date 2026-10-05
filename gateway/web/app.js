@@ -7,13 +7,19 @@ const state = {
   instanceId: null,
   epoch: null,
   capabilities: [],
+  commands: [],
   threads: [],
   threadId: null,
   turnId: null,
+  threadStatus: null,
   sequence: 0,
   polling: false,
   live: false,
   pending: null,
+  activitySignature: null,
+  activityCollapsed: false,
+  renderedEntries: [],
+  renderedThreadId: null,
 };
 const safeStore = {
   read(key) {
@@ -45,16 +51,22 @@ function connection(message, status = "") {
   const element = $("connection");
   element.textContent = message;
   element.className = `connection ${status}`;
+  $("mobile-connection-state").textContent = message;
   showStop();
 }
 function notice(message) {
-  $("notice").textContent = message;
-  $("notice").classList.toggle("hidden", !message);
+  for (const id of ["notice", "pair-notice"]) {
+    $(id).textContent = message;
+    $(id).classList.toggle("hidden", !message);
+  }
 }
 function delivery(message, uncertain = false) {
   $("delivery").textContent = message;
   $("delivery").classList.toggle("hidden", !message);
-  $("retry").classList.toggle("hidden", !uncertain || !state.pending?.text);
+  $("delivery-details").classList.toggle("hidden", !uncertain);
+  const retryable = uncertain && !!state.pending?.text
+    && state.pending.instanceId === state.instanceId && state.pending.epoch === state.epoch;
+  $("retry").classList.toggle("hidden", !retryable);
   $("clear-pending").classList.toggle("hidden", !uncertain);
   $("send").disabled = !state.threadId || !!state.pending || !state.token;
 }
@@ -73,6 +85,13 @@ function clearPending() {
   savePending();
   delivery("");
 }
+function settledDelivery(message) {
+  clearPending();
+  delivery(message);
+  setTimeout(() => {
+    if (!state.pending && $("delivery").textContent === message) delivery("");
+  }, 4500);
+}
 function identity(result) {
   if (result.instance_id !== state.instanceId || result.epoch !== state.epoch) {
     const error = new Error("Zed instance or event epoch changed. Reconnect before sending.");
@@ -89,6 +108,7 @@ function apiError(code) {
   if (code === "THREAD_NOT_EXPOSED") return "This thread is no longer exposed in desktop Zed.";
   if (code === "INSTANCE_UNAVAILABLE") return "Desktop Zed is unavailable. Check that it is running.";
   if (code === "RESYNC_REQUIRED") return "Event history changed. Reloading the native snapshot.";
+  if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
   return code || "Gateway request failed.";
 }
 async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
@@ -107,6 +127,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   if (!response.ok) {
     const error = new Error(apiError(data.error));
     error.code = data.error;
+    error.httpStatus = response.status;
     throw error;
   }
   if (data.version !== 1 || data.request_id !== requestId || (!!data.result === !!data.error)) {
@@ -115,12 +136,17 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   if (data.error) {
     const error = new Error(apiError(data.error.code));
     error.code = data.error.code;
+    error.probeRejection = true;
     throw error;
   }
   return data.result;
 }
 
 async function loadGateway() {
+  const pairingLink = new URLSearchParams(location.hash.slice(1));
+  const oneScanCode = pairingLink.get("pair");
+  const expectedFromLink = pairingLink.get("gateway");
+  if (oneScanCode) history.replaceState(null, "", location.pathname + location.search);
   try {
     const response = await fetch("/v1/gateway", { cache: "no-store", redirect: "error" });
     const result = await response.json();
@@ -129,7 +155,7 @@ async function loadGateway() {
     }
     state.gatewayId = result.gateway_id;
     $("gateway-id").textContent = result.gateway_id;
-    const expectedFromLink = new URLSearchParams(location.hash.slice(1)).get("gateway");
+    $("mobile-gateway-id").textContent = result.gateway_id;
     if (expectedFromLink) {
       $("expected-id").value = expectedFromLink;
       if (expectedFromLink !== result.gateway_id) {
@@ -140,13 +166,44 @@ async function loadGateway() {
     if (token) {
       state.token = token;
       await connect();
+    } else if (oneScanCode) {
+      if (pairingLink.get("v") !== "1" || !expectedFromLink || !/^[0-9]{10}$/.test(oneScanCode)) {
+        throw new Error("Invalid one-scan pairing link. Use the manual 10-digit code instead.");
+      }
+      connection("Pairing this browser…");
+      $("pair-button").disabled = true;
+      try {
+        await pairBrowser(oneScanCode, "Phone browser");
+      } catch (error) {
+        connection("Pair this browser");
+        notice(`Automatic pairing failed: ${error.message} Enter a fresh code from the workstation.`);
+      } finally { $("pair-button").disabled = false; }
     } else {
       connection("Pair this browser");
     }
   } catch (error) {
-    connection("Gateway unavailable", "offline");
+    connection(error.message.includes("gateway identity differs") ? "Gateway identity mismatch"
+      : error.message.includes("pairing link") ? "Pairing link invalid" : "Gateway unavailable", "offline");
     notice(error.message);
   }
+}
+
+async function pairBrowser(code, deviceName) {
+  const response = await fetch("/v1/pair", {
+    method: "POST", cache: "no-store", redirect: "error",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, device_name: deviceName }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(apiError(result.error));
+  if (result.gateway_id !== state.gatewayId || !/^[0-9a-f]{64}$/.test(result.token)) {
+    throw new Error("Pairing identity or token was invalid.");
+  }
+  state.token = result.token;
+  const remembered = safeStore.write(tokenKey(), result.token);
+  $("pair-code").value = "";
+  notice(remembered ? "" : "This browser did not allow persistent storage; pairing may be needed after this tab closes.");
+  await connect();
 }
 
 async function connect() {
@@ -165,7 +222,10 @@ async function connect() {
     state.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
     if (changed) {
       state.threadId = null;
+      state.commands = [];
+      renderCommands();
       state.turnId = null;
+      state.threadStatus = null;
       showStop();
       document.body.classList.remove("thread-open", "mobile-sessions");
       state.sequence = 0;
@@ -175,7 +235,7 @@ async function connect() {
     const prior = safeStore.read(pendingKey());
     if (prior && !state.pending) {
       try { state.pending = { ...JSON.parse(prior), text: null }; } catch { safeStore.remove(pendingKey()); }
-      if (state.pending) delivery("A previous send has uncertain delivery. Check its status before making another request.", true);
+      if (state.pending) delivery("A previous message may have reached Zed. Check the conversation before continuing.", true);
     }
     await loadThreads();
     connection("Connected to Zed", "online");
@@ -193,11 +253,15 @@ async function loadThreads() {
   renderThreads();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     state.threadId = null;
+    state.commands = [];
+    renderCommands();
     state.turnId = null;
+    state.threadStatus = null;
     showStop();
     document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
     $("messages").replaceChildren();
+    $("activity").classList.add("hidden");
     $("prompt").disabled = true;
     $("thread-title").textContent = "Choose a session";
     notice("The selected thread is no longer exposed in desktop Zed.");
@@ -241,11 +305,18 @@ function renderThreads() {
 
 async function selectThread(threadId) {
   state.threadId = threadId;
+  state.commands = [];
+  renderCommands();
   state.turnId = null;
+  state.threadStatus = null;
   showStop();
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
   state.sequence = 0;
+  state.renderedEntries = [];
+  state.renderedThreadId = null;
+  state.activitySignature = null;
+  state.activityCollapsed = false;
   $("prompt").disabled = false;
   $("jump-latest").classList.add("hidden");
   $("send").disabled = !!state.pending;
@@ -253,8 +324,62 @@ async function selectThread(threadId) {
   await loadThreads();
   try {
     await snapshot();
+    await loadCommands();
     notice("");
   } catch (error) { notice(error.message); }
+}
+
+async function loadCommands() {
+  if (!state.capabilities.includes("thread.commands") || !state.threadId) return;
+  const threadId = state.threadId;
+  const result = await rpc("thread.commands", {
+    instance_id: state.instanceId, epoch: state.epoch, thread_id: threadId,
+  });
+  if (result.thread_id !== threadId || !Array.isArray(result.commands)) throw new Error("Invalid command list.");
+  if (state.threadId === threadId) {
+    state.commands = result.commands.filter((command) =>
+      typeof command.name === "string" && typeof command.description === "string");
+    renderCommands();
+  }
+}
+
+function renderCommands() {
+  const menu = $("command-menu");
+  const query = $("prompt").value.trimStart();
+  const searching = query.startsWith("/") && !query.slice(1).includes(" ") && !query.includes("\n");
+  const visible = state.commands.filter((command) =>
+    !searching || command.name.toLocaleLowerCase().includes(query.slice(1).toLocaleLowerCase()));
+  menu.replaceChildren();
+  for (const command of visible) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "command-option";
+    button.setAttribute("role", "option");
+    const name = document.createElement("strong");
+    name.textContent = `/${command.name}`;
+    const description = document.createElement("span");
+    description.textContent = command.description;
+    const category = document.createElement("small");
+    category.textContent = command.category === "native" ? "Zed" : command.category === "mcp" ? "MCP" : "Agent";
+    button.append(name, description, category);
+    button.addEventListener("click", () => {
+      $("prompt").value = `/${command.name}${command.requires_argument ? " " : ""}`;
+      menu.classList.add("hidden");
+      $("prompt").focus();
+    });
+    menu.append(button);
+  }
+  if (searching && !visible.length) {
+    const empty = document.createElement("p");
+    empty.textContent = state.commands.length ? "No matching command in this thread." : "This Zed build has not provided a command list.";
+    menu.append(empty);
+  } else if (searching && query === "/") {
+    const hint = document.createElement("p");
+    hint.className = "command-hint";
+    hint.textContent = "Shows commands available in this Agent thread. Desktop controls stay in Zed.";
+    menu.append(hint);
+  }
+  menu.classList.toggle("hidden", !searching || (!state.threadId && !visible.length));
 }
 
 function entryPresentation(markdown, index) {
@@ -270,7 +395,7 @@ function entryPresentation(markdown, index) {
     if (match) return { kind, label, body: markdown.slice(match[0].length) };
   }
   const tool = markdown.match(/^\*\*Tool Call: ([^\n]*?)\*\*\nStatus: ([^\n]*)\n\n/);
-  if (tool) return { kind: "tool", label: `Tool · ${tool[1]} · ${tool[2]}`, body: markdown.slice(tool[0].length) };
+  if (tool) return { kind: "tool", label: tool[1], status: tool[2], body: markdown.slice(tool[0].length) };
   return { kind: "native", label: `Native entry ${index + 1}`, body: markdown };
 }
 
@@ -361,6 +486,160 @@ function renderBody(target, source) {
   }
 }
 
+function toolPreview(body, status) {
+  const line = body.split(/\r?\n/).map((value) => value.trim())
+    .find((value) => value && !value.startsWith("```") && value !== "Terminal:" && !value.startsWith("Diff: "));
+  if (line) return line.slice(0, 240);
+  return /Pending|InProgress|Waiting/i.test(status) ? "Waiting for tool output…" : "No text output shared by Zed.";
+}
+
+function renderToolBody(target, body) {
+  const pattern = /^(Terminal:|Diff: ([^\n]+))\r?\n```([^\n]*)\r?\n([\s\S]*?)\r?\n```(?=\r?\n|$)/gm;
+  let cursor = 0;
+  let matched = false;
+  for (const match of body.matchAll(pattern)) {
+    matched = true;
+    if (match.index > cursor) {
+      const before = document.createElement("div");
+      before.className = "message-body";
+      renderBody(before, body.slice(cursor, match.index));
+      target.append(before);
+    }
+    const section = document.createElement("section");
+    section.className = "tool-output";
+    const heading = document.createElement("div");
+    heading.className = "tool-output-heading";
+    const label = document.createElement("strong");
+    label.textContent = match[1] === "Terminal:" ? "Terminal output" : `File content · ${match[2]}`;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-copy";
+    copy.textContent = "Copy output";
+    copy.setAttribute("aria-label", `Copy ${match[1] === "Terminal:" ? "terminal output" : "file content"}`);
+    copy.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(match[4]); copy.textContent = "Copied"; }
+      catch { notice("Clipboard access is unavailable in this browser."); }
+    });
+    heading.append(label, copy);
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = match[4];
+    pre.append(code);
+    section.append(heading, pre);
+    target.append(section);
+    cursor = match.index + match[0].length;
+  }
+  if (!matched || cursor < body.length) {
+    const remaining = document.createElement("div");
+    remaining.className = "message-body";
+    renderBody(remaining, body.slice(cursor));
+    target.append(remaining);
+  }
+}
+
+function makeEntry(markdown, index, total) {
+  const presentation = entryPresentation(markdown, index);
+  const article = document.createElement("article");
+  article.className = `message ${presentation.kind}`;
+  article.dataset.entryIndex = String(index);
+  const heading = document.createElement("div");
+  heading.className = "message-heading";
+  const label = document.createElement("div");
+  label.className = "message-label";
+  label.textContent = presentation.kind === "tool" ? "Zed tool" : presentation.label;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "message-copy";
+  copy.textContent = "Copy";
+  copy.setAttribute("aria-label", `Copy ${presentation.label} content`);
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(presentation.body); copy.textContent = "Copied"; }
+    catch { notice("Clipboard access is unavailable in this browser."); }
+  });
+  heading.append(label, copy);
+  if (presentation.kind === "tool") {
+    const title = document.createElement("div");
+    title.className = "tool-title";
+    title.textContent = presentation.label;
+    const status = document.createElement("span");
+    status.className = `tool-state ${/Failed|Rejected|Canceled/i.test(presentation.status) ? "failed" : /Pending|InProgress|Waiting/i.test(presentation.status) ? "working" : ""}`;
+    status.textContent = presentation.status;
+    const preview = document.createElement("p");
+    preview.className = "tool-preview";
+    preview.textContent = toolPreview(presentation.body, presentation.status);
+    const details = document.createElement("details");
+    details.className = "tool-details";
+    details.open = index >= total - 2 && !!presentation.body.trim();
+    const summary = document.createElement("summary");
+    summary.textContent = "Read tool output";
+    const content = document.createElement("div");
+    content.className = "tool-content";
+    renderToolBody(content, presentation.body);
+    details.append(summary, content);
+    article.append(heading, title, status, preview, details);
+  } else {
+    const content = document.createElement("div");
+    content.className = "message-body";
+    renderBody(content, presentation.body);
+    article.append(heading, content);
+  }
+  return article;
+}
+
+function renderActivity(entries, status, activityTruncated = false) {
+  const panel = $("activity");
+  const busy = status !== "Idle";
+  panel.classList.toggle("busy", busy);
+  $("activity-title").textContent = busy ? "Zed is working" : "Recent activity";
+  $("activity-state").textContent = busy ? "Live" : "Complete";
+  const lastUser = entries.findLastIndex((entry) => /^## User(?: \(checkpoint\))?\n\n/.test(entry));
+  const recent = entries.slice(Math.max(0, lastUser + 1));
+  const updates = [];
+  for (const markdown of recent) {
+    if (markdown.startsWith("## Assistant\n\n")) {
+      for (const match of markdown.matchAll(/<thinking>\n([\s\S]*?)(?:\n<\/thinking>|$)/g)) {
+        const value = match[1].trim();
+        if (value) updates.push(["Reasoning shared by Zed", value]);
+      }
+    } else {
+      const tool = markdown.match(/^\*\*Tool Call: ([^\n]*?)\*\*\nStatus: ([^\n]*)/);
+      if (tool) updates.push(["Tool activity", `${tool[1]} · ${tool[2]}`]);
+      else if (markdown.startsWith("## Plan\n\n")) updates.push(["Plan", markdown.slice(9).trim()]);
+      else if (markdown.startsWith("## Context Compaction")) updates.push(["Context", markdown.split("\n", 1)[0].slice(3)]);
+      else if (markdown.startsWith("## Input Requested")) updates.push(["Approval", "Input requested in desktop Zed"]);
+    }
+  }
+  const latest = updates.slice(-6);
+  panel.classList.toggle("hidden", !busy && !latest.length);
+  panel.classList.toggle("collapsed", state.activityCollapsed);
+  $("activity-toggle").textContent = state.activityCollapsed ? "Show" : "Hide";
+  $("activity-toggle").setAttribute("aria-expanded", String(!state.activityCollapsed));
+  const content = $("activity-content");
+  const signature = JSON.stringify([status, latest, activityTruncated]);
+  if (state.activitySignature === signature) return;
+  state.activitySignature = signature;
+  content.replaceChildren();
+  if (!latest.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "Waiting for reasoning or tool activity shared by the native Zed thread…";
+    content.append(empty);
+  }
+  for (const [label, value] of latest) {
+    const item = document.createElement("p");
+    const heading = document.createElement("strong");
+    heading.textContent = label;
+    item.append(heading, document.createTextNode(value.slice(0, 4000)));
+    content.append(item);
+  }
+  if (activityTruncated) {
+    const note = document.createElement("p");
+    note.className = "activity-note";
+    note.textContent = "Earlier activity is omitted from this live window.";
+    content.prepend(note);
+  }
+  if (!state.activityCollapsed) content.scrollTop = content.scrollHeight;
+}
+
 async function snapshot() {
   if (!state.threadId) return;
   const result = await rpc("thread.snapshot", { thread_id: state.threadId });
@@ -372,48 +651,25 @@ async function snapshot() {
   state.sequence = result.last_sequence;
   const container = $("messages");
   const follow = container.scrollHeight - container.scrollTop - container.clientHeight < 90;
-  const expandedTools = new Set([...container.querySelectorAll(".message.tool details[open]")]
-    .map((details) => details.closest(".message")?.dataset.entryIndex));
-  const fragment = document.createDocumentFragment();
-  for (const [index, markdown] of result.entries_markdown.entries()) {
-    const presentation = entryPresentation(markdown, index);
-    const article = document.createElement("article");
-    article.className = `message ${presentation.kind}`;
-    article.dataset.entryIndex = String(index);
-    const heading = document.createElement("div");
-    heading.className = "message-heading";
-    const label = document.createElement("div");
-    label.className = "message-label";
-    label.textContent = presentation.label;
-    const copy = document.createElement("button");
-    copy.type = "button";
-    copy.className = "message-copy";
-    copy.textContent = "Copy";
-    copy.setAttribute("aria-label", `Copy ${presentation.label} content`);
-    copy.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(presentation.body);
-        copy.textContent = "Copied";
-      } catch { notice("Clipboard access is unavailable in this browser."); }
-    });
-    heading.append(label, copy);
-    const content = document.createElement("div");
-    content.className = "message-body";
-    if (presentation.kind === "tool") {
-      const details = document.createElement("details");
-      details.open = expandedTools.has(String(index));
-      const summary = document.createElement("summary");
-      summary.textContent = "View tool details";
-      details.append(summary, content);
-      renderBody(content, presentation.body);
-      article.append(heading, details);
-    } else {
-      renderBody(content, presentation.body);
-      article.append(heading, content);
-    }
-    fragment.append(article);
+  if (state.renderedThreadId !== result.thread_id) {
+    container.replaceChildren();
+    state.renderedEntries = [];
+    state.renderedThreadId = result.thread_id;
   }
-  container.replaceChildren(fragment);
+  for (const [index, markdown] of result.entries_markdown.entries()) {
+    if (state.renderedEntries[index] === markdown) continue;
+    const article = makeEntry(markdown, index, result.entries_markdown.length);
+    const previous = container.children[index];
+    if (previous) {
+      const oldDetails = previous.querySelector("details");
+      const newDetails = article.querySelector("details");
+      if (oldDetails && newDetails) newDetails.open = oldDetails.open;
+      previous.replaceWith(article);
+    } else container.append(article);
+    state.renderedEntries[index] = markdown;
+  }
+  while (container.children.length > result.entries_markdown.length) container.lastElementChild.remove();
+  state.renderedEntries.length = result.entries_markdown.length;
   if (follow) {
     container.scrollTop = container.scrollHeight;
     $("jump-latest").classList.add("hidden");
@@ -421,10 +677,15 @@ async function snapshot() {
     $("jump-latest").classList.remove("hidden");
   }
   $("thread-title").textContent = result.title || "Untitled Agent thread";
-  $("thread-meta").textContent = result.truncated ? "Transcript truncated by native probe" : `Thread ${result.thread_id.slice(0, 12)}…`;
+  $("thread-meta").textContent = result.truncated ? "Older conversation omitted here · Full history remains in Zed" : `Thread ${result.thread_id.slice(0, 12)}…`;
   $("thread-state").textContent = result.status;
   $("thread-state").className = `state-pill ${result.status === "Idle" ? "online" : ""}`;
+  const activityEntries = Array.isArray(result.activity_entries_markdown)
+    && result.activity_entries_markdown.every((entry) => typeof entry === "string")
+    ? result.activity_entries_markdown : result.entries_markdown;
+  renderActivity(activityEntries, result.status, result.activity_truncated === true);
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
+  state.threadStatus = result.status;
   showStop();
   if (result.pending_approvals?.length) {
     notice("Approval pending in desktop Zed. Remote approval controls are awaiting native race validation.");
@@ -435,15 +696,18 @@ async function reconcilePending() {
   if (!state.pending || !state.token) return;
   const pending = state.pending;
   if (pending.instanceId !== state.instanceId || pending.epoch !== state.epoch) {
-    delivery("Zed restarted. Delivery of the previous request is unknown; inspect the desktop thread before clearing it.", true);
+    delivery("Zed restarted while a message was pending. Check the desktop conversation before continuing.", true);
     return;
   }
   const result = await rpc("request.status", {
     instance_id: pending.instanceId, epoch: pending.epoch, original_request_id: pending.id,
   });
-  delivery(result.known
-    ? `Zed knows request ${pending.id.slice(0, 8)}…; native acceptance remains ${result.outcome}. Check the transcript before another send.`
-    : `Request ${pending.id.slice(0, 8)}… is unknown to this Zed instance. It was not resent.`, true);
+  if (result.known) {
+    settledDelivery("Zed recorded the original request. The conversation will show its progress.");
+    if (state.threadId === pending.threadId) await snapshot();
+  } else {
+    delivery("The previous send is still unconfirmed. It has not been sent again.", true);
+  }
 }
 
 async function poll() {
@@ -455,7 +719,7 @@ async function poll() {
       const result = await rpc("thread.events", { thread_id: state.threadId, after_sequence: state.sequence });
       identity(result);
       if (result.thread_id !== state.threadId) throw new Error("Event feed changed threads.");
-      if (result.events?.length) await snapshot();
+      if (result.events?.length || (state.threadStatus && state.threadStatus !== "Idle")) await snapshot();
       else state.sequence = result.last_sequence;
     } else await loadThreads();
     if (state.pending) await reconcilePending();
@@ -478,11 +742,24 @@ async function sendPrompt(event) {
   if (!state.threadId || !state.token || state.pending) return;
   const text = $("prompt").value.trim();
   if (!text) return;
+  if (text.startsWith("/")) {
+    const name = text.slice(1).split(/\s/, 1)[0];
+    if (!state.capabilities.includes("thread.commands")) {
+      notice("This running Zed build cannot execute slash commands remotely yet. Restart the updated build and re-expose the thread.");
+      return;
+    }
+    if (!state.commands.some((command) => command.name === name)) {
+      notice(`/${name} is not available in this native Agent thread. Choose a command from the list.`);
+      renderCommands();
+      return;
+    }
+  }
+  $("command-menu").classList.add("hidden");
   const pending = { id: crypto.randomUUID(), instanceId: state.instanceId,
     epoch: state.epoch, threadId: state.threadId, text };
   state.pending = pending;
   savePending();
-  delivery("Sending to native Zed…", true);
+  delivery("Sending to Zed…");
   await sendPending();
 }
 async function sendPending() {
@@ -493,18 +770,23 @@ async function sendPending() {
       instance_id: pending.instanceId, epoch: pending.epoch,
       thread_id: pending.threadId, text: pending.text,
     }, pending.id);
-    if (result.outcome === "queued") {
-      $("prompt").value = "";
-      clearPending();
-      delivery("Queued in desktop Zed. Watch the native thread for execution.");
-    } else {
-      delivery("Sent to Zed, but native acceptance is unconfirmed. The draft remains here; do not send it under a new ID.", true);
-    }
-    await snapshot();
-    $("messages").scrollTop = $("messages").scrollHeight;
+    $("prompt").value = "";
+    settledDelivery(result.outcome === "queued"
+      ? "Queued in desktop Zed."
+      : "Request reached Zed. Watch the native conversation for execution.");
   } catch (error) {
-    delivery(`Delivery unknown: ${error.message} The same request ID can be retried; no automatic resend occurred.`, true);
+    if (error.probeRejection || (error.httpStatus >= 400 && error.httpStatus < 500)) {
+      clearPending();
+      notice(`Zed rejected the message: ${error.message}`);
+    } else {
+      delivery(`Could not confirm delivery. ${error.message} Check the conversation before continuing.`, true);
+    }
+    return;
   }
+  try {
+    if (state.threadId === pending.threadId) await snapshot();
+    $("messages").scrollTop = $("messages").scrollHeight;
+  } catch (error) { notice(`Request reached Zed; conversation refresh failed: ${error.message}`); }
 }
 
 $("pair-form").addEventListener("submit", async (event) => {
@@ -518,21 +800,7 @@ $("pair-form").addEventListener("submit", async (event) => {
   if (!/^([0-9]{10}|[0-9a-fA-F]{64})$/.test(code)) { notice("Enter the 10-digit pairing code from the workstation."); return; }
   $("pair-button").disabled = true;
   try {
-    const response = await fetch("/v1/pair", {
-      method: "POST", cache: "no-store", redirect: "error",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, device_name: $("device-name").value.trim() }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(apiError(result.error));
-    if (result.gateway_id !== state.gatewayId || !/^[0-9a-f]{64}$/.test(result.token)) {
-      throw new Error("Pairing identity or token was invalid.");
-    }
-    state.token = result.token;
-    const remembered = safeStore.write(tokenKey(), result.token);
-    $("pair-code").value = "";
-    notice(remembered ? "" : "This browser did not allow persistent storage; pairing may be needed after this tab closes.");
-    await connect();
+    await pairBrowser(code, $("device-name").value.trim());
   } catch (error) { notice(error.message); }
   finally { $("pair-button").disabled = false; }
 });
@@ -560,7 +828,10 @@ $("stop-turn").addEventListener("click", async () => {
     if (result.outcome !== "requested" || result.turn_id !== turnId) {
       throw new Error("Zed did not confirm the stop request for this turn.");
     }
-    notice("Stop requested for the current desktop Zed turn. Completed tool effects remain.");
+    notice("Stop requested for this turn.");
+    setTimeout(() => {
+      if ($("notice").textContent === "Stop requested for this turn.") notice("");
+    }, 5000);
   } catch (error) {
     notice(error.message);
   } finally {
@@ -575,27 +846,102 @@ $("prompt").addEventListener("input", () => {
   const prompt = $("prompt");
   prompt.style.height = "auto";
   prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
+  renderCommands();
 });
-$("forget").addEventListener("click", () => {
+$("show-commands").addEventListener("click", () => {
+  if (!state.threadId) return;
+  $("prompt").value = "/";
+  $("prompt").focus();
+  renderCommands();
+});
+$("prompt").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") $("command-menu").classList.add("hidden");
+  if (event.key === "ArrowDown" && !$("command-menu").classList.contains("hidden")) {
+    const first = $("command-menu").querySelector(".command-option");
+    if (first) { event.preventDefault(); first.focus(); }
+  }
+  if (event.key === "Enter" && !event.shiftKey && (event.ctrlKey || event.metaKey || matchMedia("(pointer: fine)").matches)) {
+    event.preventDefault();
+    $("composer-form").requestSubmit();
+  }
+});
+function forgetBrowser() {
   safeStore.remove(tokenKey());
   safeStore.remove(pendingKey());
   state.token = null;
   state.pending = null;
   state.threadId = null;
-  document.body.classList.remove("thread-open", "mobile-sessions");
+  document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
   $("pair-panel").classList.remove("hidden");
   $("sessions-panel").classList.add("hidden");
   $("messages").replaceChildren();
+  $("activity").classList.add("hidden");
   $("prompt").disabled = true;
   delivery("");
   connection("Browser token forgotten");
   notice("This only removes the tab token. Revoke the paired device through the workstation admin command.");
-});
+}
+$("forget").addEventListener("click", forgetBrowser);
+$("mobile-forget").addEventListener("click", forgetBrowser);
 $("composer-form").addEventListener("submit", sendPrompt);
+$("activity-toggle").addEventListener("click", () => {
+  state.activityCollapsed = !state.activityCollapsed;
+  $("activity").classList.toggle("collapsed", state.activityCollapsed);
+  $("activity-toggle").textContent = state.activityCollapsed ? "Show" : "Hide";
+  $("activity-toggle").setAttribute("aria-expanded", String(!state.activityCollapsed));
+});
 $("retry").addEventListener("click", sendPending);
 $("clear-pending").addEventListener("click", () => {
   clearPending();
-  notice("Uncertain delivery was cleared locally. Check the desktop thread before sending similar text again.");
+  notice("You can send again. If the previous message appears in Zed, avoid sending it a second time.");
 });
 setInterval(poll, 1000);
+window.addEventListener("hashchange", () => loadGateway());
+
+function showMobileView(view) {
+  document.body.classList.remove("mobile-connections", "mobile-settings");
+  for (const button of document.querySelectorAll("[data-mobile-view]")) {
+    if (button.dataset.mobileView === view) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  if (view === "sessions") {
+    document.body.classList.add("mobile-sessions");
+  } else if (view === "connections") {
+    document.body.classList.remove("mobile-sessions");
+    if (state.token) document.body.classList.add("mobile-connections");
+    else {
+      document.body.classList.remove("thread-open");
+      $("pair-panel").classList.remove("hidden");
+      $("sessions-panel").classList.add("hidden");
+    }
+  } else {
+    document.body.classList.remove("mobile-sessions");
+    document.body.classList.add("mobile-settings");
+  }
+}
+for (const button of document.querySelectorAll("[data-mobile-view]")) {
+  button.addEventListener("click", () => showMobileView(button.dataset.mobileView));
+}
+
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  $("install-app").classList.remove("hidden");
+  $("install-help").textContent = "Install ZedLink as a standalone home-screen app.";
+});
+$("install-app").addEventListener("click", async () => {
+  if (!installPrompt) return;
+  await installPrompt.prompt();
+  installPrompt = null;
+  $("install-app").classList.add("hidden");
+});
+window.addEventListener("appinstalled", () => {
+  $("install-app").classList.add("hidden");
+  $("install-help").textContent = "ZedLink is installed on this device.";
+});
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js")
+    .catch(() => { /* HTTPS app remains usable without offline shell caching. */ }));
+}
 loadGateway();
