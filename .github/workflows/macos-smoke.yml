@@ -60,6 +60,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO test
       - name: Save simulator screenshot
         if: ${{ inputs.simulator }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: zedlink-simulator-launch
