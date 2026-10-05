@@ -178,26 +178,7 @@ async function loadThreads() {
   identity(result);
   if (!Array.isArray(result.threads)) throw new Error("Invalid thread list.");
   state.threads = result.threads;
-  const list = $("thread-list");
-  list.replaceChildren();
-  if (state.threads.length === 0) {
-    const text = document.createElement("p");
-    text.className = "muted";
-    text.textContent = "No exposed threads. Choose /remote-control in a native Zed Agent thread.";
-    list.append(text);
-  }
-  for (const thread of state.threads) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""}`;
-    const title = document.createElement("strong");
-    title.textContent = thread.title || "Untitled Agent thread";
-    const detail = document.createElement("small");
-    detail.textContent = `${thread.status || "Unknown"} · ${String(thread.thread_id).slice(0, 10)}…`;
-    button.append(title, detail);
-    button.addEventListener("click", () => selectThread(thread.thread_id));
-    list.append(button);
-  }
+  renderThreads();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     state.threadId = null;
     document.body.classList.remove("thread-open", "mobile-sessions");
@@ -206,6 +187,41 @@ async function loadThreads() {
     $("prompt").disabled = true;
     $("thread-title").textContent = "Choose a session";
     notice("The selected thread is no longer exposed in desktop Zed.");
+  }
+}
+
+function renderThreads() {
+  const list = $("thread-list");
+  list.replaceChildren();
+  const query = $("session-search").value.trim().toLocaleLowerCase();
+  const visible = state.threads.filter((thread) =>
+    `${thread.title || ""} ${thread.thread_id}`.toLocaleLowerCase().includes(query));
+  $("thread-count").textContent = String(state.threads.length);
+  if (visible.length === 0) {
+    const text = document.createElement("p");
+    text.className = "muted";
+    text.textContent = state.threads.length
+      ? "No sessions match this search."
+      : "No exposed threads. Choose /remote-control in a native Zed Agent thread.";
+    list.append(text);
+  }
+  for (const thread of visible) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""}`;
+    const badge = document.createElement("span");
+    badge.className = "thread-badge";
+    badge.textContent = "ZED AGENT";
+    const status = document.createElement("span");
+    status.className = `thread-status ${thread.status === "Idle" ? "" : "busy"}`;
+    status.textContent = thread.status || "Unknown";
+    const title = document.createElement("strong");
+    title.textContent = thread.title || "Untitled Agent thread";
+    const detail = document.createElement("small");
+    detail.textContent = `Native thread · ${String(thread.thread_id).slice(0, 10)}…`;
+    button.append(badge, status, title, detail);
+    button.addEventListener("click", () => selectThread(thread.thread_id));
+    list.append(button);
   }
 }
 
@@ -482,6 +498,7 @@ $("pair-form").addEventListener("submit", async (event) => {
   finally { $("pair-button").disabled = false; }
 });
 $("refresh").addEventListener("click", () => connect());
+$("session-search").addEventListener("input", renderThreads);
 $("show-sessions").addEventListener("click", () => {
   document.body.classList.add("mobile-sessions");
 });

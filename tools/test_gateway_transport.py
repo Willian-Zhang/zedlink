@@ -302,6 +302,14 @@ def main():
                 browser.find_element(By.ID, "expected-id").send_keys(info["gateway_id"])
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
+                assert browser.find_element(By.ID, "thread-count").text == "1"
+                search = browser.find_element(By.ID, "session-search")
+                search.send_keys("no such session")
+                assert not browser.find_elements(By.CSS_SELECTOR, ".thread-item")
+                assert "No sessions match" in browser.find_element(By.ID, "thread-list").text
+                search.clear()
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
+                assert browser.find_element(By.CSS_SELECTOR, ".thread-badge").text == "ZED AGENT"
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert not browser.find_elements(By.CSS_SELECTOR, "#messages img")
