@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.11";
+const UI_BUILD = "2026.10.05.12";
 const state = {
   gatewayId: null,
   token: null,
@@ -338,7 +338,8 @@ function updateSidebarToggle() {
   const collapsed = document.body.classList.contains("sidebar-collapsed");
   const mobileOpen = document.body.classList.contains("mobile-sessions");
   const button = $("show-sessions");
-  button.textContent = mobile ? "‹ Sessions" : collapsed ? "Sessions" : "Hide sessions";
+  button.querySelector(".sidebar-toggle-glyph").textContent = mobile || !collapsed ? "‹" : "☰";
+  button.querySelector(".sidebar-toggle-text").textContent = "Sessions";
   button.setAttribute("aria-label", mobile ? "Show sessions" : collapsed ? "Show sessions" : "Hide sessions");
   button.setAttribute("aria-expanded", String(mobile ? mobileOpen : !collapsed));
 }
@@ -735,6 +736,7 @@ async function connect() {
         await selectThread(selected);
       }
     }
+    if (!state.threadId && state.threads.length) await selectThread(state.threads[0].thread_id);
     if (state.threadId) startEventStream();
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
   } catch (error) {
@@ -769,8 +771,8 @@ async function loadThreads() {
     $("transcript-entries").replaceChildren();
     $("activity").classList.add("hidden");
     $("prompt").disabled = true;
-    $("thread-title").textContent = "Choose a session";
-    $("thread-state").textContent = "Select session";
+    $("thread-title").textContent = "Zed Agent";
+    $("thread-state").textContent = "No session";
     $("thread-state").className = "state-pill";
     notice("The selected thread is no longer exposed in desktop Zed.");
   }

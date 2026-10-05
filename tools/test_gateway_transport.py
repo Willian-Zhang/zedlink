@@ -418,8 +418,10 @@ def main():
                 browser.execute_script("document.getElementById('expected-id').value=arguments[0]", info["gateway_id"])
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
+                assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.11"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.12"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 assert len(browser.find_elements(By.ID, "sign-out")) == 1
@@ -587,10 +589,10 @@ def main():
                 browser.find_element(By.ID, "show-sessions").click()
                 collapsed = browser.execute_script("return {sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).visibility==='hidden', workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width, width:innerWidth}")
                 assert collapsed["sidebarHidden"] and collapsed["workspaceWidth"] >= collapsed["width"] - 20, collapsed
-                assert browser.find_element(By.ID, "show-sessions").text == "Sessions"
+                assert browser.find_element(By.ID, "show-sessions").get_attribute("aria-label") == "Show sessions"
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-wide-collapsed.png")
                 browser.find_element(By.ID, "show-sessions").click()
-                assert browser.find_element(By.ID, "show-sessions").text == "Hide sessions"
+                assert browser.find_element(By.ID, "show-sessions").get_attribute("aria-label") == "Hide sessions"
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-wide.png")
                 browser.set_window_size(390, 844)
                 layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")

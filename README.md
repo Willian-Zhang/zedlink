@@ -305,7 +305,7 @@ On Android Chrome:
 
 On desktop Chrome, Chromium, or Edge, use the install icon in the address bar or the browser's **Install ZedLink** menu item. Desktop Firefox has the same ZedLink features in a normal tab but should be bookmarked or pinned.
 
-On a wide desktop window, ZedLink uses the full browser width. The Sessions column grows enough to show two-line thread names, and **Hide sessions** in the conversation header collapses it when you want more room for chat, reasoning, or tool output. Select **Sessions** to restore it. That choice and the last selected exposed thread are saved in the browser, so reloads and new normal tabs return to the same workspace when it is still available. Tool cards start collapsed; select **Read tool output** only when you need command output or file content.
+On a wide desktop window, ZedLink uses the full browser width. The Sessions column grows enough to show two-line thread names, and the small control at the workspace's left edge collapses or restores it without occupying the conversation title. That choice and the last selected exposed thread are saved in the browser. When no saved selection exists, ZedLink opens the first exposed session automatically instead of leaving an empty “Choose a session” screen. Tool cards start collapsed; select **Read tool output** only when you need command output or file content.
 
 The installed web app still requires the private route, gateway, and patched Zed to be online.
 
