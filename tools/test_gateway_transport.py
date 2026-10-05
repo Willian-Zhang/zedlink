@@ -374,7 +374,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.1"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.2"
                 browser.find_element(By.ID, "new-session").click()
                 browser.find_element(By.ID, "new-session-title").send_keys("Created from browser")
                 browser.find_element(By.ID, "create-session").click()

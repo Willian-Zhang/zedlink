@@ -393,6 +393,8 @@ Check, in order:
 3. **ZedLink: Status** reports the native socket online.
 4. The gateway terminal is still running.
 
+The Sessions screen keeps **+ New** visible while Zed is unavailable, but disables it until the patched bridge reconnects. After starting patched Zed, refresh Sessions; the control enables when `thread.create` is advertised.
+
 ### Safari says server not found
 
 1. Connect Tailscale on the iPhone.

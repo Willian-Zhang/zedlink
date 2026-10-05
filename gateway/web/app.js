@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.1";
+const UI_BUILD = "2026.10.05.2";
 const state = {
   gatewayId: null,
   token: null,
@@ -55,6 +55,14 @@ function connection(message, status = "") {
   element.className = `connection ${status}`;
   $("mobile-connection-state").textContent = message;
   showStop();
+  showCreateAvailability();
+}
+function showCreateAvailability() {
+  const available = state.live && state.capabilities.includes("thread.create") && !state.creatingThread;
+  $("new-session").disabled = !available;
+  $("new-session").title = available
+    ? "Create a native Zed Agent session"
+    : "Start patched Zed to create a session";
 }
 function notice(message) {
   for (const id of ["notice", "pair-notice"]) {
@@ -223,7 +231,7 @@ async function connect() {
     state.instanceId = info.instance_id;
     state.epoch = info.epoch;
     state.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
-    $("new-session").classList.toggle("hidden", !state.capabilities.includes("thread.create"));
+    showCreateAvailability();
     if (changed) {
       state.threadId = null;
       state.commands = [];
@@ -279,7 +287,7 @@ async function createSession(event) {
   const title = $("new-session-title").value.trim();
   state.creatingThread = true;
   $("create-session").disabled = true;
-  $("new-session").disabled = true;
+  showCreateAvailability();
   notice("Creating a native Zed Agent session…");
   try {
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -305,7 +313,7 @@ async function createSession(event) {
   } finally {
     state.creatingThread = false;
     $("create-session").disabled = false;
-    $("new-session").disabled = false;
+    showCreateAvailability();
   }
 }
 

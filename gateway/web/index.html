@@ -40,7 +40,7 @@
         <p class="note">The one-scan QR contains a single-use code. Keep it private. Pairing stays in this browser for this HTTPS site until you forget it or revoke the device. Avoid pairing in a shared browser.</p>
       </section>
       <section class="panel hidden" id="sessions-panel">
-        <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet hidden" aria-label="Create native Zed Agent session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button></div></div>
+        <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet" aria-label="Create native Zed Agent session" disabled title="Start patched Zed to create a session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button></div></div>
         <form id="new-session-form" class="new-session-form hidden">
           <label for="new-session-title">New native Agent session</label>
           <div><input id="new-session-title" maxlength="128" autocomplete="off" placeholder="Optional title"><button id="create-session" class="primary" type="submit">Create</button></div>
@@ -66,7 +66,7 @@
         <h1>Settings</h1>
         <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
         <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.1</code></div>
+        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.2</code></div>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">On iPhone, open Safari’s Share menu and choose Add to Home Screen.</p>
         <p class="note">The home-screen app uses this gateway’s trusted HTTPS address and saved browser pairing. Model credentials stay in desktop Zed.</p>

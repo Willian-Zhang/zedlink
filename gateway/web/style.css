@@ -71,6 +71,7 @@ input[type=search] { appearance: none; }
 .session-actions { display: flex; align-items: center; gap: 7px; }
 #new-session { min-height: 40px; white-space: nowrap; }
 #new-session b { margin-left: 5px; font: inherit; }
+#new-session:disabled { opacity: .48; cursor: not-allowed; }
 #refresh { display: grid; place-items: center; flex: none; width: 40px; min-height: 40px; padding: 0; font-size: 1.35rem; }
 .new-session-form { margin: 23px 0 0; padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .new-session-form label { margin-top: 0; color: var(--ink); }
