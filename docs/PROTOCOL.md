@@ -27,6 +27,8 @@ Identifiers in this example are illustrative. Establish their encoding from the 
 | --- | --- | --- |
 | instance.info | instance_id | Identity, epoch, protocol version, capabilities, safe compatibility metadata |
 | thread.list | instance_id, optional cursor | Exposed threads, project/worktree metadata, execution state |
+| thread.create | instance_id, epoch, optional title, request_id | Create and explicitly expose a native thread in the configured project using Zed's selected agent/model |
+| thread.commands | instance_id, epoch, thread_id | Runtime-advertised Agent/MCP/native commands for an exposed thread |
 | thread.snapshot | instance_id, thread_id | Transcript, revision/cursor, turn state, pending approvals |
 | thread.subscribe | instance_id, thread_id, optional epoch/after_seq | Consistent snapshot plus future events, or replay |
 | thread.send | instance_id, thread_id, text, request_id | Accepted message identity and accepted/queued state |
@@ -55,6 +57,8 @@ If a desktop edit cannot be represented incrementally, emit a resync-required ev
 5. Clients deduplicate by epoch/seq and message identity. They must detect sequence gaps.
 6. Each subscription is authorization-scoped. Do not leak events from hidden threads or other devices' administrative state.
 
+The provisional pinned adapter keeps `entries_markdown` as a 64 KiB prefix for compatibility and also returns `activity_entries_markdown`, a bounded 256 KiB tail, plus `activity_truncated`. The tail lets a client display the currently streaming native reasoning and tool state when an older long transcript has exhausted the compatibility snapshot budget. It is an activity projection, not transcript pagination; clients must not merge it into the authoritative conversation by array index.
+
 Bound replay memory and slow-client output queues. If a consumer falls behind, terminate or request resync rather than growing without limit.
 
 ## Submission idempotency
@@ -68,6 +72,10 @@ Store request identity and a payload digest at the component performing authorit
 - Gateway restart must not discard acceptance knowledge held in the running Zed adapter.
 
 The agent may internally issue multiple model requests per turn for tools. Assert one submitted user message/native turn, not one HTTP call for the entire task.
+
+`thread.create` also requires a stable request ID. The gateway scopes it to the authenticated device. A same-ID retry with the same optional title returns `creating` until Zed's native session exists, then returns the same stable `thread_id`; a changed title is a request conflict. The operation has no project, agent, model, endpoint, or credential override. It always uses the gateway's configured project and the Agent panel's current selection, then treats the paired user's create action as explicit exposure of that new thread.
+
+The pinned Zed adapter rejects unknown leading slash commands. For a runtime-advertised native command such as `/compact`, it calls `ThreadView::send_content` with native-command mode, matching the desktop path that invokes `AcpThread::send_command`. Any trailing text is queued as a follow-up prompt, as in the desktop composer. Agent and MCP commands stay on the ordinary prompt path with their arguments. Local composer actions such as `/remote-control` and feedback are excluded from `thread.commands`; they require desktop UI context and cannot be used to toggle remote exposure from a phone. Skill completions insert editor mentions and are not covered by this command operation.
 
 ## Cancellation and approval races
 

@@ -524,6 +524,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
         method.as_str(),
         "instance.info"
             | "thread.list"
+            | "thread.create"
             | "thread.snapshot"
             | "thread.events"
             | "thread.commands"
@@ -546,7 +547,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             Json(json!({"error":"INVALID_REQUEST"})),
         );
     };
-    if method == "thread.send" {
+    if method == "thread.send" || method == "thread.create" {
         request["request_id"] = json!(format!("{device_id}:{original_request_id}"));
     } else if method == "request.status" {
         let Some(original_send_id) = request["params"]["original_request_id"]

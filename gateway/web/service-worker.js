@@ -1,6 +1,6 @@
 "use strict";
 
-const SHELL_CACHE = "zedlink-shell-v1";
+const SHELL_CACHE = "zedlink-shell-v2";
 const SHELL = [
   "/",
   "/style.css",

@@ -243,6 +243,8 @@ Only explicitly exposed threads appear on the phone. Run `/remote-control` again
 
 After restarting patched Zed, expose the desired thread again.
 
+You can also create a fresh native Agent session from the paired browser after the patched Zed and gateway are running. Open **Sessions**, select **+ New**, optionally enter a title, and select **Create**. ZedLink creates the session inside the configured project with the agent and model currently selected in Zed, then exposes it automatically. It cannot choose another project, model, provider, or tool policy from the browser.
+
 ### 4. Start the gateway
 
 Return to any Zed window with the global tasks:
@@ -295,7 +297,7 @@ The installed web app still requires the private route, gateway, and patched Zed
 
 On the phone:
 
-1. Select the exposed conversation.
+1. Select an exposed conversation, or use **+ New** on Sessions to create a native thread in the configured project.
 2. Send a harmless message such as:
 
    ```text

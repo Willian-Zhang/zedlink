@@ -1,6 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const UI_BUILD = "2026.10.05.1";
 const state = {
   gatewayId: null,
   token: null,
@@ -20,6 +21,7 @@ const state = {
   activityCollapsed: false,
   renderedEntries: [],
   renderedThreadId: null,
+  creatingThread: false,
 };
 const safeStore = {
   read(key) {
@@ -109,6 +111,7 @@ function apiError(code) {
   if (code === "INSTANCE_UNAVAILABLE") return "Desktop Zed is unavailable. Check that it is running.";
   if (code === "RESYNC_REQUIRED") return "Event history changed. Reloading the native snapshot.";
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
+  if (code === "REQUEST_CONFLICT") return "That request ID was already used for different content.";
   return code || "Gateway request failed.";
 }
 async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
@@ -220,6 +223,7 @@ async function connect() {
     state.instanceId = info.instance_id;
     state.epoch = info.epoch;
     state.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
+    $("new-session").classList.toggle("hidden", !state.capabilities.includes("thread.create"));
     if (changed) {
       state.threadId = null;
       state.commands = [];
@@ -265,6 +269,43 @@ async function loadThreads() {
     $("prompt").disabled = true;
     $("thread-title").textContent = "Choose a session";
     notice("The selected thread is no longer exposed in desktop Zed.");
+  }
+}
+
+async function createSession(event) {
+  event.preventDefault();
+  if (state.creatingThread || !state.capabilities.includes("thread.create")) return;
+  const requestId = crypto.randomUUID();
+  const title = $("new-session-title").value.trim();
+  state.creatingThread = true;
+  $("create-session").disabled = true;
+  $("new-session").disabled = true;
+  notice("Creating a native Zed Agent session…");
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await rpc("thread.create", {
+        instance_id: state.instanceId,
+        epoch: state.epoch,
+        title: title || null,
+      }, requestId);
+      if (result.outcome === "ready" && typeof result.thread_id === "string") {
+        $("new-session-title").value = "";
+        $("new-session-form").classList.add("hidden");
+        await loadThreads();
+        await selectThread(result.thread_id);
+        notice("");
+        return;
+      }
+      if (result.outcome !== "creating") throw new Error("Zed returned an invalid creation state.");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Zed is still connecting the new session. Refresh Sessions to check its status.");
+  } catch (error) {
+    notice(`Could not create the session: ${error.message}`);
+  } finally {
+    state.creatingThread = false;
+    $("create-session").disabled = false;
+    $("new-session").disabled = false;
   }
 }
 
@@ -805,6 +846,12 @@ $("pair-form").addEventListener("submit", async (event) => {
   finally { $("pair-button").disabled = false; }
 });
 $("refresh").addEventListener("click", () => connect());
+$("new-session").addEventListener("click", () => {
+  const form = $("new-session-form");
+  form.classList.toggle("hidden");
+  if (!form.classList.contains("hidden")) $("new-session-title").focus();
+});
+$("new-session-form").addEventListener("submit", createSession);
 $("session-search").addEventListener("input", renderThreads);
 $("messages").addEventListener("scroll", () => {
   const container = $("messages");
@@ -944,4 +991,5 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js")
     .catch(() => { /* HTTPS app remains usable without offline shell caching. */ }));
 }
+$("ui-build").textContent = UI_BUILD;
 loadGateway();

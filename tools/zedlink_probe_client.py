@@ -20,16 +20,17 @@ def main() -> int:
     parser.add_argument("--approval-id", help="Exact pending approval ID from thread.approvals")
     parser.add_argument("--decision", choices=("approve_once", "deny_once"))
     parser.add_argument("--after-sequence", type=int, default=0, help="Event cursor for events")
-    parser.add_argument("operation", choices=("info", "list", "snapshot", "events", "watch", "send", "cancel", "status", "approvals", "respond"))
+    parser.add_argument("--title", help="Optional title for a new native Zed Agent session")
+    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "send", "cancel", "status", "approvals", "respond"))
     parser.add_argument("thread_id", nargs="?")
     parser.add_argument("text", nargs="?")
     args = parser.parse_args()
 
-    if args.operation in ("info", "list") and (args.thread_id or args.text):
+    if args.operation in ("info", "list", "create") and (args.thread_id or args.text):
         parser.error(f"{args.operation} does not accept a thread_id or text")
     if args.operation == "status" and (args.thread_id or args.text or not args.original_request_id):
         parser.error("status requires --original-request-id and no positional arguments")
-    if args.operation in ("snapshot", "events", "watch", "approvals") and (not args.thread_id or args.text):
+    if args.operation in ("snapshot", "events", "watch", "commands", "approvals") and (not args.thread_id or args.text):
         parser.error(f"{args.operation} requires only a thread_id")
     if args.operation == "send" and (not args.thread_id or not args.text):
         parser.error("send requires a thread_id and text")
@@ -37,20 +38,24 @@ def main() -> int:
         parser.error("cancel requires only a thread_id and --turn-id")
     if args.operation == "respond" and (not args.thread_id or args.text or args.turn_id is None or not args.approval_id or not args.decision):
         parser.error("respond requires thread_id, --turn-id, --approval-id, and --decision")
-    if args.operation in ("send", "cancel", "status", "respond") and (not args.instance_id or not args.epoch):
-        parser.error("send, cancel, status, and respond require --instance-id and --epoch from thread.list")
-    if args.operation in ("send", "cancel", "respond") and not args.request_id:
-        parser.error("send, cancel, and respond require a stable --request-id")
-    if args.operation not in ("send", "cancel", "respond") and args.request_id:
-        parser.error("--request-id is only available for send, cancel, or respond")
-    if args.operation not in ("send", "cancel", "status", "respond") and (args.instance_id or args.epoch):
-        parser.error("--instance-id and --epoch are only available for send, cancel, status, or respond")
+    if args.operation in ("create", "send", "cancel", "status", "respond") and (not args.instance_id or not args.epoch):
+        parser.error("create, send, cancel, status, and respond require --instance-id and --epoch from thread.list")
+    if args.operation in ("create", "send", "cancel", "respond") and not args.request_id:
+        parser.error("create, send, cancel, and respond require a stable --request-id")
+    if args.operation not in ("create", "send", "cancel", "respond") and args.request_id:
+        parser.error("--request-id is only available for create, send, cancel, or respond")
+    if args.operation not in ("create", "send", "cancel", "status", "respond", "commands") and (args.instance_id or args.epoch):
+        parser.error("--instance-id and --epoch are only available for create, send, cancel, status, commands, or respond")
+    if args.operation == "commands" and (not args.instance_id or not args.epoch):
+        parser.error("commands requires --instance-id and --epoch from thread.list")
     if args.operation not in ("cancel", "respond") and args.turn_id is not None:
         parser.error("--turn-id is only available for cancel or respond")
     if args.operation != "respond" and (args.approval_id or args.decision):
         parser.error("--approval-id and --decision are only available for respond")
     if args.operation != "status" and args.original_request_id:
         parser.error("--original-request-id is only available for status")
+    if args.operation != "create" and args.title:
+        parser.error("--title is only available for create")
     if args.operation in ("cancel", "respond") and args.turn_id < 0:
         parser.error("--turn-id must be nonnegative")
     if args.after_sequence < 0 or (
@@ -104,6 +109,10 @@ def main() -> int:
             instance_id=args.instance_id,
             epoch=args.epoch,
         )
+    if args.operation == "create":
+        params.update(title=args.title, instance_id=args.instance_id, epoch=args.epoch)
+    if args.operation == "commands":
+        params.update(instance_id=args.instance_id, epoch=args.epoch)
     if args.operation == "cancel":
         params.update(
             turn_id=args.turn_id,

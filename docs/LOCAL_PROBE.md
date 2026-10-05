@@ -8,6 +8,8 @@ The probe accepts one newline-delimited JSON request per connection, up to 4 KiB
 
 `thread.send` requires the loaded `thread_id`, current `instance_id` and `epoch` from `thread.list`, a stable `request_id`, and text of at most 3000 bytes. It enters `ThreadView::send_content` when the native thread is idle and has no queued messages, or `ThreadView::add_to_queue` while busy or already queued. It rejects a send while the desktop is still loading message contents. The local in-process ledger retains up to 256 request IDs, their exact text, and outcomes; a same-ID retry returns the previous outcome, changed text returns `REQUEST_CONFLICT`, and a stale instance or epoch returns `INSTANCE_UNAVAILABLE`. `request.status` looks up a prior send ID without resending, returns `known: false` and `outcome: unknown` when absent, and denies access after thread exposure is revoked. The absent-request result passed one live check; the known-request and revoked cases have not been tested. The idle send result is `unknown` because `send_content` schedules an asynchronous task, so this is not an authoritative accepted/complete receipt. A busy result is `queued`, not an execution guarantee. If the probe restarts, its epoch changes and old retries are rejected. There is no durable replay or automatic reconciliation yet. Prompt text remains only in process memory and the native thread; routine probe errors and logs omit it.
 
+`thread.create` requires the current instance and epoch plus a stable request ID and an optional title of at most 128 bytes. It calls `AgentPanel::create_thread_with_options` in the workspace that owns the configured project, leaving agent, model, and work directories unset so Zed inherits the panel's current agent/model and project defaults. The operation returns `creating` while Zed connects the native session, then exposes and returns its stable ACP session ID. Same-ID retries are idempotent; a changed title returns `REQUEST_CONFLICT`. The adapter retains at most 64 creation records for the life of the Zed instance. It does not accept a project path, model, agent, endpoint, prompt, or credentials from the remote client.
+
 ## Reproducible commands and observed runtime check
 
 From the project root, the following checks have passed:
@@ -38,6 +40,10 @@ Create or open a native Agent thread for that project in the desktop UI, type `/
 private_parent=/tmp/zedlink-probe.REPLACE_WITH_PRINTED_SUFFIX
 python3 tools/zedlink_probe_client.py --socket "$private_parent/socket/zedlink.sock" list
 python3 tools/zedlink_probe_client.py --socket "$private_parent/socket/zedlink.sock" snapshot THREAD_ID_FROM_LIST
+
+# Runtime commands for that exposed thread (copy instance_id and epoch from list):
+python3 tools/zedlink_probe_client.py --socket "$private_parent/socket/zedlink.sock" \
+  --instance-id INSTANCE_ID --epoch EPOCH commands THREAD_ID_FROM_LIST
 python3 tools/zedlink_probe_client.py --socket "$private_parent/socket/zedlink.sock" events THREAD_ID_FROM_LIST
 python3 tools/zedlink_probe_client.py --socket "$private_parent/socket/zedlink.sock" watch THREAD_ID_FROM_LIST
 request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"

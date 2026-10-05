@@ -32,10 +32,12 @@ class ProbeFixture:
     def __init__(self, path):
         self.path = path
         self.seen_sends = {}
+        self.created_requests = {}
         self.accepted = 0
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
         self.sequence = 0
         self.extra_thread = False
+        self.created_thread = False
         self.truncated = False
         self.activity_truncated = False
         self.active_turn_id = None
@@ -71,12 +73,25 @@ class ProbeFixture:
                     threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread", "status": "Idle"}]
                     if self.extra_thread:
                         threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread", "status": "Idle"})
+                    if self.created_thread:
+                        threads.append({"thread_id": "fixture-created", "title": "Created from browser", "status": "Idle"})
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "threads": threads}
+                elif method == "thread.create":
+                    key = request["request_id"]
+                    title = params.get("title")
+                    if key in self.created_requests and self.created_requests[key] != title:
+                        error = {"code": "REQUEST_CONFLICT"}
+                    else:
+                        self.created_requests[key] = title
+                        self.created_thread = True
+                        result = {"outcome": "ready", "thread_id": "fixture-created"}
                 elif method == "thread.snapshot":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "thread_id": params["thread_id"],
-                              "title": "Second synthetic thread" if params["thread_id"] == "fixture-second" else "Synthetic test thread",
+                              "title": ("Second synthetic thread" if params["thread_id"] == "fixture-second"
+                                        else "Created from browser" if params["thread_id"] == "fixture-created"
+                                        else "Synthetic test thread"),
                               "status": "Generating" if self.active_turn_id is not None else "Idle",
                               "current_turn_id": self.active_turn_id, "truncated": self.truncated,
                               "entries_markdown": list(self.entries),
@@ -115,7 +130,7 @@ class ProbeFixture:
                 elif method == "thread.cancel":
                     if (params.get("instance_id"), params.get("epoch")) != ("fixture-instance", "fixture-epoch"):
                         error = {"code": "INSTANCE_UNAVAILABLE"}
-                    elif params.get("thread_id") not in ("fixture-thread", "fixture-second"):
+                    elif params.get("thread_id") not in ("fixture-thread", "fixture-second", "fixture-created"):
                         error = {"code": "THREAD_NOT_EXPOSED"}
                     elif params.get("turn_id") != self.active_turn_id:
                         error = {"code": "STALE_TURN"}
@@ -126,7 +141,7 @@ class ProbeFixture:
                         result = {"outcome": "requested", "turn_id": params["turn_id"]}
                 elif method == "instance.info":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
-                              "capabilities": ["thread.list", "thread.snapshot", "thread.events",
+                              "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.events",
                                                "thread.commands", "thread.send", "thread.cancel", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
@@ -359,11 +374,18 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.1"
+                browser.find_element(By.ID, "new-session").click()
+                browser.find_element(By.ID, "new-session-title").send_keys("Created from browser")
+                browser.find_element(By.ID, "create-session").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Created from browser")
+                assert browser.find_element(By.ID, "thread-count").text == "2"
+                assert len(probe.created_requests) == 1
                 search = browser.find_element(By.ID, "session-search")
                 search.send_keys("no such session")
                 assert not browser.find_elements(By.CSS_SELECTOR, ".thread-item")
                 assert "No sessions match" in browser.find_element(By.ID, "thread-list").text
-                search.clear()
+                search.send_keys(Keys.CONTROL, "a", Keys.DELETE)
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.CSS_SELECTOR, ".thread-badge").text == "ZED AGENT"
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
@@ -466,7 +488,7 @@ def main():
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 probe.extra_thread = True
                 browser.find_element(By.ID, "refresh").click()
-                wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".thread-item")) == 2)
+                wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".thread-item")) == 3)
                 browser.find_elements(By.CSS_SELECTOR, ".thread-item")[1].click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
                 assert browser.find_element(By.ID, "messages").is_displayed()
