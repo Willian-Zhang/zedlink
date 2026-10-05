@@ -293,6 +293,9 @@ impl Gateway {
             .to_str()
             .ok()?
             .strip_prefix("Bearer ")?;
+        self.authorize_token(token).await
+    }
+    async fn authorize_token(&self, token: &str) -> Option<Uuid> {
         let bytes = hex::decode(token).ok()?;
         if bytes.len() != 32 {
             return None;
@@ -579,13 +582,30 @@ async fn events(
     Query(query): Query<EventQuery>,
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let Some(device_id) = state.authorize(&headers).await else {
+    let websocket_token = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find_map(|protocol| protocol.strip_prefix("zedlink-token-").map(str::to_owned))
+        });
+    let device_id = if let Some(device_id) = state.authorize(&headers).await {
+        Some(device_id)
+    } else if let Some(token) = websocket_token.as_deref() {
+        state.authorize_token(token).await
+    } else {
+        None
+    };
+    let Some(device_id) = device_id else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if query.thread_id.is_empty() || query.thread_id.len() > 128 {
         return StatusCode::BAD_REQUEST.into_response();
     }
     upgrade
+        .protocols(["zedlink-v1"])
         .on_upgrade(move |socket| event_stream(socket, state, device_id, query))
         .into_response()
 }

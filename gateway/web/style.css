@@ -239,25 +239,32 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   body.thread-open .sidebar { display: none; }
   body.thread-open.mobile-sessions .sidebar { display: block; }
   body.thread-open.mobile-sessions .workspace { display: none; }
+  body.thread-open:not(.mobile-sessions):not(.mobile-connections):not(.mobile-settings) { padding-bottom: 0; }
+  body.thread-open:not(.mobile-sessions):not(.mobile-connections):not(.mobile-settings) .topbar,
+  body.thread-open:not(.mobile-sessions):not(.mobile-connections):not(.mobile-settings) .mobile-tabs { display: none; }
+  body.thread-open:not(.mobile-sessions):not(.mobile-connections):not(.mobile-settings) .layout,
+  body.thread-open:not(.mobile-sessions):not(.mobile-connections):not(.mobile-settings) .workspace { height: 100dvh; }
   .workspace { height: calc(100dvh - 122px - env(safe-area-inset-bottom)); min-height: 0; }
-  .conversation-head { min-height: 67px; padding: 9px 13px; gap: 10px; }
+  .conversation-head { min-height: 56px; padding: max(8px, env(safe-area-inset-top)) 10px 7px; gap: 8px; }
   .conversation-title .eyebrow, .conversation-head .muted { display: none; }
   .conversation-head h2 { font-size: .98rem; }
-  #show-sessions { display: inline-flex; align-items: center; justify-content: center; flex: none; min-height: 41px; padding: 7px 9px; font-size: .73rem; }
+  #show-sessions { display: inline-flex; align-items: center; justify-content: center; flex: none; min-height: 38px; padding: 6px 8px; font-size: .72rem; }
   .state-pill { font-size: .62rem; }
   .stop-turn { min-height: 36px; padding: 6px 8px; font-size: .69rem; }
   .notice { max-height: 58px; overflow: auto; margin: 6px 11px 0; padding: 7px 9px; font-size: .72rem; }
-  .messages { padding: 10px 14px 19px; }
-  .message { padding: 17px 0; }
-  .message.user { width: min(91%, 540px); padding: 12px 13px; margin: 12px 0 8px; }
-  .message.tool { padding: 12px 13px; }
-  .message-copy { min-height: 40px; padding: 5px 8px; }
+  .messages { padding: 7px 12px 12px; }
+  .message { padding: 14px 0; }
+  .message.user { width: min(92%, 540px); padding: 10px 12px; margin: 9px 0 6px; }
+  .message.tool { padding: 10px 12px; }
+  .message-copy { min-height: 32px; padding: 3px 6px; }
   .message-body { font-size: .95rem; line-height: 1.56; }
-  .composer-wrap { padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
-  .activity-content { max-height: min(32dvh, 280px); font-size: .82rem; }
-  .composer { gap: 7px; padding: 5px 6px; }
-  .composer textarea { min-height: 42px; height: 42px; max-height: 145px; padding: 10px 2px 7px; font-size: 1rem; line-height: 1.35; }
-  .composer-bottom .primary, .command-trigger { width: 42px; height: 42px; min-height: 42px; }
+  .composer-wrap { padding: 6px 8px max(8px, env(safe-area-inset-bottom)); }
+  .activity { margin-bottom: 6px; }
+  .activity-head { min-height: 36px; padding: 4px 7px 4px 9px; }
+  .activity-content { max-height: min(34dvh, 300px); padding: 1px 10px 9px; font-size: .82rem; }
+  .composer { gap: 6px; padding: 4px 5px; }
+  .composer textarea { min-height: 40px; height: 40px; max-height: 132px; padding: 9px 2px 6px; font-size: 1rem; line-height: 1.35; }
+  .composer-bottom .primary, .command-trigger { width: 40px; height: 40px; min-height: 40px; }
   .composer-wrap > .delivery { max-height: 54px; margin-bottom: 7px; padding: 6px 8px; font-size: .71rem; }
   .command-menu { max-height: 35dvh; }
   .command-option { grid-template-columns: 1fr auto; gap: 3px 8px; }

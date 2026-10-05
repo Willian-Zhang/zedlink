@@ -319,7 +319,9 @@ In the paired browser or app:
 
 That matching conversation is the key end-to-end check.
 
-While Zed is generating, the browser opens a **Zed is working** panel above the composer. It updates once per second with reasoning, plans, and tool state that the native Zed thread exposes. Tap **Hide** to reduce it to one line. ZedLink cannot reveal reasoning that the selected model or provider does not publish to Zed.
+While Zed is generating, the browser receives native thread events through an authenticated WebSocket and refreshes the conversation immediately. Bounded polling remains active as recovery if a browser or network closes that stream. Returning to the tab, restoring Safari from the background, or reconnecting the network triggers an immediate snapshot reconciliation.
+
+On a phone, live reasoning and tool progress appear as a compact activity row above the composer. Tap **View** to read the stream and **Close** to return space to the conversation. ZedLink can display only reasoning and tool state that the selected model or provider publishes to native Zed.
 
 Long conversations may show “Older conversation omitted here” beneath the thread title. This is quiet status text rather than a popup. The full history remains in desktop Zed, while a separate recent-activity window keeps current reasoning and tool progress visible in the browser.
 
@@ -424,6 +426,10 @@ Do not continue through the warning. Confirm:
 ### A browser asks to pair again
 
 Use a normal browser window rather than private or incognito mode. Pairing is scoped to the exact HTTPS origin, including its hostname and port. Changing either creates a different browser origin. Browser policies that clear site data on exit also remove the saved credential.
+
+### The conversation stops updating on a phone
+
+Refresh once to load the latest web build, then reopen the thread. The connection label should become **Live with Zed**, and the thread header should change between Idle and the native running state. ZedLink reconnects when Safari or Chrome returns to the foreground. If it remains offline, confirm Tailscale is connected and run **ZedLink: Status** on the workstation.
 
 ### A message may have been sent during a disconnect
 

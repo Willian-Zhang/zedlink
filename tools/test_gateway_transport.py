@@ -374,7 +374,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.3"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.4"
                 assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
                 assert browser.execute_script(
                     "return browserDeviceName(arguments[0])",
@@ -400,6 +400,7 @@ def main():
                 assert browser.find_element(By.CSS_SELECTOR, ".thread-badge").text == "ZED AGENT"
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
+                wait.until(lambda driver: "Live with Zed" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 assert not browser.find_elements(By.CSS_SELECTOR, "#messages img")
                 assert browser.execute_script("return window.syntheticXss || 0") == 0
                 browser.find_element(By.ID, "prompt").send_keys("Browser fixture prompt")
@@ -481,15 +482,22 @@ def main():
                 layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
                 assert layout["pageWidth"] <= layout["width"] + 1
                 assert layout["composerBottom"] <= layout["height"]
-                assert browser.find_element(By.ID, "tab-sessions").is_displayed()
+                assert not browser.find_element(By.ID, "tab-sessions").is_displayed()
+                assert not browser.find_element(By.CSS_SELECTOR, ".topbar").is_displayed()
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
-                assert layout["messagesHeight"] >= 250 and layout["sidebarHidden"], layout
+                assert layout["messagesHeight"] >= 390 and layout["sidebarHidden"], layout
                 assert browser.find_element(By.ID, "prompt").is_displayed()
                 assert browser.find_element(By.ID, "send").is_displayed()
                 assert not browser.find_elements(By.ID, "toggle-compose")
                 assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                assert browser.find_element(By.ID, "tab-sessions").is_displayed()
+                browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
+                wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
+                assert browser.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false"
+                assert not browser.find_element(By.ID, "activity-content").is_displayed()
+                browser.find_element(By.ID, "show-sessions").click()
                 browser.find_element(By.ID, "tab-connections").click()
                 assert browser.find_element(By.ID, "connection-panel").is_displayed()
                 browser.find_element(By.ID, "tab-settings").click()

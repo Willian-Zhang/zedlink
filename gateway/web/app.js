@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.3";
+const UI_BUILD = "2026.10.05.4";
 const state = {
   gatewayId: null,
   token: null,
@@ -22,6 +22,12 @@ const state = {
   renderedEntries: [],
   renderedThreadId: null,
   creatingThread: false,
+  eventSocket: null,
+  eventThreadId: null,
+  eventReconnectTimer: null,
+  snapshotPromise: null,
+  snapshotQueued: false,
+  lastSnapshotAt: 0,
 };
 const safeStore = {
   read(key) {
@@ -146,13 +152,23 @@ async function keepPairingStorage() {
   try { await navigator.storage.persist(); } catch { /* Browser storage remains usable without persistence. */ }
 }
 async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
-  const response = await fetch("/v1/rpc", {
-    method: "POST", cache: "no-store", redirect: "error",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.token}` },
-    body: JSON.stringify({ version: 1, request_id: requestId, method, params }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  let response;
+  try {
+    response = await fetch("/v1/rpc", {
+      method: "POST", cache: "no-store", redirect: "error", signal: controller.signal,
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.token}` },
+      body: JSON.stringify({ version: 1, request_id: requestId, method, params }),
+    });
+  } catch (cause) {
+    const error = new Error(cause?.name === "AbortError" ? "The gateway request timed out." : "The gateway connection was interrupted.");
+    error.code = "TRANSPORT_UNAVAILABLE";
+    throw error;
+  } finally { clearTimeout(timeout); }
   const data = await response.json();
   if (response.status === 401) {
+    closeEventStream();
     state.token = null;
     safeStore.remove(tokenKey());
     $("pair-panel").classList.remove("hidden");
@@ -175,6 +191,68 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     throw error;
   }
   return data.result;
+}
+
+function closeEventStream() {
+  if (state.eventReconnectTimer) clearTimeout(state.eventReconnectTimer);
+  state.eventReconnectTimer = null;
+  const socket = state.eventSocket;
+  state.eventSocket = null;
+  state.eventThreadId = null;
+  document.body.dataset.liveTransport = "polling";
+  if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "Client view changed");
+}
+
+function startEventStream() {
+  if (!state.token || !state.threadId || document.visibilityState === "hidden") return;
+  if (state.eventSocket && state.eventThreadId === state.threadId
+      && state.eventSocket.readyState <= WebSocket.OPEN) return;
+  closeEventStream();
+  const threadId = state.threadId;
+  const url = new URL("/v1/events", location.href);
+  url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("thread_id", threadId);
+  url.searchParams.set("after_sequence", String(state.sequence));
+  const socket = new WebSocket(url, ["zedlink-v1", `zedlink-token-${state.token}`]);
+  document.body.dataset.liveTransport = "connecting";
+  state.eventSocket = socket;
+  state.eventThreadId = threadId;
+  socket.addEventListener("open", () => {
+    if (state.eventSocket === socket) {
+      document.body.dataset.liveTransport = "websocket";
+      connection("Live with Zed", "online");
+    }
+  });
+  socket.addEventListener("message", (event) => {
+    if (state.eventSocket !== socket || state.threadId !== threadId) return;
+    try {
+      const data = JSON.parse(event.data);
+      if (data.error) throw Object.assign(new Error(apiError(data.error.code)), { code: data.error.code });
+      const result = data.result;
+      identity(result);
+      if (result.thread_id !== threadId || !Array.isArray(result.events)) throw new Error("Invalid live event response.");
+      if (Number.isInteger(result.last_sequence)) state.sequence = Math.max(state.sequence, result.last_sequence);
+      if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle")) {
+        refreshSnapshot().catch((error) => notice(error.message));
+      }
+    } catch (error) {
+      if (error.code === "UNAUTHENTICATED") {
+        state.token = null;
+        safeStore.remove(tokenKey());
+      }
+      socket.close();
+    }
+  });
+  socket.addEventListener("close", () => {
+    if (state.eventSocket !== socket) return;
+    state.eventSocket = null;
+    state.eventThreadId = null;
+    document.body.dataset.liveTransport = "polling";
+    if (state.token && state.threadId === threadId && document.visibilityState !== "hidden") {
+      state.eventReconnectTimer = setTimeout(startEventStream, 1200);
+    }
+  });
+  socket.addEventListener("error", () => { /* Close triggers bounded polling and reconnect. */ });
 }
 
 async function loadGateway() {
@@ -260,6 +338,7 @@ async function connect() {
     state.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
     showCreateAvailability();
     if (changed) {
+      closeEventStream();
       state.threadId = null;
       state.commands = [];
       renderCommands();
@@ -277,7 +356,8 @@ async function connect() {
       if (state.pending) delivery("A previous message may have reached Zed. Check the conversation before continuing.", true);
     }
     await loadThreads();
-    connection("Connected to Zed", "online");
+    if (state.threadId) startEventStream();
+    connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
   } catch (error) {
     connection("Zed unavailable", "offline");
     notice(`Pairing is saved. ${error.message} Refresh when desktop Zed is ready.`);
@@ -291,6 +371,7 @@ async function loadThreads() {
   state.threads = result.threads;
   renderThreads();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
+    closeEventStream();
     state.threadId = null;
     state.commands = [];
     renderCommands();
@@ -380,6 +461,7 @@ function renderThreads() {
 }
 
 async function selectThread(threadId) {
+  closeEventStream();
   state.threadId = threadId;
   state.commands = [];
   renderCommands();
@@ -392,15 +474,16 @@ async function selectThread(threadId) {
   state.renderedEntries = [];
   state.renderedThreadId = null;
   state.activitySignature = null;
-  state.activityCollapsed = false;
+  state.activityCollapsed = matchMedia("(max-width: 760px)").matches;
   $("prompt").disabled = false;
   $("jump-latest").classList.add("hidden");
   $("send").disabled = !!state.pending;
   $("thread-title").textContent = state.threads.find((thread) => thread.thread_id === threadId)?.title || "Untitled Agent thread";
   await loadThreads();
   try {
-    await snapshot();
+    await refreshSnapshot();
     await loadCommands();
+    startEventStream();
     notice("");
   } catch (error) { notice(error.message); }
 }
@@ -666,7 +749,6 @@ function renderActivity(entries, status, activityTruncated = false) {
   const panel = $("activity");
   const busy = status !== "Idle";
   panel.classList.toggle("busy", busy);
-  $("activity-title").textContent = busy ? "Zed is working" : "Recent activity";
   $("activity-state").textContent = busy ? "Live" : "Complete";
   const lastUser = entries.findLastIndex((entry) => /^## User(?: \(checkpoint\))?\n\n/.test(entry));
   const recent = entries.slice(Math.max(0, lastUser + 1));
@@ -686,9 +768,10 @@ function renderActivity(entries, status, activityTruncated = false) {
     }
   }
   const latest = updates.slice(-6);
+  $("activity-title").textContent = latest.at(-1)?.[0] || (busy ? "Zed is working" : "Recent activity");
   panel.classList.toggle("hidden", !busy && !latest.length);
   panel.classList.toggle("collapsed", state.activityCollapsed);
-  $("activity-toggle").textContent = state.activityCollapsed ? "Show" : "Hide";
+  $("activity-toggle").textContent = state.activityCollapsed ? "View" : "Close";
   $("activity-toggle").setAttribute("aria-expanded", String(!state.activityCollapsed));
   const content = $("activity-content");
   const signature = JSON.stringify([status, latest, activityTruncated]);
@@ -716,15 +799,34 @@ function renderActivity(entries, status, activityTruncated = false) {
   if (!state.activityCollapsed) content.scrollTop = content.scrollHeight;
 }
 
+async function refreshSnapshot() {
+  state.snapshotQueued = true;
+  if (!state.snapshotPromise) {
+    state.snapshotPromise = (async () => {
+      while (state.snapshotQueued && state.threadId) {
+        state.snapshotQueued = false;
+        await snapshot();
+      }
+    })();
+    try { await state.snapshotPromise; }
+    finally { state.snapshotPromise = null; }
+  } else {
+    await state.snapshotPromise;
+  }
+}
+
 async function snapshot() {
   if (!state.threadId) return;
-  const result = await rpc("thread.snapshot", { thread_id: state.threadId });
+  const threadId = state.threadId;
+  const result = await rpc("thread.snapshot", { thread_id: threadId });
+  if (state.threadId !== threadId) return;
   identity(result);
   if (result.thread_id !== state.threadId || !Array.isArray(result.entries_markdown)
       || !result.entries_markdown.every((entry) => typeof entry === "string")) {
     throw new Error("Snapshot belongs to another thread.");
   }
   state.sequence = result.last_sequence;
+  state.lastSnapshotAt = Date.now();
   const container = $("messages");
   const follow = container.scrollHeight - container.scrollTop - container.clientHeight < 90;
   if (state.renderedThreadId !== result.thread_id) {
@@ -780,7 +882,7 @@ async function reconcilePending() {
   });
   if (result.known) {
     settledDelivery("Zed recorded the original request. The conversation will show its progress.");
-    if (state.threadId === pending.threadId) await snapshot();
+    if (state.threadId === pending.threadId) await refreshSnapshot();
   } else {
     delivery("The previous send is still unconfirmed. It has not been sent again.", true);
   }
@@ -792,17 +894,25 @@ async function poll() {
   try {
     if (!state.instanceId) { await connect(); return; }
     if (state.threadId) {
-      const result = await rpc("thread.events", { thread_id: state.threadId, after_sequence: state.sequence });
-      identity(result);
-      if (result.thread_id !== state.threadId) throw new Error("Event feed changed threads.");
-      if (result.events?.length || (state.threadStatus && state.threadStatus !== "Idle")) await snapshot();
-      else state.sequence = result.last_sequence;
+      const streamLive = state.eventSocket?.readyState === WebSocket.OPEN
+        && state.eventThreadId === state.threadId;
+      if (!streamLive) {
+        const result = await rpc("thread.events", { thread_id: state.threadId, after_sequence: state.sequence });
+        identity(result);
+        if (result.thread_id !== state.threadId) throw new Error("Event feed changed threads.");
+        if (result.events?.length) await refreshSnapshot();
+        else state.sequence = result.last_sequence;
+        startEventStream();
+      }
+      if ((state.threadStatus && state.threadStatus !== "Idle") || Date.now() - state.lastSnapshotAt > 3000) {
+        await refreshSnapshot();
+      }
     } else await loadThreads();
     if (state.pending) await reconcilePending();
-    connection("Connected to Zed", "online");
+    connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
   } catch (error) {
     if (error.code === "RESYNC_REQUIRED") {
-      try { await snapshot(); return; } catch (snapshotError) { notice(snapshotError.message); }
+      try { await refreshSnapshot(); return; } catch (snapshotError) { notice(snapshotError.message); }
     } else if (error.code === "THREAD_NOT_EXPOSED" || error.code === "IDENTITY_CHANGED") {
       await connect();
       return;
@@ -860,7 +970,7 @@ async function sendPending() {
     return;
   }
   try {
-    if (state.threadId === pending.threadId) await snapshot();
+    if (state.threadId === pending.threadId) await refreshSnapshot();
     $("messages").scrollTop = $("messages").scrollHeight;
   } catch (error) { notice(`Request reached Zed; conversation refresh failed: ${error.message}`); }
 }
@@ -917,7 +1027,7 @@ $("stop-turn").addEventListener("click", async () => {
   } catch (error) {
     notice(error.message);
   } finally {
-    try { await snapshot(); } catch (error) { notice(error.message); }
+    try { await refreshSnapshot(); } catch (error) { notice(error.message); }
     $("stop-turn").disabled = false;
   }
 });
@@ -948,6 +1058,7 @@ $("prompt").addEventListener("keydown", (event) => {
   }
 });
 function forgetBrowser() {
+  closeEventStream();
   safeStore.remove(tokenKey());
   safeStore.remove(pendingKey());
   state.token = null;
@@ -970,7 +1081,7 @@ $("composer-form").addEventListener("submit", sendPrompt);
 $("activity-toggle").addEventListener("click", () => {
   state.activityCollapsed = !state.activityCollapsed;
   $("activity").classList.toggle("collapsed", state.activityCollapsed);
-  $("activity-toggle").textContent = state.activityCollapsed ? "Show" : "Hide";
+  $("activity-toggle").textContent = state.activityCollapsed ? "View" : "Close";
   $("activity-toggle").setAttribute("aria-expanded", String(!state.activityCollapsed));
 });
 $("retry").addEventListener("click", sendPending);
@@ -978,8 +1089,27 @@ $("clear-pending").addEventListener("click", () => {
   clearPending();
   notice("You can send again. If the previous message appears in Zed, avoid sending it a second time.");
 });
-setInterval(poll, 1000);
+setInterval(poll, 750);
 window.addEventListener("hashchange", () => loadGateway());
+function resumeLiveUpdates() {
+  if (!state.token || document.visibilityState === "hidden") return;
+  if (!state.instanceId) {
+    connect();
+    return;
+  }
+  if (state.threadId) {
+    startEventStream();
+    refreshSnapshot().catch((error) => notice(error.message));
+  }
+  poll();
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") closeEventStream();
+  else resumeLiveUpdates();
+});
+window.addEventListener("pageshow", resumeLiveUpdates);
+window.addEventListener("focus", resumeLiveUpdates);
+window.addEventListener("online", resumeLiveUpdates);
 
 function showMobileView(view) {
   document.body.classList.remove("mobile-connections", "mobile-settings");
