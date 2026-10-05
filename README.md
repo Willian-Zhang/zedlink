@@ -29,6 +29,12 @@ Phone app or PWA ── private HTTPS through Tailscale ── ZedLink gateway
 
 Zed must remain open while you use the conversation remotely. The model does not run in the browser, and model credentials are never copied to the phone.
 
+### Why `zed-source/` is on the workstation but not GitHub
+
+`zed-source/` is a generated local checkout of the pinned upstream Zed revision. ZedLink applies [its reviewable patch](patches/zed-1.22.0-local-probe.patch) there and builds the patched `zed` executable under `zed-source/target/`. The directory is intentionally ignored by this repository and is never pushed to ZedLink's GitHub repository. The installer recreates it from upstream Zed when it is missing.
+
+Keep it while using or rebuilding patched Zed. It can be deleted to recover disk space only after closing Zed Dev and accepting that the next **ZedLink: Install / build** will clone and compile Zed again. Deleting it is not required before committing or pushing ZedLink changes.
+
 ## Before you begin
 
 You need:
