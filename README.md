@@ -327,7 +327,9 @@ That matching conversation is the key end-to-end check.
 
 While Zed is generating, the browser receives native thread events through an authenticated WebSocket and refreshes the conversation immediately. Bounded polling remains active as recovery if a browser or network closes that stream. Returning to the tab, restoring Safari from the background, or reconnecting the network triggers an immediate snapshot reconciliation.
 
-On a phone, live reasoning and tool progress appear as a compact activity row above the composer. Tap **View** to read the stream and **Close** to return space to the conversation. ZedLink can display only reasoning and tool state that the selected model or provider publishes to native Zed.
+Live reasoning and tool progress appear inside the conversation after the current transcript. While Zed is working, the activity entry expands and updates in place with reasoning, commands, terminal output, and file content published by the native thread. When the turn finishes, it condenses to a **Turn activity** row; select **View** to reopen it. The corresponding thinking blocks and tool cards also remain at their native positions in the transcript.
+
+Assistant Markdown renders headings, lists, quotes, links, fenced code with language labels and copy controls, and horizontally scrollable tables. Terminal output and file content use dedicated copyable tool sections. Native image content is currently represented by Zed's snapshot as the text `Image`, so image and graphical-chart parity requires a future structured attachment addition to the native bridge; the browser does not invent or fetch missing image data. Text, Markdown tables, ASCII charts, and chart source in fenced blocks remain readable.
 
 Long conversations may show “Older conversation omitted here” beneath the thread title. This is quiet status text rather than a popup. The full history remains in desktop Zed, while a separate recent-activity window keeps current reasoning and tool progress visible in the browser.
 

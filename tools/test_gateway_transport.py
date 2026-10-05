@@ -122,7 +122,7 @@ class ProbeFixture:
                             self.accepted += 1
                             self.entries.extend([
                                 f"## User\n\n{text}\n\n",
-                                "## Assistant\n\n**Synthetic fixture reply.**\n\n- One\n- Two\n\n```text\nok\n```\n\n",
+                                "## Assistant\n\n**Synthetic fixture reply.**\n\n- One\n- Two\n\n| Step | State |\n| --- | --- |\n| Build | Ready |\n\n```text\nok\n```\n\n",
                             ])
                             self.sequence += 1
                         result = {"outcome": "unknown"}
@@ -374,7 +374,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.6"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.7"
                 assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
                 assert browser.execute_script(
                     "return browserDeviceName(arguments[0])",
@@ -417,32 +417,32 @@ def main():
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant .message-label")[-1].get_attribute("textContent") == "Zed Agent"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant strong")
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant pre code")
+                assert browser.find_element(By.CSS_SELECTOR, ".message.assistant table").text == "Step State\nBuild Ready"
+                assert browser.find_element(By.CSS_SELECTOR, ".message.assistant .code-block-head").text.startswith("TEXT")
                 assert not browser.find_element(By.ID, "delivery-details").is_displayed()
                 assert browser.find_element(By.ID, "send").is_enabled()
+                probe.active_turn_id = 8
                 probe.entries[-1] = "## Assistant\n\n<thinking>\nChecking the fixture stream\n</thinking>\n\n**Synthetic fixture reply.**\n\n"
                 probe.sequence += 1
                 wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "activity-content").text)
                 assert browser.find_element(By.ID, "activity").is_displayed()
+                assert browser.execute_script("return document.getElementById('messages').contains(document.getElementById('activity'))")
                 assert browser.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "true"
-                assert "REASONING SHARED BY ZED" in browser.find_element(By.ID, "activity-content").text
+                assert "THINKING" in browser.find_element(By.ID, "activity-content").text
+                assert browser.find_element(By.CSS_SELECTOR, ".message.assistant details.thinking-block").get_attribute("open") == "true"
                 probe.activity_truncated = True
                 probe.sequence += 1
                 wait.until(lambda driver: "Earlier activity is omitted" in driver.find_element(By.ID, "activity-content").text)
                 probe.activity_truncated = False
                 probe.sequence += 1
-                probe.active_turn_id = 8
                 probe.entries.append("**Tool Call: Run safe fixture command**\nStatus: InProgress\n\nTerminal:\n```\nline one\nline two\n```\n\nDiff: fixture.txt\n```\nnew file content\n```\n")
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".message.tool .tool-title"))
                 assert "Run safe fixture command" in browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-title").text
                 assert "InProgress" in browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-state").text
                 tool_details = browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details")
-                assert tool_details.get_attribute("open") is None
-                browser.execute_script(
-                    "arguments[0].querySelector('summary').click()", tool_details
-                )
                 assert tool_details.get_attribute("open") == "true"
-                assert "Hide tool output" in tool_details.find_element(By.TAG_NAME, "summary").text
+                assert "Hide live tool output" in tool_details.find_element(By.TAG_NAME, "summary").text
                 outputs = browser.find_elements(By.CSS_SELECTOR, ".message.tool .tool-output")
                 assert len(outputs) == 2
                 assert "line two" in outputs[0].text
@@ -451,9 +451,10 @@ def main():
                 browser.save_screenshot("/tmp/zedlink-browser-tool-fixture.png")
                 probe.entries[-1] = probe.entries[-1].replace("Status: InProgress", "Status: Completed").replace("line two", "line two\nline three")
                 wait.until(lambda driver: "line three" in driver.execute_script(
-                    "return document.querySelector('.message.tool .tool-output')?.textContent || ''"
+                    "return document.querySelector('#activity .tool-output')?.textContent || ''"
                 ))
-                assert browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details").get_attribute("open") == "true"
+                assert browser.find_element(By.CSS_SELECTOR, ".message.tool .tool-details").get_attribute("open") is None
+                assert "line three" in browser.find_element(By.CSS_SELECTOR, "#activity .tool-output").text
                 probe.truncated = True
                 probe.sequence += 1
                 wait.until(lambda driver: "Older conversation omitted here" in driver.find_element(By.ID, "thread-meta").text)
@@ -463,6 +464,7 @@ def main():
                 wait.until(lambda driver: "Thread fixture-thre" in driver.find_element(By.ID, "thread-meta").text)
                 probe.active_turn_id = None
                 probe.sequence += 1
+                wait.until(lambda driver: driver.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false")
                 browser.find_element(By.ID, "show-commands").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
                 assert "/compact" in browser.find_element(By.ID, "command-menu").text

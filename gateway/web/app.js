@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.6";
+const UI_BUILD = "2026.10.05.7";
 const state = {
   gatewayId: null,
   token: null,
@@ -19,6 +19,7 @@ const state = {
   pending: null,
   activitySignature: null,
   activityCollapsed: false,
+  activityBusy: false,
   renderedEntries: [],
   renderedThreadId: null,
   creatingThread: false,
@@ -435,7 +436,7 @@ async function loadThreads() {
     showStop();
     document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
-    $("messages").replaceChildren();
+    $("transcript-entries").replaceChildren();
     $("activity").classList.add("hidden");
     $("prompt").disabled = true;
     $("thread-title").textContent = "Choose a session";
@@ -533,7 +534,9 @@ async function selectThread(threadId) {
   state.renderedEntries = [];
   state.renderedThreadId = null;
   state.activitySignature = null;
-  state.activityCollapsed = matchMedia("(max-width: 760px)").matches;
+  state.activityCollapsed = true;
+  state.activityBusy = false;
+  $("activity").classList.add("hidden");
   $("prompt").disabled = false;
   $("jump-latest").classList.add("hidden");
   $("send").disabled = !!state.pending;
@@ -618,17 +621,69 @@ function entryPresentation(markdown, index) {
 }
 
 function appendInline(target, value) {
-  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  const pattern = /(!?\[[^\]\n]+\]\([^\s)]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
   let cursor = 0;
   for (const match of value.matchAll(pattern)) {
     if (match.index > cursor) target.append(document.createTextNode(value.slice(cursor, match.index)));
-    const code = match[0].startsWith("`");
-    const element = document.createElement(code ? "code" : "strong");
-    element.textContent = code ? match[0].slice(1, -1) : match[0].slice(2, -2);
-    target.append(element);
+    if (match[0].startsWith("`")) {
+      const code = document.createElement("code");
+      code.textContent = match[0].slice(1, -1);
+      target.append(code);
+    } else if (match[0].startsWith("**")) {
+      const strong = document.createElement("strong");
+      strong.textContent = match[0].slice(2, -2);
+      target.append(strong);
+    } else {
+      const parsed = match[0].match(/^(!?)\[([^\]]+)\]\(([^)]+)\)$/);
+      const url = parsed?.[3];
+      let safe = null;
+      try {
+        const candidate = new URL(url, location.href);
+        if (["https:", "http:"].includes(candidate.protocol)) safe = candidate.href;
+      } catch { /* Render invalid or local links as plain text. */ }
+      if (safe) {
+        const link = document.createElement("a");
+        link.href = safe;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = parsed[1] ? `Image: ${parsed[2]}` : parsed[2];
+        target.append(link);
+      } else {
+        target.append(document.createTextNode(parsed ? parsed[2] : match[0]));
+      }
+    }
     cursor = match.index + match[0].length;
   }
   if (cursor < value.length) target.append(document.createTextNode(value.slice(cursor)));
+}
+
+function appendCodeBlock(target, value, language = "") {
+  const wrapper = document.createElement("section");
+  wrapper.className = "code-block";
+  const heading = document.createElement("div");
+  heading.className = "code-block-head";
+  const label = document.createElement("span");
+  label.textContent = language || "Code";
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "message-copy";
+  copy.textContent = "Copy code";
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(value); copy.textContent = "Copied"; }
+    catch { notice("Clipboard access is unavailable in this browser."); }
+  });
+  heading.append(label, copy);
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  if (language) code.className = `language-${language.replace(/[^a-z0-9_-]/gi, "")}`;
+  code.textContent = value;
+  pre.append(code);
+  wrapper.append(heading, pre);
+  target.append(wrapper);
+}
+
+function tableCells(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
 }
 
 function renderBody(target, source) {
@@ -637,15 +692,12 @@ function renderBody(target, source) {
     const line = lines[i];
     if (!line.trim()) { i += 1; continue; }
     if (line.startsWith("```")) {
+      const language = line.slice(3).trim().split(/\s+/, 1)[0];
       const block = [];
       i += 1;
       while (i < lines.length && !lines[i].startsWith("```")) block.push(lines[i++]);
       if (i < lines.length) i += 1;
-      const pre = document.createElement("pre");
-      const code = document.createElement("code");
-      code.textContent = block.join("\n");
-      pre.append(code);
-      target.append(pre);
+      appendCodeBlock(target, block.join("\n"), language);
       continue;
     }
     if (line === "<thinking>") {
@@ -654,12 +706,44 @@ function renderBody(target, source) {
       while (i < lines.length && lines[i] !== "</thinking>") block.push(lines[i++]);
       if (i < lines.length) i += 1;
       const details = document.createElement("details");
+      details.className = "thinking-block";
       const summary = document.createElement("summary");
-      summary.textContent = "Reasoning";
-      const content = document.createElement("p");
-      content.textContent = block.join("\n");
+      summary.textContent = "Thinking";
+      const content = document.createElement("div");
+      renderBody(content, block.join("\n"));
       details.append(summary, content);
       target.append(details);
+      continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length
+        && /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1])) {
+      const headers = tableCells(line);
+      i += 2;
+      const wrapper = document.createElement("div");
+      wrapper.className = "table-scroll";
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      for (const value of headers) {
+        const cell = document.createElement("th");
+        appendInline(cell, value);
+        headerRow.append(cell);
+      }
+      thead.append(headerRow);
+      const tbody = document.createElement("tbody");
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        const row = document.createElement("tr");
+        for (const value of tableCells(lines[i])) {
+          const cell = document.createElement("td");
+          appendInline(cell, value);
+          row.append(cell);
+        }
+        tbody.append(row);
+        i += 1;
+      }
+      table.append(thead, tbody);
+      wrapper.append(table);
+      target.append(wrapper);
       continue;
     }
     const heading = line.match(/^#{1,4} (.+)$/);
@@ -787,11 +871,17 @@ function makeEntry(markdown, index) {
     preview.textContent = toolPreview(presentation.body, presentation.status);
     const details = document.createElement("details");
     details.className = "tool-details";
-    details.open = false;
+    const active = /Pending|InProgress|In Progress|Waiting/i.test(presentation.status);
+    details.open = active;
+    details.dataset.autoOpen = String(active);
+    details.dataset.userToggled = "false";
     const summary = document.createElement("summary");
-    summary.textContent = "Read tool output";
+    summary.textContent = active ? "Hide live tool output" : "Read tool output";
+    summary.addEventListener("click", () => { details.dataset.userToggled = "true"; });
     details.addEventListener("toggle", () => {
-      summary.textContent = details.open ? "Hide tool output" : "Read tool output";
+      summary.textContent = details.open
+        ? active ? "Hide live tool output" : "Hide tool output"
+        : active ? "Show live tool output" : "Read tool output";
     });
     const content = document.createElement("div");
     content.className = "tool-content";
@@ -810,6 +900,10 @@ function makeEntry(markdown, index) {
 function renderActivity(entries, status, activityTruncated = false) {
   const panel = $("activity");
   const busy = status !== "Idle";
+  if (busy !== state.activityBusy) {
+    state.activityCollapsed = !busy;
+    state.activityBusy = busy;
+  }
   panel.classList.toggle("busy", busy);
   $("activity-state").textContent = busy ? "Live" : "Complete";
   const lastUser = entries.findLastIndex((entry) => /^## User(?: \(checkpoint\))?\n\n/.test(entry));
@@ -819,37 +913,52 @@ function renderActivity(entries, status, activityTruncated = false) {
     if (markdown.startsWith("## Assistant\n\n")) {
       for (const match of markdown.matchAll(/<thinking>\n([\s\S]*?)(?:\n<\/thinking>|$)/g)) {
         const value = match[1].trim();
-        if (value) updates.push(["Reasoning shared by Zed", value]);
+        if (value) updates.push({ kind: "reasoning", label: "Thinking", body: value });
       }
     } else {
-      const tool = markdown.match(/^\*\*Tool Call: ([^\n]*?)\*\*\nStatus: ([^\n]*)/);
-      if (tool) updates.push(["Tool activity", `${tool[1]} · ${tool[2]}`]);
-      else if (markdown.startsWith("## Plan\n\n")) updates.push(["Plan", markdown.slice(9).trim()]);
-      else if (markdown.startsWith("## Context Compaction")) updates.push(["Context", markdown.split("\n", 1)[0].slice(3)]);
-      else if (markdown.startsWith("## Input Requested")) updates.push(["Approval", "Input requested in desktop Zed"]);
+      const tool = markdown.match(/^\*\*Tool Call: ([^\n]*?)\*\*\nStatus: ([^\n]*)\n\n/);
+      if (tool) updates.push({ kind: "tool", label: tool[1], status: tool[2], body: markdown.slice(tool[0].length) });
+      else if (markdown.startsWith("## Plan\n\n")) updates.push({ kind: "plan", label: "Plan", body: markdown.slice(9).trim() });
+      else if (markdown.startsWith("## Context Compaction")) updates.push({ kind: "context", label: "Context compaction", body: markdown.replace(/^## Context Compaction[^\n]*\n\n/, "").trim() });
+      else if (markdown.startsWith("## Input Requested")) updates.push({ kind: "approval", label: "Approval", body: "Input requested in desktop Zed" });
     }
   }
-  const latest = updates.slice(-6);
-  $("activity-title").textContent = latest.at(-1)?.[0] || (busy ? "Zed is working" : "Recent activity");
-  panel.classList.toggle("hidden", !busy && !latest.length);
+  $("activity-title").textContent = busy ? "Zed is working" : `Turn activity${updates.length ? ` · ${updates.length}` : ""}`;
+  panel.classList.toggle("hidden", !busy && !updates.length);
   panel.classList.toggle("collapsed", state.activityCollapsed);
   $("activity-toggle").textContent = state.activityCollapsed ? "View" : "Close";
   $("activity-toggle").setAttribute("aria-expanded", String(!state.activityCollapsed));
   const content = $("activity-content");
-  const signature = JSON.stringify([status, latest, activityTruncated]);
+  const signature = JSON.stringify([status, updates, activityTruncated]);
   if (state.activitySignature === signature) return;
   state.activitySignature = signature;
   content.replaceChildren();
-  if (!latest.length) {
-    const empty = document.createElement("p");
+  if (!updates.length) {
+    const empty = document.createElement("div");
+    empty.className = "activity-item";
     empty.textContent = "Waiting for reasoning or tool activity shared by the native Zed thread…";
     content.append(empty);
   }
-  for (const [label, value] of latest) {
-    const item = document.createElement("p");
+  for (const update of updates) {
+    const item = document.createElement("section");
+    item.className = "activity-item";
     const heading = document.createElement("strong");
-    heading.textContent = label;
-    item.append(heading, document.createTextNode(value.slice(0, 4000)));
+    heading.textContent = update.kind === "tool" ? `Tool · ${update.label}` : update.label;
+    item.append(heading);
+    if (update.kind === "tool") {
+      const status = document.createElement("span");
+      status.className = `tool-state ${/Failed|Rejected|Canceled/i.test(update.status) ? "failed" : /Pending|InProgress|In Progress|Waiting/i.test(update.status) ? "working" : ""}`;
+      status.textContent = update.status;
+      const output = document.createElement("div");
+      output.className = "tool-content";
+      renderToolBody(output, update.body);
+      item.append(status, output);
+    } else {
+      const body = document.createElement("div");
+      body.className = "message-body";
+      renderBody(body, update.body);
+      item.append(body);
+    }
     content.append(item);
   }
   if (activityTruncated) {
@@ -858,7 +967,6 @@ function renderActivity(entries, status, activityTruncated = false) {
     note.textContent = "Earlier activity is omitted from this live window.";
     content.prepend(note);
   }
-  if (!state.activityCollapsed) content.scrollTop = content.scrollHeight;
 }
 
 async function refreshSnapshot() {
@@ -889,8 +997,9 @@ async function snapshot() {
   }
   state.sequence = result.last_sequence;
   state.lastSnapshotAt = Date.now();
-  const container = $("messages");
-  const follow = container.scrollHeight - container.scrollTop - container.clientHeight < 90;
+  const scroller = $("messages");
+  const container = $("transcript-entries");
+  const follow = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
   if (state.renderedThreadId !== result.thread_id) {
     container.replaceChildren();
     state.renderedEntries = [];
@@ -903,18 +1012,21 @@ async function snapshot() {
     if (previous) {
       const oldDetails = previous.querySelector("details");
       const newDetails = article.querySelector("details");
-      if (oldDetails && newDetails) newDetails.open = oldDetails.open;
+      if (oldDetails && newDetails && oldDetails.dataset.userToggled === "true") {
+        newDetails.open = oldDetails.open;
+        newDetails.dataset.userToggled = "true";
+      }
       previous.replaceWith(article);
     } else container.append(article);
     state.renderedEntries[index] = markdown;
   }
   while (container.children.length > result.entries_markdown.length) container.lastElementChild.remove();
   state.renderedEntries.length = result.entries_markdown.length;
-  if (follow) {
-    container.scrollTop = container.scrollHeight;
-    $("jump-latest").classList.add("hidden");
-  } else if (result.entries_markdown.length) {
-    $("jump-latest").classList.remove("hidden");
+  const busy = result.status !== "Idle";
+  for (const details of container.querySelectorAll("details.thinking-block")) details.open = false;
+  if (busy) {
+    const assistants = container.querySelectorAll(".message.assistant");
+    assistants[assistants.length - 1]?.querySelectorAll("details.thinking-block").forEach((details) => { details.open = true; });
   }
   $("thread-title").textContent = result.title || "Untitled Agent thread";
   $("thread-meta").textContent = result.truncated ? "Older conversation omitted here · Full history remains in Zed" : `Thread ${result.thread_id.slice(0, 12)}…`;
@@ -924,6 +1036,12 @@ async function snapshot() {
     && result.activity_entries_markdown.every((entry) => typeof entry === "string")
     ? result.activity_entries_markdown : result.entries_markdown;
   renderActivity(activityEntries, result.status, result.activity_truncated === true);
+  if (follow) {
+    scroller.scrollTop = scroller.scrollHeight;
+    $("jump-latest").classList.add("hidden");
+  } else if (result.entries_markdown.length) {
+    $("jump-latest").classList.remove("hidden");
+  }
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
   state.threadStatus = result.status;
   showStop();
@@ -1147,7 +1265,7 @@ function forgetBrowser() {
   document.body.classList.add("pairing");
   $("pair-panel").classList.remove("hidden");
   $("sessions-panel").classList.add("hidden");
-  $("messages").replaceChildren();
+  $("transcript-entries").replaceChildren();
   $("activity").classList.add("hidden");
   $("prompt").disabled = true;
   delivery("");

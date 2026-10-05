@@ -70,7 +70,7 @@
         <h1>Settings</h1>
         <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
         <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.6</code></div>
+        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.7</code></div>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
         <p class="note">The home-screen app uses this gateway’s trusted HTTPS address and saved browser pairing. Model credentials stay in desktop Zed.</p>
@@ -79,13 +79,9 @@
     <section class="workspace" aria-label="Native Zed conversation">
       <div class="conversation-head"><button id="show-sessions" class="quiet back-button" type="button" aria-label="Hide sessions" aria-expanded="true">Hide sessions</button><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><button id="stop-turn" class="stop-turn hidden" type="button" aria-label="Stop current Zed Agent turn">Stop</button><span id="thread-state" class="state-pill">Select session</span></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
-      <div id="messages" class="messages" aria-live="off"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Pick up where you left off</h3><p>Select an exposed desktop Zed Agent thread to read and continue its conversation.</p></div></div>
+      <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Pick up where you left off</h3><p>Select an exposed desktop Zed Agent thread to read and continue its conversation.</p></div></div><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
       <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
       <div class="composer-wrap">
-        <section id="activity" class="activity hidden" aria-label="Live Zed activity">
-          <div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Zed activity</strong><span id="activity-state">Idle</span><button id="activity-toggle" type="button" aria-expanded="true">Hide</button></div>
-          <div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div>
-        </section>
         <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
         <div id="command-menu" class="command-menu hidden" role="listbox" aria-label="Available Zed Agent commands"></div>
         <form id="composer-form" class="composer">
