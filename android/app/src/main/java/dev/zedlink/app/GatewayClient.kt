@@ -48,7 +48,7 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
 
     private suspend fun request(path: String, body: JSONObject? = null, authorized: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         val url = URL(origin + path)
-        if (url.protocol != "https") throw@withContext GatewayException("ZedLink requires a trusted HTTPS address.")
+        if (url.protocol != "https") throw GatewayException("ZedLink requires a trusted HTTPS address.")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = false
             connectTimeout = 10_000

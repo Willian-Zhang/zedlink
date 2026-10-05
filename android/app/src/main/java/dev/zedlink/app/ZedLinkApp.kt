@@ -124,7 +124,7 @@ private fun ConnectionStrip(state: AppState) {
         Column(Modifier.padding(start = 12.dp).weight(1f)) {
             Text(state.profile?.name.orEmpty(), fontWeight = FontWeight.SemiBold)
             Text(state.profile?.endpoint.orEmpty(), color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-                maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("Private HTTPS · Native Zed Agent", color = Subtle, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
         }
         Text(state.status.uppercase(), color = if (state.live) Green else Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
