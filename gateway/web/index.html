@@ -70,14 +70,14 @@
         <h1>Settings</h1>
         <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
         <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.7</code></div>
+        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.8</code></div>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
         <p class="note">The home-screen app uses this gateway’s trusted HTTPS address and saved browser pairing. Model credentials stay in desktop Zed.</p>
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-head"><button id="show-sessions" class="quiet back-button" type="button" aria-label="Hide sessions" aria-expanded="true">Hide sessions</button><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><button id="stop-turn" class="stop-turn hidden" type="button" aria-label="Stop current Zed Agent turn">Stop</button><span id="thread-state" class="state-pill">Select session</span></div>
+      <div class="conversation-head"><button id="show-sessions" class="quiet back-button" type="button" aria-label="Hide sessions" aria-expanded="true">Hide sessions</button><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Choose a session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">Select session</span></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Pick up where you left off</h3><p>Select an exposed desktop Zed Agent thread to read and continue its conversation.</p></div></div><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
       <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
@@ -88,9 +88,9 @@
           <button id="show-commands" class="command-trigger" type="button" aria-label="Show Zed Agent commands" title="Commands">/</button>
           <label class="sr-only" for="prompt">Message to native Zed Agent</label>
           <textarea id="prompt" rows="1" maxlength="3000" placeholder="Message Zed Agent…" aria-describedby="composer-hint" disabled></textarea>
-          <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="submit" aria-label="Send message" disabled>↑</button></div>
+          <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="button" aria-label="Send message" title="Send message" data-mode="send" disabled>↑</button></div>
         </form>
-        <span id="composer-hint" class="sr-only">On a keyboard, press Enter to send and Shift Enter for a new line. Type slash to browse commands.</span>
+        <span id="composer-hint" class="sr-only">On a keyboard, press Enter to send and Shift Enter for a new line. Type slash to browse commands. The Send button becomes Stop while Zed is running.</span>
         <details id="delivery-details" class="delivery-details hidden"><summary>Message delivery options</summary><p>Zed may already have received this message. Check the desktop thread before continuing. Trying again uses the original request ID to avoid another copy.</p><div class="delivery-actions"><button id="retry" class="quiet hidden" type="button">Try again safely</button><button id="clear-pending" class="quiet hidden" type="button">I checked Zed; continue</button></div></details>
       </div>
     </section>

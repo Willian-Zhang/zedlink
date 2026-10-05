@@ -374,7 +374,7 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.7"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.8"
                 assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
                 assert browser.execute_script(
                     "return browserDeviceName(arguments[0])",
@@ -483,10 +483,13 @@ def main():
                 assert probe.accepted == accepted_after_drop + 1
                 probe.active_turn_id = 9
                 probe.sequence += 1
-                wait.until(lambda driver: driver.find_element(By.ID, "stop-turn").is_displayed())
-                browser.find_element(By.ID, "stop-turn").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "send").get_attribute("data-mode") == "stop")
+                assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Stop current Zed Agent turn"
+                browser.save_screenshot("/tmp/zedlink-browser-fixture-stop.png")
+                browser.find_element(By.ID, "send").click()
                 wait.until(lambda driver: probe.cancelled == 1)
-                wait.until(lambda driver: not driver.find_element(By.ID, "stop-turn").is_displayed())
+                wait.until(lambda driver: driver.find_element(By.ID, "send").get_attribute("data-mode") == "send")
+                assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.save_screenshot("/tmp/zedlink-browser-fixture.png")
                 browser.set_window_size(1920, 1080)
                 wide = browser.execute_script("return {width:innerWidth, layoutWidth:document.querySelector('.layout').getBoundingClientRect().width, sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width, workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width}")

@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.7";
+const UI_BUILD = "2026.10.05.8";
 const state = {
   gatewayId: null,
   token: null,
@@ -30,6 +30,7 @@ const state = {
   snapshotQueued: false,
   lastSnapshotAt: 0,
   gatewayVerified: false,
+  stoppingTurn: false,
 };
 const safeStore = {
   read(key) {
@@ -62,7 +63,7 @@ function connection(message, status = "") {
   element.textContent = message;
   element.className = `connection ${status}`;
   $("mobile-connection-state").textContent = message;
-  showStop();
+  updateComposerAction();
   showCreateAvailability();
 }
 function pairingStatus() {
@@ -89,7 +90,7 @@ function delivery(message, uncertain = false) {
     && state.pending.instanceId === state.instanceId && state.pending.epoch === state.epoch;
   $("retry").classList.toggle("hidden", !retryable);
   $("clear-pending").classList.toggle("hidden", !uncertain);
-  $("send").disabled = !state.threadId || !!state.pending || !state.token;
+  updateComposerAction();
 }
 function pendingKey() { return `zedlink.pending.${state.gatewayId}`; }
 function tokenKey() { return `zedlink.token.${state.gatewayId}`; }
@@ -149,9 +150,21 @@ function identity(result) {
     throw error;
   }
 }
-function showStop() {
-  $("stop-turn").classList.toggle("hidden", !state.live || !state.threadId || !Number.isInteger(state.turnId)
-    || !state.capabilities.includes("thread.cancel"));
+function canStopTurn() {
+  return state.live && !!state.threadId && Number.isInteger(state.turnId)
+    && state.capabilities.includes("thread.cancel");
+}
+function updateComposerAction() {
+  const button = $("send");
+  const stopping = canStopTurn();
+  button.dataset.mode = stopping ? "stop" : "send";
+  button.classList.toggle("stop-mode", stopping);
+  button.textContent = stopping ? "■" : "↑";
+  button.setAttribute("aria-label", stopping ? "Stop current Zed Agent turn" : "Send message");
+  button.title = stopping ? "Stop current Zed Agent turn" : "Send message";
+  button.disabled = stopping
+    ? state.stoppingTurn
+    : !state.threadId || !!state.pending || !state.token;
 }
 function apiError(code) {
   if (code === "UNAUTHENTICATED") return "Browser credential revoked or missing. Pair again.";
@@ -393,7 +406,7 @@ async function connect() {
       renderCommands();
       state.turnId = null;
       state.threadStatus = null;
-      showStop();
+      updateComposerAction();
       document.body.classList.remove("thread-open", "mobile-sessions");
       state.sequence = 0;
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
@@ -433,7 +446,7 @@ async function loadThreads() {
     renderCommands();
     state.turnId = null;
     state.threadStatus = null;
-    showStop();
+    updateComposerAction();
     document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
     $("transcript-entries").replaceChildren();
@@ -526,7 +539,7 @@ async function selectThread(threadId) {
   renderCommands();
   state.turnId = null;
   state.threadStatus = null;
-  showStop();
+  updateComposerAction();
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
   updateSidebarToggle();
@@ -539,7 +552,7 @@ async function selectThread(threadId) {
   $("activity").classList.add("hidden");
   $("prompt").disabled = false;
   $("jump-latest").classList.add("hidden");
-  $("send").disabled = !!state.pending;
+  updateComposerAction();
   $("thread-title").textContent = state.threads.find((thread) => thread.thread_id === threadId)?.title || "Untitled Agent thread";
   await loadThreads();
   try {
@@ -1044,7 +1057,7 @@ async function snapshot() {
   }
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
   state.threadStatus = result.status;
-  showStop();
+  updateComposerAction();
   if (result.pending_approvals?.length) {
     notice("Approval pending in desktop Zed. Remote approval controls are awaiting native race validation.");
   }
@@ -1156,6 +1169,31 @@ async function sendPending() {
   } catch (error) { notice(`Request reached Zed; conversation refresh failed: ${error.message}`); }
 }
 
+async function cancelCurrentTurn() {
+  const { instanceId, epoch, threadId, turnId } = state;
+  if (!canStopTurn()) return;
+  state.stoppingTurn = true;
+  updateComposerAction();
+  try {
+    const result = await rpc("thread.cancel", {
+      instance_id: instanceId, epoch, thread_id: threadId, turn_id: turnId,
+    });
+    if (result.outcome !== "requested" || result.turn_id !== turnId) {
+      throw new Error("Zed did not confirm the stop request for this turn.");
+    }
+    notice("Stop requested for this turn.");
+    setTimeout(() => {
+      if ($("notice").textContent === "Stop requested for this turn.") notice("");
+    }, 5000);
+  } catch (error) {
+    notice(error.message);
+  } finally {
+    try { await refreshSnapshot(); } catch (error) { notice(error.message); }
+    state.stoppingTurn = false;
+    updateComposerAction();
+  }
+}
+
 $("pair-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!state.gatewayId) return;
@@ -1198,27 +1236,9 @@ $("jump-latest").addEventListener("click", () => {
   container.scrollTop = container.scrollHeight;
   $("jump-latest").classList.add("hidden");
 });
-$("stop-turn").addEventListener("click", async () => {
-  const { instanceId, epoch, threadId, turnId } = state;
-  if (!threadId || !Number.isInteger(turnId) || !state.capabilities.includes("thread.cancel")) return;
-  $("stop-turn").disabled = true;
-  try {
-    const result = await rpc("thread.cancel", {
-      instance_id: instanceId, epoch, thread_id: threadId, turn_id: turnId,
-    });
-    if (result.outcome !== "requested" || result.turn_id !== turnId) {
-      throw new Error("Zed did not confirm the stop request for this turn.");
-    }
-    notice("Stop requested for this turn.");
-    setTimeout(() => {
-      if ($("notice").textContent === "Stop requested for this turn.") notice("");
-    }, 5000);
-  } catch (error) {
-    notice(error.message);
-  } finally {
-    try { await refreshSnapshot(); } catch (error) { notice(error.message); }
-    $("stop-turn").disabled = false;
-  }
+$("send").addEventListener("click", () => {
+  if (canStopTurn()) cancelCurrentTurn();
+  else $("composer-form").requestSubmit();
 });
 $("show-sessions").addEventListener("click", () => {
   if (matchMedia("(max-width: 760px)").matches) {
