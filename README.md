@@ -1,8 +1,8 @@
 # ZedLink
 
-Use your phone to continue an **existing native Zed Agent conversation** running on your computer.
+Use a phone, tablet, or desktop browser to continue an **existing native Zed Agent conversation** running on your computer.
 
-ZedLink keeps the model, tools, MCP servers, permissions, project context, and Agent runtime inside Zed. Your phone connects to a private gateway and controls the same conversation shown in Zed's Agent panel.
+ZedLink keeps the model, tools, MCP servers, permissions, project context, and Agent runtime inside Zed. Your browser connects to a private gateway and controls the same conversation shown in Zed's Agent panel.
 
 > **Development status:** ZedLink works through a pinned, patched build of Zed on Linux. It is not currently a Zed Marketplace extension. A physical iPhone Safari browser has completed a same-thread prompt round trip over Tailscale. See [Validation and limitations](#validation-and-limitations).
 
@@ -11,14 +11,14 @@ ZedLink keeps the model, tools, MCP servers, permissions, project context, and A
 There are four parts:
 
 1. **Patched Zed** adds the `/remote-control` command to a native Agent thread.
-2. **ZedLink gateway** provides the private HTTPS connection used by your phone.
-3. **Tailscale or another private route** lets the phone reach your computer.
-4. **Phone client** displays and controls the exposed Zed conversation through the installable web app, SwiftUI app, or Android app.
+2. **ZedLink gateway** provides the private HTTPS connection used by your browser or app.
+3. **Tailscale or another private route** lets the client device reach your computer.
+4. **Client** displays and controls the exposed Zed conversation through a desktop browser, installable web app, SwiftUI app, or Android app.
 
 A native SwiftUI client lives under `ios/`, and a matching Jetpack Compose client lives under `android/`. Both pass hosted builds and unit/UI or lint checks. The HTTPS browser is also an installable home-screen PWA. Safari remains the verified physical-phone client until the native packages complete signed physical-device tests.
 
 ```text
-Phone app or PWA ── private HTTPS through Tailscale ── ZedLink gateway
+Browser or app ── private HTTPS through Tailscale ── ZedLink gateway
                                                        │
                                                   local socket
                                                        │
@@ -27,7 +27,7 @@ Phone app or PWA ── private HTTPS through Tailscale ── ZedLink gateway
                                              using your existing model
 ```
 
-Zed must remain open while you use the conversation remotely. The model does not run in the browser, and model credentials are never copied to the phone.
+Zed must remain open while you use the conversation remotely. The model does not run in the browser, and model credentials are never copied to the client device.
 
 ### Why `zed-source/` is on the workstation but not GitHub
 
@@ -42,9 +42,9 @@ You need:
 - A Linux computer with this repository.
 - Your model already working in normal Zed.
 - Rust, Cargo, Git, Python 3, and the [Zed Linux build dependencies](https://github.com/zed-industries/zed/blob/76659a55a8c10ed355a070f8764a0b1733e3c115/docs/src/development/linux.md).
-- Tailscale connected on both the computer and phone, or another private network route.
-- A trusted TLS certificate for the hostname the phone will open.
-- Python's `qrcode` package for the easiest phone pairing flow.
+- Tailscale connected on both the Zed computer and client device, or another private network route.
+- A trusted TLS certificate for the hostname the client browser will open.
+- Python's `qrcode` package for the easiest browser pairing flow.
 
 The first patched Zed build can take a while. Later starts use the existing build.
 
@@ -83,7 +83,7 @@ You should see tasks such as:
 - **ZedLink: Configure**
 - **ZedLink: Start patched Zed**
 - **ZedLink: Start gateway**
-- **ZedLink: Pair phone**
+- **ZedLink: Pair a device**
 - **ZedLink: Status**
 
 If no ZedLink tasks appear, make sure the ZedLink repository is the folder currently open in Zed.
@@ -136,7 +136,7 @@ Guided setup runs **ZedLink: Configure**. It asks for the following values.
 | Project to open in patched Zed | The full path of the project whose Agent thread you want to control; this is required | `/home/you/Documents/my-project` |
 | Private state directory | Where ZedLink stores its socket, paired-device records, and gateway identity | `/home/you/.local/state/zedlink` |
 | Gateway bind address | A private computer IP followed by `:44679` | `100.64.10.20:44679` |
-| Phone HTTPS origin | The trusted hostname your phone opens, with the same port | `https://computer.example-tailnet.ts.net:44679` |
+| Client HTTPS origin | The trusted hostname your browser or app opens, with the same port | `https://computer.example-tailnet.ts.net:44679` |
 | TLS certificate PEM path | Full path to the certificate for that hostname; detected Tailscale setups receive a durable suggested path | `/home/you/.config/zedlink/tls/computer.example-tailnet.ts.net.crt` |
 | TLS private key PEM path | Full path to its private key; detected Tailscale setups receive a matching suggested path | `/home/you/.config/zedlink/tls/computer.example-tailnet.ts.net.key` |
 | Existing Zed user data directory | Usually leave blank to use your normal Zed profile | press Enter |
@@ -153,7 +153,7 @@ Configuration is saved privately in:
 ~/.config/zedlink/config.json
 ```
 
-It stores paths and network settings. It does not store your model API key or copy model credentials to the phone.
+It stores paths and network settings. It does not store your model API key or copy model credentials to a client.
 
 ### Tailscale values
 
@@ -165,7 +165,7 @@ tailscale ip -4
 
 Use that address for **Gateway bind address**, followed by port `44679`.
 
-The phone URL must use a hostname covered by a certificate trusted by Safari. Do not use the raw Tailscale IP as the HTTPS URL. Tailscale documents certificate creation in [Set up HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates). Certificate issuance publishes the hostname in public Certificate Transparency logs, and file certificates must be renewed.
+The client URL must use a hostname covered by a certificate trusted by the browser. Do not use the raw Tailscale IP as the HTTPS URL. Tailscale documents certificate creation in [Set up HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates). Certificate issuance publishes the hostname in public Certificate Transparency logs, and file certificates must be renewed.
 
 When the wizard detects Tailscale and the suggested certificate files do not exist, it explains that public-log consequence and asks whether it should run `tailscale cert` for you. Answering **yes** creates the certificate and private key under `~/.config/zedlink/tls/`; answering **no** leaves certificate management to you and stops configuration without saving partial settings.
 
@@ -228,7 +228,7 @@ If the window shows the wrong model, stop there and review the **Existing Zed us
 In the patched Zed window:
 
 1. Open the Agent panel.
-2. Open the conversation you want on your phone.
+2. Open the conversation you want to access remotely.
 3. Click the Agent message composer.
 4. Type `/remote-control`.
 5. Select **Remote Control** from the command suggestions.
@@ -239,7 +239,7 @@ Zed should display:
 Thread exposed to ZedLink locally.
 ```
 
-Only explicitly exposed threads appear on the phone. Run `/remote-control` again to stop exposing that thread.
+Only explicitly exposed threads appear in remote clients. Run `/remote-control` again to stop exposing that thread.
 
 After restarting patched Zed, expose the desired thread again.
 
@@ -254,25 +254,33 @@ Return to any Zed window with the global tasks:
 3. Select **ZedLink: Start gateway**.
 4. Leave its terminal running.
 
-The gateway must remain running while the phone is connected. It binds only to the private address saved during configuration.
+The gateway must remain running while a remote client is connected. It binds only to the private address saved during configuration.
 
 Run **ZedLink: Status** again. The native socket and gateway admin should now report online.
 
-### 5. Pair the phone
+### 5. Pair a browser or device
 
-Run **ZedLink: Pair phone**.
+Run **ZedLink: Pair a device**.
 
-A private pairing page and QR code open on the computer.
+A private pairing page opens on the Zed computer. It supports two paths:
 
-1. Confirm Tailscale is connected on the iPhone.
-2. Scan the QR code with the iPhone camera.
-3. Open the link in Safari.
-4. Confirm there is no certificate warning.
-5. Allow the one-time pairing to complete.
+- **Browser on the Zed computer:** select **Pair this computer's browser**.
+- **Phone, Windows PC, or another Linux computer:** scan the QR or select **Copy secure pairing link** and open it in the destination browser through a private channel.
 
-The QR code expires after five minutes and works once. Keep it private.
+Confirm Tailscale or your routed VPN is connected on the destination device and that the HTTPS page has no certificate warning. The link, QR, and 10-digit code expire after five minutes and work once. Keep them private.
 
-Pairing is saved in normal Safari storage. Refreshing the page or opening a second normal tab should not require another code. Private Browsing may not preserve the pairing.
+The browser name and operating system are detected automatically, such as **Firefox on Linux** or **Edge on Windows**, and can be edited before manual pairing. Pairing is saved for the exact HTTPS origin in normal browser storage. Refreshing or opening another normal tab should not require another code. Private browsing and storage-clearing policies may not preserve it.
+
+#### Supported desktop browsers
+
+| Client | Access | Install behavior |
+| --- | --- | --- |
+| Firefox on Linux or Windows | Full browser interface | Bookmark or pin the page; Firefox desktop does not install the PWA |
+| Chrome or Chromium on Linux or Windows | Full browser interface | Installable from the address bar or browser menu when offered |
+| Microsoft Edge on Windows | Full browser interface | Installable as an app when offered |
+| Safari on iPhone or iPad | Full mobile interface | Add to Home Screen from Share |
+
+The gateway and patched Zed currently run on the configured Linux workstation. Windows support here means a Windows browser can securely control that workstation; it does not yet make Windows a supported ZedLink gateway host.
 
 ### Install the website on the home screen
 
@@ -291,11 +299,13 @@ On Android Chrome:
 2. Open **Settings** inside ZedLink and tap **Install ZedLink** when available, or use Chrome's **Install app** menu item.
 3. Launch ZedLink from the home screen.
 
+On desktop Chrome, Chromium, or Edge, use the install icon in the address bar or the browser's **Install ZedLink** menu item. Desktop Firefox has the same ZedLink features in a normal tab but should be bookmarked or pinned.
+
 The installed web app still requires the private route, gateway, and patched Zed to be online.
 
 ### 6. Send a test message
 
-On the phone:
+In the paired browser or app:
 
 1. Select an exposed conversation, or use **+ New** on Sessions to create a native thread in the configured project.
 2. Send a harmless message such as:
@@ -321,7 +331,7 @@ After first-time setup:
 2. Open the desired Agent conversation.
 3. Run `/remote-control` in that thread.
 4. Start the gateway with **ZedLink: Start gateway**.
-5. Open the saved ZedLink URL on the paired phone.
+5. Open the saved ZedLink URL on any paired browser or app.
 
 You normally do not need to pair the same browser again.
 
@@ -337,7 +347,7 @@ Use these tasks for management:
 | **ZedLink: Rebuild patched Zed** | Rebuilds the pinned patch and gateway |
 | **ZedLink: Guided setup / update** | Runs the complete guided workflow again |
 
-Closing the gateway terminal stops phone access. Closing patched Zed makes the native thread unavailable. Neither action deletes the conversation or pairing records.
+Closing the gateway terminal stops remote browser access. Closing patched Zed makes the native thread unavailable. Neither action deletes the conversation or pairing records.
 
 ## Troubleshooting
 
@@ -411,9 +421,9 @@ Do not continue through the warning. Confirm:
 - the gateway is using the matching certificate and key,
 - the phone's date and time are correct.
 
-### The phone asks to pair again
+### A browser asks to pair again
 
-Use normal Safari rather than Private Browsing. Pairing is scoped to the exact HTTPS origin, including its hostname and port. Changing either creates a different browser origin.
+Use a normal browser window rather than private or incognito mode. Pairing is scoped to the exact HTTPS origin, including its hostname and port. Changing either creates a different browser origin. Browser policies that clear site data on exit also remove the saved credential.
 
 ### A message may have been sent during a disconnect
 

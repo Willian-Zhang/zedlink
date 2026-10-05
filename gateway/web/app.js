@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.2";
+const UI_BUILD = "2026.10.05.3";
 const state = {
   gatewayId: null,
   token: null,
@@ -120,7 +120,30 @@ function apiError(code) {
   if (code === "RESYNC_REQUIRED") return "Event history changed. Reloading the native snapshot.";
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
   if (code === "REQUEST_CONFLICT") return "That request ID was already used for different content.";
+  if (code === "PAIRING_UNAVAILABLE") return "No active pairing request. Create a fresh pairing link in desktop Zed.";
+  if (code === "PAIRING_EXPIRED") return "That pairing link expired. Create a fresh one in desktop Zed.";
+  if (code === "PAIRING_INVALID") return "That pairing code is incorrect. Check the code or create a fresh pairing link.";
+  if (code === "RATE_LIMITED") return "The gateway cannot add another device. Revoke an old device in desktop Zed first.";
   return code || "Gateway request failed.";
+}
+
+function browserDeviceName(agent = navigator.userAgent || "") {
+  const browser = /Edg\//.test(agent) ? "Edge"
+    : /Firefox\//.test(agent) ? "Firefox"
+      : /(?:Chrome|CriOS)\//.test(agent) ? "Chrome"
+        : /Safari\//.test(agent) ? "Safari" : "Browser";
+  const platform = /Windows/i.test(agent) ? "Windows"
+    : /Android/i.test(agent) ? "Android"
+      : /iPhone/i.test(agent) ? "iPhone"
+        : /iPad/i.test(agent) ? "iPad"
+          : /Macintosh|Mac OS X/i.test(agent) ? "macOS"
+            : /Linux/i.test(agent) ? "Linux" : "this device";
+  return `${browser} on ${platform}`;
+}
+
+async function keepPairingStorage() {
+  if (!navigator.storage?.persist) return;
+  try { await navigator.storage.persist(); } catch { /* Browser storage remains usable without persistence. */ }
 }
 async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   const response = await fetch("/v1/rpc", {
@@ -134,6 +157,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     safeStore.remove(tokenKey());
     $("pair-panel").classList.remove("hidden");
     $("sessions-panel").classList.add("hidden");
+    document.body.classList.add("pairing");
   }
   if (!response.ok) {
     const error = new Error(apiError(data.error));
@@ -172,6 +196,7 @@ async function loadGateway() {
       if (expectedFromLink !== result.gateway_id) {
         throw new Error("The gateway identity differs from the desktop pairing link. Do not enter a code.");
       }
+      $("pair-button").disabled = false;
     }
     const token = safeStore.read(tokenKey());
     if (token) {
@@ -184,7 +209,7 @@ async function loadGateway() {
       connection("Pairing this browser…");
       $("pair-button").disabled = true;
       try {
-        await pairBrowser(oneScanCode, "Phone browser");
+        await pairBrowser(oneScanCode, browserDeviceName());
       } catch (error) {
         connection("Pair this browser");
         notice(`Automatic pairing failed: ${error.message} Enter a fresh code from the workstation.`);
@@ -212,6 +237,7 @@ async function pairBrowser(code, deviceName) {
   }
   state.token = result.token;
   const remembered = safeStore.write(tokenKey(), result.token);
+  await keepPairingStorage();
   $("pair-code").value = "";
   notice(remembered ? "" : "This browser did not allow persistent storage; pairing may be needed after this tab closes.");
   await connect();
@@ -220,6 +246,7 @@ async function pairBrowser(code, deviceName) {
 async function connect() {
   if (!state.token) return;
   connection("Connecting…");
+  document.body.classList.remove("pairing");
   $("pair-panel").classList.add("hidden");
   $("sessions-panel").classList.remove("hidden");
   try {
@@ -845,7 +872,7 @@ $("pair-form").addEventListener("submit", async (event) => {
     notice("Gateway ID differs from the workstation value. Pairing code was not sent.");
     return;
   }
-  const code = $("pair-code").value.trim();
+  const code = $("pair-code").value.trim().replace(/[\s-]/g, "");
   if (!/^([0-9]{10}|[0-9a-fA-F]{64})$/.test(code)) { notice("Enter the 10-digit pairing code from the workstation."); return; }
   $("pair-button").disabled = true;
   try {
@@ -927,6 +954,7 @@ function forgetBrowser() {
   state.pending = null;
   state.threadId = null;
   document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
+  document.body.classList.add("pairing");
   $("pair-panel").classList.remove("hidden");
   $("sessions-panel").classList.add("hidden");
   $("messages").replaceChildren();
@@ -995,9 +1023,23 @@ window.addEventListener("appinstalled", () => {
   $("install-app").classList.add("hidden");
   $("install-help").textContent = "ZedLink is installed on this device.";
 });
+function showInstallHelp() {
+  const agent = navigator.userAgent || "";
+  if (/Firefox\//.test(agent) && !/Android/i.test(agent)) {
+    $("install-help").textContent = "Firefox desktop does not install this PWA. Bookmark or pin this secure page; all ZedLink features still work.";
+  } else if (/iPhone|iPad/i.test(agent)) {
+    $("install-help").textContent = "In Safari, open Share and choose Add to Home Screen.";
+  } else if (/Android/i.test(agent)) {
+    $("install-help").textContent = "Open the browser menu and choose Install app or Add to Home screen.";
+  } else {
+    $("install-help").textContent = "Chrome and Edge can install ZedLink from the address bar. You can also bookmark this page.";
+  }
+}
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js")
     .catch(() => { /* HTTPS app remains usable without offline shell caching. */ }));
 }
 $("ui-build").textContent = UI_BUILD;
+$("device-name").value = browserDeviceName();
+showInstallHelp();
 loadGateway();

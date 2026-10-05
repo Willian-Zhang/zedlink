@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Local gateway transport fixture; this does not test native Zed behavior."""
 import json
+import html
 import os
 import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -363,18 +365,26 @@ def main():
                 browser.get(base + "/#gateway=" + info["gateway_id"])
                 wait.until(lambda driver: driver.find_element(By.ID, "gateway-id").text == info["gateway_id"])
                 assert browser.find_element(By.ID, "expected-id").get_attribute("value") == info["gateway_id"]
-                browser.find_element(By.ID, "expected-id").clear()
-                browser.find_element(By.ID, "expected-id").send_keys("wrong-gateway")
+                browser.execute_script("document.getElementById('expected-id').value='wrong-gateway'")
                 browser.find_element(By.ID, "pair-code").send_keys(browser_code)
                 browser.find_element(By.ID, "pair-button").click()
-                wait.until(lambda driver: "Pairing code was not sent" in driver.find_element(By.ID, "notice").text)
+                wait.until(lambda driver: "Pairing code was not sent" in driver.find_element(By.ID, "pair-notice").text)
                 assert not admin(state, "devices")["devices"]
-                browser.find_element(By.ID, "expected-id").clear()
-                browser.find_element(By.ID, "expected-id").send_keys(info["gateway_id"])
+                browser.execute_script("document.getElementById('expected-id').value=arguments[0]", info["gateway_id"])
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.2"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.3"
+                assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
+                assert browser.execute_script(
+                    "return browserDeviceName(arguments[0])",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+                ) == "Firefox on Windows"
+                assert browser.execute_script(
+                    "return browserDeviceName(arguments[0])",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+                ) == "Edge on Windows"
                 browser.find_element(By.ID, "new-session").click()
                 browser.find_element(By.ID, "new-session-title").send_keys("Created from browser")
                 browser.find_element(By.ID, "create-session").click()
@@ -513,7 +523,7 @@ def main():
                 wait.until(lambda driver: "Connected to Zed" in driver.find_element(By.ID, "connection").text)
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 browser_device = next(device for device in admin(state, "devices")["devices"]
-                                      if device["name"] == "Browser")
+                                      if device["name"] == "Firefox on Linux")
                 assert admin(state, "revoke", browser_device["id"])["revoked"]
                 wait.until(lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed())
                 helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base, str(state), "--no-open"],
@@ -527,21 +537,45 @@ def main():
                 expected_link = base + "/#" + urllib.parse.urlencode(
                     {"v": "1", "gateway": info["gateway_id"], "pair": quick_code})
                 assert qr_svg(expected_link) in pairing_html
+                assert '<title>Pair a ZedLink device</title>' in pairing_html
+                assert f'href="{html.escape(expected_link, quote=True)}"' in pairing_html
                 browser.get(base + "/?pair-test=wrong#v=1&gateway=wrong-gateway&pair=" + quick_code)
                 wait.until(lambda driver: "gateway identity differs" in
-                           driver.find_element(By.ID, "notice").get_attribute("textContent").lower())
+                           driver.find_element(By.ID, "pair-notice").get_attribute("textContent").lower())
                 assert not admin(state, "devices")["devices"]
                 assert "pair=" not in browser.current_url
                 browser.get(base + "/?pair-test=correct#v=1&gateway=" + info["gateway_id"] + "&pair=" + quick_code)
                 wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
                 assert "pair=" not in browser.current_url
                 quick_device = next(device for device in admin(state, "devices")["devices"]
-                                    if device["name"] == "Phone browser")
+                                    if device["name"] == "Firefox on Linux")
                 browser.refresh()
                 wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
                 assert admin(state, "revoke", quick_device["id"])["revoked"]
             finally:
                 browser.quit()
+            chromium = shutil.which("chromium") or shutil.which("google-chrome")
+            if not chromium:
+                print("SKIP: Chromium browser check (Chromium is unavailable)")
+            else:
+                chromium_code = admin(state, "pair-short-code")["code"]
+                chromium_link = base + "/#" + urllib.parse.urlencode(
+                    {"v": "1", "gateway": info["gateway_id"], "pair": chromium_code})
+                chromium_profile = root / "chromium-profile"
+                chromium_command = [chromium, "--headless", "--no-sandbox",
+                                    "--ignore-certificate-errors", "--disable-gpu",
+                                    f"--user-data-dir={chromium_profile}",
+                                    "--virtual-time-budget=6000", "--dump-dom"]
+                first_page = subprocess.run(chromium_command + [chromium_link], check=True,
+                                            capture_output=True, text=True, timeout=20).stdout
+                assert re.search(r'<section class="panel hidden" id="pair-panel">', first_page)
+                assert re.search(r'<section class="panel" id="sessions-panel">', first_page)
+                chromium_device = next(device for device in admin(state, "devices")["devices"]
+                                       if device["name"] == "Chrome on Linux")
+                second_page = subprocess.run(chromium_command + [base + "/"], check=True,
+                                             capture_output=True, text=True, timeout=20).stdout
+                assert re.search(r'<section class="panel" id="sessions-panel">', second_page)
+                assert admin(state, "revoke", chromium_device["id"])["revoked"]
             print("PASS: private bind/state, TLS identity, installable PWA shell/mobile navigation, paired browser UI, exact-turn cancellation, retry/reload without duplicate send, pairing lockout/one-use, device-scoped send/status, gateway restart, method allowlist, WSS and credential revocation")
         finally:
             server.terminate()

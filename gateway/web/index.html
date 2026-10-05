@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
-<body>
+<body class="pairing">
   <a class="skip" href="#main">Skip to conversation</a>
   <header class="topbar">
     <div class="brand"><span class="mark" aria-hidden="true">Z</span><div><strong>ZedLink</strong><small>Native Agent / remote access</small></div></div>
@@ -23,21 +23,23 @@
   <main id="main" class="layout">
     <aside class="sidebar">
       <section class="panel" id="pair-panel">
-        <p class="eyebrow">WELCOME TO ZEDLINK</p>
-        <h1>Your desktop agent, in your pocket.</h1>
-        <p class="muted">Scan the private QR on your workstation to pair automatically. You can also enter its one-time code below.</p>
-        <div class="identity"><span>Gateway identity</span><code id="gateway-id">Checking…</code></div>
+        <p class="eyebrow">PRIVATE BROWSER ACCESS</p>
+        <h1>Connect this browser</h1>
+        <p class="pair-intro">Continue your exposed native Zed Agent sessions from Firefox, Chrome, Edge, Safari, or an installed ZedLink web app.</p>
+        <ol class="pair-steps" aria-label="Pairing steps">
+          <li><span>1</span><div><strong>Open the pairing page</strong><small>In desktop Zed, run <b>ZedLink: Pair a device</b>.</small></div></li>
+          <li><span>2</span><div><strong>Use the secure link or QR</strong><small>On this computer, click the link. On another device, scan the QR.</small></div></li>
+          <li><span>3</span><div><strong>Connect once</strong><small>This browser remembers its revocable credential for this HTTPS address.</small></div></li>
+        </ol>
+        <div class="identity"><span>Gateway</span><code id="gateway-id">Checking…</code></div>
         <form id="pair-form">
-          <label for="expected-id">Expected gateway ID</label>
-          <input id="expected-id" name="expected-id" autocomplete="off" spellcheck="false" required placeholder="Filled by desktop QR link">
-          <label for="pair-code">One-time pairing code</label>
-          <input id="pair-code" name="pair-code" autocomplete="one-time-code" inputmode="numeric" spellcheck="false" required maxlength="64" placeholder="10-digit code">
-          <label for="device-name">Device name</label>
-          <input id="device-name" name="device-name" maxlength="64" required value="Browser">
-          <button id="pair-button" class="primary" type="submit">Pair browser</button>
+          <div class="pair-field full"><label for="expected-id">Verified gateway ID</label><input id="expected-id" name="expected-id" autocomplete="off" spellcheck="false" readonly required placeholder="Open the workstation pairing link first"></div>
+          <div class="pair-field"><label for="pair-code">One-time pairing code</label><input id="pair-code" class="pair-code" name="pair-code" autocomplete="one-time-code" inputmode="numeric" spellcheck="false" required maxlength="64" placeholder="00000 00000"></div>
+          <div class="pair-field"><label for="device-name">Device name</label><input id="device-name" name="device-name" maxlength="64" required value="This browser"></div>
+          <button id="pair-button" class="primary" type="submit" disabled>Connect browser</button>
         </form>
         <div id="pair-notice" class="notice hidden" role="status" aria-live="polite"></div>
-        <p class="note">The one-scan QR contains a single-use code. Keep it private. Pairing stays in this browser for this HTTPS site until you forget it or revoke the device. Avoid pairing in a shared browser.</p>
+        <p class="note">The link and code are single use and expire after five minutes. Pair only a private browser. Model credentials always remain in desktop Zed.</p>
       </section>
       <section class="panel hidden" id="sessions-panel">
         <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet" aria-label="Create native Zed Agent session" disabled title="Start patched Zed to create a session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button></div></div>
@@ -66,9 +68,9 @@
         <h1>Settings</h1>
         <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
         <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.2</code></div>
+        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.3</code></div>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
-        <p id="install-help" class="muted">On iPhone, open Safari’s Share menu and choose Add to Home Screen.</p>
+        <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
         <p class="note">The home-screen app uses this gateway’s trusted HTTPS address and saved browser pairing. Model credentials stay in desktop Zed.</p>
       </section>
     </aside>

@@ -1,0 +1,82 @@
+[
+  {
+    "label": "ZedLink: Set up this project",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "quick-setup", "$ZED_WORKTREE_ROOT"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Guided setup",
+    "command": "bash",
+    "args": ["tools/setup_zed_ide.sh"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Install / build",
+    "command": "bash",
+    "args": ["tools/install_linux.sh"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Configure",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "configure"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Start patched Zed",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "start-zed"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Start gateway",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "start-gateway"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Pair a device",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "pair"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Status",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "status"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Paired devices",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "devices"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Revoke device",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "revoke"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  }
+]
