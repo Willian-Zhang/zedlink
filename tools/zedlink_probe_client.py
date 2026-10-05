@@ -2,11 +2,14 @@
 """Terminal client for the opt-in pinned-Zed local probe."""
 
 import argparse
+import base64
 import json
+import mimetypes
 import socket
 import sys
 import time
 import uuid
+from pathlib import Path
 
 
 def main() -> int:
@@ -23,7 +26,11 @@ def main() -> int:
     parser.add_argument("--title", help="Optional title for a new native Zed Agent session")
     parser.add_argument("--profile-id", help="Native Agent profile ID for update-settings")
     parser.add_argument("--thinking-enabled", choices=("true", "false"), help="Native model thinking state for update-settings")
-    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "settings", "update-settings", "send", "cancel", "status", "approvals", "respond"))
+    parser.add_argument("--path", action="append", help="Project or repository relative path; repeat for Git operations")
+    parser.add_argument("--revision", help="Expected repository revision from changes")
+    parser.add_argument("--context-path", action="append", help="Project relative file to attach to send; repeat as needed")
+    parser.add_argument("--upload-file", action="append", help="Text or image file to upload with send; repeat as needed")
+    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "settings", "update-settings", "files", "file", "changes", "diff", "stage", "unstage", "send", "cancel", "status", "approvals", "respond"))
     parser.add_argument("thread_id", nargs="?")
     parser.add_argument("text", nargs="?")
     args = parser.parse_args()
@@ -32,7 +39,7 @@ def main() -> int:
         parser.error(f"{args.operation} does not accept a thread_id or text")
     if args.operation == "status" and (args.thread_id or args.text or not args.original_request_id):
         parser.error("status requires --original-request-id and no positional arguments")
-    if args.operation in ("snapshot", "events", "watch", "commands", "settings", "update-settings", "approvals") and (not args.thread_id or args.text):
+    if args.operation in ("snapshot", "events", "watch", "commands", "settings", "update-settings", "files", "file", "changes", "diff", "stage", "unstage", "approvals") and (not args.thread_id or args.text):
         parser.error(f"{args.operation} requires only a thread_id")
     if args.operation == "send" and (not args.thread_id or not args.text):
         parser.error("send requires a thread_id and text")
@@ -40,13 +47,14 @@ def main() -> int:
         parser.error("cancel requires only a thread_id and --turn-id")
     if args.operation == "respond" and (not args.thread_id or args.text or args.turn_id is None or not args.approval_id or not args.decision):
         parser.error("respond requires thread_id, --turn-id, --approval-id, and --decision")
-    if args.operation in ("create", "send", "cancel", "status", "respond") and (not args.instance_id or not args.epoch):
-        parser.error("create, send, cancel, status, and respond require --instance-id and --epoch from thread.list")
-    if args.operation in ("create", "send", "cancel", "respond") and not args.request_id:
-        parser.error("create, send, cancel, and respond require a stable --request-id")
-    if args.operation not in ("create", "send", "cancel", "respond") and args.request_id:
-        parser.error("--request-id is only available for create, send, cancel, or respond")
-    if args.operation not in ("create", "send", "cancel", "status", "respond", "commands", "settings", "update-settings") and (args.instance_id or args.epoch):
+    identified = ("create", "send", "cancel", "status", "respond", "commands", "settings", "update-settings", "files", "file", "changes", "diff", "stage", "unstage")
+    if args.operation in identified and (not args.instance_id or not args.epoch):
+        parser.error(f"{args.operation} requires --instance-id and --epoch from thread.list")
+    if args.operation in ("create", "send", "cancel", "respond", "stage", "unstage") and not args.request_id:
+        parser.error(f"{args.operation} requires a stable --request-id")
+    if args.operation not in ("create", "send", "cancel", "respond", "stage", "unstage") and args.request_id:
+        parser.error("--request-id is unavailable for this operation")
+    if args.operation not in identified and (args.instance_id or args.epoch):
         parser.error("--instance-id and --epoch are not available for this operation")
     if args.operation in ("commands", "settings", "update-settings") and (not args.instance_id or not args.epoch):
         parser.error(f"{args.operation} requires --instance-id and --epoch from thread.list")
@@ -62,6 +70,20 @@ def main() -> int:
         parser.error("--profile-id and --thinking-enabled are only available for update-settings")
     if args.operation == "update-settings" and not (args.profile_id or args.thinking_enabled):
         parser.error("update-settings requires --profile-id or --thinking-enabled")
+    if args.operation == "file" and (not args.path or len(args.path) != 1):
+        parser.error("file requires exactly one --path")
+    if args.operation in ("stage", "unstage") and (not args.path or not args.revision):
+        parser.error(f"{args.operation} requires one or more --path values and --revision")
+    if args.operation == "diff" and (not args.revision or args.path):
+        parser.error("diff requires --revision and no --path")
+    if args.operation not in ("file", "stage", "unstage") and args.path:
+        parser.error("--path is only available for file, stage, or unstage")
+    if args.operation not in ("diff", "stage", "unstage") and args.revision:
+        parser.error("--revision is only available for diff, stage, or unstage")
+    if args.operation != "send" and args.context_path:
+        parser.error("--context-path is only available for send")
+    if args.operation != "send" and args.upload_file:
+        parser.error("--upload-file is only available for send")
     if args.operation in ("cancel", "respond") and args.turn_id < 0:
         parser.error("--turn-id must be nonnegative")
     if args.after_sequence < 0 or (
@@ -115,12 +137,35 @@ def main() -> int:
             instance_id=args.instance_id,
             epoch=args.epoch,
         )
+        if args.context_path:
+            params["context_paths"] = args.context_path
+        if args.upload_file:
+            uploads = []
+            for raw_path in args.upload_file:
+                path = Path(raw_path)
+                data = path.read_bytes()
+                if len(data) > 1024 * 1024:
+                    parser.error(f"upload exceeds 1 MiB: {path}")
+                uploads.append({
+                    "name": path.name,
+                    "mime_type": mimetypes.guess_type(path.name)[0] or "text/plain",
+                    "data": base64.b64encode(data).decode(),
+                })
+            params["uploads"] = uploads
     if args.operation == "create":
         params.update(title=args.title, instance_id=args.instance_id, epoch=args.epoch)
     if args.operation == "commands":
         params.update(instance_id=args.instance_id, epoch=args.epoch)
     if args.operation in ("settings", "update-settings"):
         params.update(instance_id=args.instance_id, epoch=args.epoch)
+    if args.operation in ("files", "file", "changes", "diff", "stage", "unstage"):
+        params.update(instance_id=args.instance_id, epoch=args.epoch)
+    if args.operation == "file":
+        params["path"] = args.path[0]
+    if args.operation == "diff":
+        params["revision"] = args.revision
+    if args.operation in ("stage", "unstage"):
+        params.update(paths=args.path, revision=args.revision)
     if args.operation == "update-settings":
         if args.profile_id:
             params["profile_id"] = args.profile_id
@@ -148,7 +193,9 @@ def main() -> int:
         )
     payload = call(
         {"info": "instance.info", "status": "request.status", "respond": "approval.respond",
-         "settings": "thread.settings", "update-settings": "thread.settings.update"}.get(
+         "settings": "thread.settings", "update-settings": "thread.settings.update",
+         "files": "project.files", "file": "project.file", "changes": "changes.snapshot",
+         "diff": "changes.diff", "stage": "changes.stage", "unstage": "changes.unstage"}.get(
             args.operation, f"thread.{args.operation}"
         ),
         params,

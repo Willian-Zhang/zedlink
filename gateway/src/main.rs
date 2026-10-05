@@ -38,7 +38,7 @@ use web_push::{
     WebPushClient, WebPushError, WebPushMessageBuilder,
 };
 
-const MAX_RPC: usize = 4096;
+const MAX_RPC: usize = 2 * 1024 * 1024;
 const MAX_PROBE_RESPONSE: u64 = 1024 * 1024;
 const PAIR_TTL: Duration = Duration::from_secs(300);
 const MAX_DEVICES: usize = 32;
@@ -659,10 +659,10 @@ impl Gateway {
                     approvals,
                     had_error: thread["had_error"].as_bool().unwrap_or(false),
                 };
-                if let Some(previous) = prior.get(thread_id) {
-                    if let Some(body) = thread_notification(previous, &observation) {
-                        self.notify_all(body, thread_id).await;
-                    }
+                if let Some(previous) = prior.get(thread_id)
+                    && let Some(body) = thread_notification(previous, &observation)
+                {
+                    self.notify_all(body, thread_id).await;
                 }
                 current.insert(thread_id.to_owned(), observation);
             }
@@ -959,6 +959,14 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.commands"
             | "thread.settings"
             | "thread.settings.update"
+            | "thread.approvals"
+            | "approval.respond"
+            | "project.files"
+            | "project.file"
+            | "changes.snapshot"
+            | "changes.diff"
+            | "changes.stage"
+            | "changes.unstage"
             | "thread.send"
             | "thread.cancel"
             | "request.status"
@@ -978,7 +986,10 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             Json(json!({"error":"INVALID_REQUEST"})),
         );
     };
-    if method == "thread.send" || method == "thread.create" {
+    if matches!(
+        method.as_str(),
+        "thread.send" | "thread.create" | "changes.stage" | "changes.unstage"
+    ) {
         request["request_id"] = json!(format!("{device_id}:{original_request_id}"));
     } else if method == "request.status" {
         let Some(original_send_id) = request["params"]["original_request_id"]

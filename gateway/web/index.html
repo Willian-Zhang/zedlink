@@ -96,7 +96,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.14</code></div>
+            <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.15</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
@@ -105,16 +105,20 @@
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-toolbar"><div class="conversation-head"><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Zed Agent</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">No session</span></div></div>
+      <div class="conversation-toolbar"><div class="conversation-head"><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Zed Agent</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">No session</span><button id="show-context" class="toolbar-action" type="button" aria-label="Open project context" aria-expanded="false">Context</button></div></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <section id="agent-health" class="agent-health hidden" role="alert" aria-live="assertive"><div><strong id="agent-health-title">Agent request failed</strong><p id="agent-health-message"></p></div><span id="agent-health-recovery"></span></section>
+      <section id="approvals" class="approvals hidden" aria-label="Pending Zed approvals"></section>
       <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your workspace is ready</h3><p>Expose a thread in desktop Zed or start a new session from the sidebar.</p></div></div><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
       <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
       <div class="composer-wrap">
         <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
+        <div id="attachment-strip" class="attachment-strip hidden" aria-label="Prompt attachments"></div>
+        <div id="action-menu" class="action-menu hidden" aria-label="Add context"><button id="action-commands" type="button"><strong>/</strong><span>Commands</span></button><button id="action-file" type="button"><strong>@</strong><span>Project file</span></button><button id="action-upload" type="button"><strong>↑</strong><span>Upload file</span></button></div>
         <div id="command-menu" class="command-menu hidden" role="listbox" aria-label="Available Zed Agent commands"></div>
         <form id="composer-form" class="composer">
-          <button id="show-commands" class="command-trigger" type="button" aria-label="Show Zed Agent commands" title="Commands">/</button>
+          <button id="show-actions" class="command-trigger" type="button" aria-label="Add command or context" aria-expanded="false" title="Add command or context">+</button>
+          <input id="upload-file" class="sr-only" type="file" accept="text/*,application/json,application/xml,image/png,image/jpeg,image/webp" multiple>
           <label class="sr-only" for="prompt">Message to native Zed Agent</label>
           <textarea id="prompt" rows="1" maxlength="3000" placeholder="Message Zed Agent…" aria-describedby="composer-hint" disabled></textarea>
           <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="button" aria-label="Send message" title="Send message" data-mode="send" disabled>↑</button></div>
@@ -122,6 +126,13 @@
         <span id="composer-hint" class="sr-only">On a keyboard, press Enter to send and Shift Enter for a new line. Type slash to browse commands. The Send button becomes Stop while Zed is running.</span>
         <details id="delivery-details" class="delivery-details hidden"><summary>Message delivery options</summary><p>Zed may already have received this message. Check the desktop thread before continuing. Trying again uses the original request ID to avoid another copy.</p><div class="delivery-actions"><button id="retry" class="quiet hidden" type="button">Try again safely</button><button id="clear-pending" class="quiet hidden" type="button">I checked Zed; continue</button></div></details>
       </div>
+      <aside id="context-panel" class="context-panel hidden" aria-label="Project context">
+        <div class="context-head"><div><p class="eyebrow">PROJECT CONTEXT</p><h2>Workspace</h2></div><button id="close-context" class="quiet" type="button" aria-label="Close project context">×</button></div>
+        <div class="context-tabs" role="tablist"><button id="context-files-tab" type="button" role="tab" aria-selected="true">Files</button><button id="context-changes-tab" type="button" role="tab" aria-selected="false">Changes</button><button id="context-activity-tab" type="button" role="tab" aria-selected="false">Activity</button></div>
+        <section id="context-files" class="context-view"><label class="sr-only" for="file-search">Search project files</label><input id="file-search" type="search" placeholder="Search project files" autocomplete="off"><div id="file-list" class="context-list"></div><article id="file-preview" class="file-preview hidden"><header><strong id="file-preview-name"></strong><button id="attach-preview" class="quiet" type="button">Attach</button></header><pre><code id="file-preview-content"></code></pre><p id="file-preview-note" class="muted"></p></article></section>
+        <section id="context-changes" class="context-view hidden"><div id="changes-summary" class="context-summary">No repository information loaded.</div><button id="load-diff" class="quiet context-primary" type="button">View unified diff</button><div id="changes-list" class="context-list"></div><pre id="git-diff" class="git-diff hidden"><code></code></pre></section>
+        <section id="context-activity-view" class="context-view hidden"><p class="muted">Thinking and tool activity stays inline with the conversation. Use this index to jump to recent activity.</p><div id="activity-index" class="context-list"></div></section>
+      </aside>
     </section>
   </main>
   <nav class="mobile-tabs" aria-label="ZedLink sections">

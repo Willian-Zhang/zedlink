@@ -121,7 +121,8 @@ def main():
                     raise AssertionError("selected native thread missing from paired browser")
                 card.click()
                 wait.until(lambda driver: driver.find_element(By.ID, "prompt").is_enabled())
-                browser.find_element(By.ID, "show-commands").click()
+                browser.find_element(By.ID, "show-actions").click()
+                browser.find_element(By.ID, "action-commands").click()
                 wait.until(lambda driver: "/compact" in driver.find_element(By.ID, "command-menu").text)
                 browser.find_element(By.CSS_SELECTOR, ".command-option").click()
                 assert browser.find_element(By.ID, "prompt").get_attribute("value") == "/compact"

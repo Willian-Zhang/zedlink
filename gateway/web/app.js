@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.14";
+const UI_BUILD = "2026.10.05.15";
 const state = {
   gatewayId: null,
   token: null,
@@ -45,6 +45,13 @@ const state = {
   threadSettings: null,
   settingsBusy: false,
   notificationConfig: null,
+  projectFiles: [],
+  projectFilesTruncated: false,
+  changes: null,
+  contextPaths: [],
+  uploads: [],
+  previewPath: null,
+  approvals: [],
 };
 const safeStore = {
   read(key) {
@@ -488,6 +495,7 @@ function updateComposerAction() {
     ? state.stoppingTurn
     : !state.threadId || !!state.pending || !state.token || !state.live
       || navigator.onLine === false || state.gatewayReachable === false;
+  $("show-actions").disabled = !state.threadId || !state.token || !state.live;
 }
 function apiError(code) {
   if (code === "UNAUTHENTICATED") return "Browser credential revoked or missing. Pair again.";
@@ -497,6 +505,14 @@ function apiError(code) {
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
   if (code === "REQUEST_CONFLICT") return "That request ID was already used for different content.";
   if (code === "THREAD_BUSY") return "Wait for the current Zed turn to finish before changing its settings.";
+  if (code === "FILE_UNAVAILABLE") return "That file is unavailable or excluded from remote project access.";
+  if (code === "UNSUPPORTED_FILE") return "That file type cannot be previewed or attached.";
+  if (code === "FILE_TOO_LARGE") return "That file is too large to attach. The limit is 256 KiB for text files.";
+  if (code === "PAYLOAD_TOO_LARGE") return "The selected upload is too large. The limit is 1 MiB per file.";
+  if (code === "STALE_REVISION") return "The repository changed. Refresh Changes before applying this action.";
+  if (code === "DIFF_UNAVAILABLE" || code === "REPOSITORY_UNAVAILABLE") return "The repository diff is unavailable in desktop Zed.";
+  if (code === "OPERATION_FAILED") return "Desktop Zed could not complete that Git operation.";
+  if (code === "APPROVAL_EXPIRED" || code === "APPROVAL_ALREADY_RESOLVED" || code === "STALE_TURN") return "That approval is no longer pending. Refreshing the native thread.";
   if (code === "PAIRING_UNAVAILABLE") return "No active pairing request. Create a fresh pairing link in desktop Zed.";
   if (code === "PAIRING_EXPIRED") return "That pairing link expired. Create a fresh one in desktop Zed.";
   if (code === "PAIRING_INVALID") return "That pairing code is incorrect. Check the code or create a fresh pairing link.";
@@ -1015,6 +1031,13 @@ async function selectThread(threadId) {
   state.retryStatus = null;
   renderAgentHealth();
   state.threadSettings = null;
+  state.projectFiles = [];
+  state.changes = null;
+  state.previewPath = null;
+  state.contextPaths = [];
+  state.uploads = [];
+  renderAttachmentStrip();
+  closeContextPanel();
   updateComposerAction();
   renderThreadSettings();
   document.body.classList.add("thread-open");
@@ -1036,6 +1059,7 @@ async function selectThread(threadId) {
     await refreshSnapshot();
     await loadCommands();
     await loadThreadSettings();
+    await Promise.all([loadProjectFiles(), loadChanges()]);
     startEventStream();
     notice("");
   } catch (error) { notice(error.message); }
@@ -1053,6 +1077,367 @@ async function loadCommands() {
       typeof command.name === "string" && typeof command.description === "string");
     renderCommands();
   }
+}
+
+function baseThreadParams() {
+  return { instance_id: state.instanceId, epoch: state.epoch, thread_id: state.threadId };
+}
+
+function renderAttachmentStrip() {
+  const strip = $("attachment-strip");
+  strip.replaceChildren();
+  const attachments = [
+    ...state.contextPaths.map((path) => ({ type: "context", label: path, key: path })),
+    ...state.uploads.map((upload, index) => ({ type: "upload", label: upload.name, key: index })),
+  ];
+  strip.classList.toggle("hidden", attachments.length === 0);
+  for (const attachment of attachments) {
+    const chip = document.createElement("span");
+    chip.className = "attachment-chip";
+    const label = document.createElement("span");
+    label.textContent = attachment.label;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${attachment.label}`);
+    remove.addEventListener("click", () => {
+      if (attachment.type === "context") state.contextPaths = state.contextPaths.filter((path) => path !== attachment.key);
+      else state.uploads.splice(attachment.key, 1);
+      renderAttachmentStrip();
+    });
+    chip.append(label, remove);
+    strip.append(chip);
+  }
+}
+
+async function loadProjectFiles() {
+  if (!state.threadId || !state.capabilities.includes("project.files")) {
+    state.projectFiles = [];
+    state.projectFilesTruncated = false;
+    renderProjectFiles();
+    return;
+  }
+  const threadId = state.threadId;
+  const result = await rpc("project.files", baseThreadParams());
+  if (state.threadId !== threadId || !Array.isArray(result.entries)) return;
+  state.projectFiles = result.entries.filter((entry) => typeof entry.path === "string");
+  state.projectFilesTruncated = result.truncated === true;
+  renderProjectFiles();
+}
+
+function renderProjectFiles() {
+  const list = $("file-list");
+  list.replaceChildren();
+  if (!state.capabilities.includes("project.files")) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Restart the updated patched Zed build to browse project files.";
+    list.append(empty);
+    return;
+  }
+  const query = $("file-search").value.trim().toLocaleLowerCase();
+  const entries = state.projectFiles.filter((entry) => !query || entry.path.toLocaleLowerCase().includes(query));
+  for (const entry of entries.slice(0, 250)) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `context-row ${entry.kind === "directory" ? "directory" : ""}`;
+    const name = document.createElement("span");
+    name.textContent = `${entry.kind === "directory" ? "▸ " : ""}${entry.path}`;
+    const detail = document.createElement("small");
+    detail.textContent = entry.kind === "directory" ? "DIR" : Number.isFinite(entry.size) ? `${entry.size} B` : "FILE";
+    row.append(name, detail);
+    if (entry.kind === "file") row.addEventListener("click", () => previewProjectFile(entry.path));
+    else row.disabled = true;
+    list.append(row);
+  }
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = query ? "No project files match this search." : "No remotely readable project files.";
+    list.append(empty);
+  } else if (state.projectFilesTruncated || entries.length > 250) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = "Showing a bounded project file list. Narrow the search to find a file.";
+    list.append(note);
+  }
+}
+
+async function previewProjectFile(path) {
+  try {
+    const result = await rpc("project.file", { ...baseThreadParams(), path });
+    if (result.path !== path || typeof result.content !== "string") throw new Error("Zed returned an invalid file preview.");
+    state.previewPath = path;
+    $("file-preview-name").textContent = path;
+    $("file-preview-content").textContent = result.content;
+    $("file-preview-note").textContent = result.truncated ? "Preview truncated at 256 KiB. Truncated files cannot be attached." : "Read-only preview from the exposed Zed project.";
+    $("attach-preview").disabled = result.truncated === true || state.contextPaths.includes(path);
+    $("file-preview").classList.remove("hidden");
+  } catch (error) { notice(error.message); }
+}
+
+function attachPreview() {
+  if (!state.previewPath || state.contextPaths.includes(state.previewPath)) return;
+  if (state.contextPaths.length + state.uploads.length >= 8) {
+    notice("A prompt can include at most eight attachments.");
+    return;
+  }
+  state.contextPaths.push(state.previewPath);
+  $("attach-preview").disabled = true;
+  renderAttachmentStrip();
+  closeContextPanel();
+  $("prompt").focus();
+}
+
+async function loadChanges() {
+  if (!state.threadId || !state.capabilities.includes("changes.snapshot")) {
+    state.changes = null;
+    renderChanges();
+    return;
+  }
+  const threadId = state.threadId;
+  const result = await rpc("changes.snapshot", baseThreadParams());
+  if (state.threadId !== threadId || !Array.isArray(result.entries)) return;
+  state.changes = result;
+  renderChanges();
+}
+
+function renderChanges() {
+  const summary = $("changes-summary");
+  const list = $("changes-list");
+  list.replaceChildren();
+  $("git-diff").classList.add("hidden");
+  $("load-diff").disabled = true;
+  if (!state.capabilities.includes("changes.snapshot")) {
+    summary.textContent = "Restart the updated patched Zed build to inspect repository changes.";
+    return;
+  }
+  if (!state.changes?.repository) {
+    summary.textContent = "No active Git repository is available for this exposed project.";
+    return;
+  }
+  const repository = state.changes.repository;
+  $("load-diff").disabled = !state.capabilities.includes("changes.diff");
+  summary.textContent = `${repository.branch || "Detached HEAD"} · ${state.changes.entries.length} changed file${state.changes.entries.length === 1 ? "" : "s"}`;
+  for (const entry of state.changes.entries) {
+    const item = document.createElement("div");
+    item.className = "change-item";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "context-row";
+    const path = document.createElement("span");
+    path.textContent = entry.path;
+    const status = document.createElement("small");
+    status.textContent = `${String(entry.status || "changed").toUpperCase()} · ${String(entry.staging || "unstaged").toUpperCase()}`;
+    row.append(path, status);
+    row.addEventListener("click", () => {
+      const projectPath = state.projectFiles.find((file) => file.kind === "file" && (file.path === entry.path || entry.path.endsWith(`/${file.path}`)))?.path;
+      if (projectPath) previewProjectFile(projectPath);
+      switchContextTab("files");
+    });
+    item.append(row);
+    const operation = document.createElement("button");
+    operation.type = "button";
+    operation.className = "quiet change-action";
+    const unstage = entry.staging === "staged";
+    operation.textContent = unstage ? "Unstage" : "Stage";
+    operation.disabled = !state.capabilities.includes(unstage ? "changes.unstage" : "changes.stage");
+    operation.addEventListener("click", () => mutateChanges(entry.path, unstage ? "changes.unstage" : "changes.stage", operation));
+    item.append(operation);
+    list.append(item);
+  }
+  if (!state.changes.entries.length) {
+    const clean = document.createElement("p");
+    clean.className = "muted";
+    clean.textContent = "Working tree clean.";
+    list.append(clean);
+  }
+}
+
+async function mutateChanges(path, method, button) {
+  const revision = state.changes?.repository?.revision;
+  if (!revision) return;
+  const requestId = crypto.randomUUID();
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = `${original}…`;
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await rpc(method, { ...baseThreadParams(), revision, paths: [path] }, requestId);
+      if (result.outcome === "succeeded") {
+        notice(`${original}d ${path} in desktop Zed.`);
+        await loadChanges();
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`Zed did not finish ${original.toLocaleLowerCase()}ing ${path}.`);
+  } catch (error) { notice(error.message); }
+  finally {
+    button.textContent = original;
+    button.disabled = false;
+  }
+}
+
+async function loadGitDiff() {
+  const revision = state.changes?.repository?.revision;
+  if (!revision || !state.capabilities.includes("changes.diff")) return;
+  const button = $("load-diff");
+  button.disabled = true;
+  button.textContent = "Loading diff…";
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await rpc("changes.diff", { ...baseThreadParams(), revision });
+      if (result.revision !== revision) throw new Error("Zed returned a diff for another repository revision.");
+      if (result.outcome === "ready") {
+        $("git-diff").querySelector("code").textContent = result.diff || "No textual diff.";
+        $("git-diff").classList.remove("hidden");
+        button.textContent = result.truncated ? "Diff truncated" : "Refresh unified diff";
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("The native Git diff timed out. Try again.");
+  } catch (error) {
+    notice(error.message);
+    button.textContent = "View unified diff";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderActivityIndex() {
+  const list = $("activity-index");
+  list.replaceChildren();
+  const items = $("transcript-entries").querySelectorAll(".message.tool, details.thinking-block");
+  items.forEach((item, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "context-row";
+    const label = document.createElement("span");
+    label.textContent = item.matches(".message.tool")
+      ? item.querySelector(".tool-title")?.textContent || `Tool ${index + 1}`
+      : `Thinking ${index + 1}`;
+    const kind = document.createElement("small");
+    kind.textContent = item.matches(".message.tool") ? "TOOL" : "THINKING";
+    row.append(label, kind);
+    row.addEventListener("click", () => {
+      closeContextPanel();
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (item.tagName === "DETAILS") item.open = true;
+    });
+    list.append(row);
+  });
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No thinking or tool activity is present in the loaded transcript.";
+    list.append(empty);
+  }
+}
+
+function switchContextTab(tab) {
+  for (const name of ["files", "changes", "activity"]) {
+    $(`context-${name}-tab`).setAttribute("aria-selected", String(name === tab));
+    $(name === "activity" ? "context-activity-view" : `context-${name}`).classList.toggle("hidden", name !== tab);
+  }
+  if (tab === "files") loadProjectFiles().catch((error) => notice(error.message));
+  if (tab === "changes") loadChanges().catch((error) => notice(error.message));
+  if (tab === "activity") renderActivityIndex();
+}
+
+function openContextPanel(tab = "files") {
+  if (!state.threadId) return;
+  document.body.classList.add("context-open");
+  $("context-panel").classList.remove("hidden");
+  $("show-context").setAttribute("aria-expanded", "true");
+  switchContextTab(tab);
+}
+
+function closeContextPanel() {
+  document.body.classList.remove("context-open");
+  $("context-panel").classList.add("hidden");
+  $("show-context").setAttribute("aria-expanded", "false");
+}
+
+function readUpload(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      const comma = value.indexOf(",");
+      if (comma < 0) reject(new Error(`Could not encode ${file.name}.`));
+      else resolve({ name: file.name, mime_type: file.type || "text/plain", data: value.slice(comma + 1) });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addUploads(files) {
+  for (const file of Array.from(files)) {
+    if (state.contextPaths.length + state.uploads.length >= 8) {
+      notice("A prompt can include at most eight attachments.");
+      break;
+    }
+    if (file.size > 1024 * 1024) {
+      notice(`${file.name} is larger than the 1 MiB upload limit.`);
+      continue;
+    }
+    const allowed = file.type.startsWith("text/") || ["application/json", "application/xml", "image/png", "image/jpeg", "image/webp"].includes(file.type);
+    if (!allowed) {
+      notice(`${file.name} is not a supported text or image file.`);
+      continue;
+    }
+    state.uploads.push(await readUpload(file));
+  }
+  renderAttachmentStrip();
+  $("upload-file").value = "";
+}
+
+function renderApprovals(approvals) {
+  state.approvals = Array.isArray(approvals) ? approvals : [];
+  const panel = $("approvals");
+  panel.replaceChildren();
+  panel.classList.toggle("hidden", state.approvals.length === 0 || !state.capabilities.includes("approval.respond"));
+  for (const approval of state.approvals) {
+    const card = document.createElement("article");
+    card.className = "approval-card";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = approval.display || approval.tool_name || "Zed tool approval";
+    const input = document.createElement("small");
+    input.textContent = approval.raw_input ? JSON.stringify(approval.raw_input) : "Details unavailable; approval is disabled.";
+    details.append(title, input);
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+    const deny = document.createElement("button");
+    deny.type = "button";
+    deny.className = "quiet";
+    deny.textContent = "Deny";
+    deny.disabled = !approval.can_deny_once;
+    deny.addEventListener("click", () => respondApproval(approval, "deny_once"));
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "primary";
+    approve.textContent = "Approve once";
+    approve.disabled = !approval.can_approve_once;
+    approve.addEventListener("click", () => respondApproval(approval, "approve_once"));
+    actions.append(deny, approve);
+    card.append(details, actions);
+    panel.append(card);
+  }
+}
+
+async function respondApproval(approval, decision) {
+  try {
+    await rpc("approval.respond", {
+      ...baseThreadParams(), approval_id: approval.approval_id,
+      turn_id: approval.turn_id, decision,
+    });
+    notice(decision === "approve_once" ? "Approved this tool call once." : "Denied this tool call.");
+  } catch (error) { notice(error.message); }
+  await refreshSnapshot().catch((error) => notice(error.message));
 }
 
 async function loadThreadSettings() {
@@ -1641,6 +2026,8 @@ async function snapshot() {
     && result.activity_entries_markdown.every((entry) => typeof entry === "string")
     ? result.activity_entries_markdown : result.entries_markdown;
   renderActivity(activityEntries, result.status, result.activity_truncated === true);
+  renderApprovals(result.pending_approvals);
+  if (document.body.classList.contains("context-open")) renderActivityIndex();
   if (follow) {
     scroller.scrollTop = scroller.scrollHeight;
     $("jump-latest").classList.add("hidden");
@@ -1665,9 +2052,6 @@ async function snapshot() {
     renderThreadSettings();
   }
   updateComposerAction();
-  if (result.pending_approvals?.length) {
-    notice("Approval pending in desktop Zed. Remote approval controls are awaiting native race validation.");
-  }
 }
 
 async function reconcilePending() {
@@ -1733,6 +2117,10 @@ async function sendPrompt(event) {
   const text = $("prompt").value.trim();
   if (!text) return;
   if (text.startsWith("/")) {
+    if (state.contextPaths.length || state.uploads.length) {
+      notice("Send attachments with a normal prompt, then run the slash command separately.");
+      return;
+    }
     const name = text.slice(1).split(/\s/, 1)[0];
     if (!state.capabilities.includes("thread.commands")) {
       notice("This running Zed build cannot execute slash commands remotely yet. Restart the updated build and re-expose the thread.");
@@ -1746,7 +2134,8 @@ async function sendPrompt(event) {
   }
   $("command-menu").classList.add("hidden");
   const pending = { id: crypto.randomUUID(), instanceId: state.instanceId,
-    epoch: state.epoch, threadId: state.threadId, text };
+    epoch: state.epoch, threadId: state.threadId, text,
+    contextPaths: [...state.contextPaths], uploads: [...state.uploads] };
   state.pending = pending;
   savePending();
   delivery("Sending to Zed…");
@@ -1759,8 +2148,14 @@ async function sendPending() {
     const result = await rpc("thread.send", {
       instance_id: pending.instanceId, epoch: pending.epoch,
       thread_id: pending.threadId, text: pending.text,
+      ...(pending.contextPaths?.length ? { context_paths: pending.contextPaths } : {}),
+      ...(pending.uploads?.length ? { uploads: pending.uploads } : {}),
     }, pending.id);
     $("prompt").value = "";
+    $("prompt").style.height = "auto";
+    state.contextPaths = [];
+    state.uploads = [];
+    renderAttachmentStrip();
     settledDelivery(result.outcome === "queued"
       ? "Queued in desktop Zed."
       : "Request reached Zed. Watch the native conversation for execution.");
@@ -1864,17 +2259,54 @@ $("show-sessions").addEventListener("click", () => {
 $("prompt").addEventListener("input", () => {
   const prompt = $("prompt");
   prompt.style.height = "auto";
-  prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 132)}px`;
+  $("action-menu").classList.add("hidden");
+  $("show-actions").setAttribute("aria-expanded", "false");
   renderCommands();
 });
-$("show-commands").addEventListener("click", () => {
+$("show-actions").addEventListener("click", () => {
   if (!state.threadId) return;
+  const menu = $("action-menu");
+  menu.classList.toggle("hidden");
+  $("show-actions").setAttribute("aria-expanded", String(!menu.classList.contains("hidden")));
+});
+$("action-commands").addEventListener("click", () => {
+  if (!state.threadId) return;
+  $("action-menu").classList.add("hidden");
+  $("show-actions").setAttribute("aria-expanded", "false");
   $("prompt").value = "/";
   $("prompt").focus();
   renderCommands();
 });
+$("action-file").addEventListener("click", () => {
+  $("action-menu").classList.add("hidden");
+  $("show-actions").setAttribute("aria-expanded", "false");
+  openContextPanel("files");
+});
+$("action-upload").addEventListener("click", () => {
+  $("action-menu").classList.add("hidden");
+  $("show-actions").setAttribute("aria-expanded", "false");
+  if (!state.capabilities.includes("thread.attachments")) {
+    notice("Restart the updated patched Zed build to upload prompt attachments.");
+    return;
+  }
+  $("upload-file").click();
+});
+$("upload-file").addEventListener("change", (event) => addUploads(event.target.files).catch((error) => notice(error.message)));
+$("show-context").addEventListener("click", () => document.body.classList.contains("context-open") ? closeContextPanel() : openContextPanel("files"));
+$("close-context").addEventListener("click", closeContextPanel);
+$("context-files-tab").addEventListener("click", () => switchContextTab("files"));
+$("context-changes-tab").addEventListener("click", () => switchContextTab("changes"));
+$("context-activity-tab").addEventListener("click", () => switchContextTab("activity"));
+$("file-search").addEventListener("input", renderProjectFiles);
+$("attach-preview").addEventListener("click", attachPreview);
+$("load-diff").addEventListener("click", loadGitDiff);
 $("prompt").addEventListener("keydown", (event) => {
-  if (event.key === "Escape") $("command-menu").classList.add("hidden");
+  if (event.key === "Escape") {
+    $("command-menu").classList.add("hidden");
+    $("action-menu").classList.add("hidden");
+    $("show-actions").setAttribute("aria-expanded", "false");
+  }
   if (event.key === "ArrowDown" && !$("command-menu").classList.contains("hidden")) {
     const first = $("command-menu").querySelector(".command-option");
     if (first) { event.preventDefault(); first.focus(); }
@@ -1898,6 +2330,12 @@ async function signOut() {
   state.retryStatus = null;
   state.desktopReachable = null;
   state.threadSettings = null;
+  state.contextPaths = [];
+  state.uploads = [];
+  state.projectFiles = [];
+  state.changes = null;
+  renderAttachmentStrip();
+  closeContextPanel();
   requireManualGatewayVerification();
   document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
   document.body.classList.add("pairing");

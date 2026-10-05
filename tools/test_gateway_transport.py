@@ -50,6 +50,9 @@ class ProbeFixture:
         self.profile_id = "write"
         self.thinking_enabled = True
         self.settings_updates = 0
+        self.approvals = []
+        self.approval_decisions = 0
+        self.change_operations = {}
         self.drop_send_before_accept_once = False
         self.stopped = False
         self.listener = socket.socket(socket.AF_UNIX)
@@ -111,7 +114,7 @@ class ProbeFixture:
                               "agent_error": self.agent_error, "retry_status": self.retry_status,
                               "entries_markdown": list(self.entries),
                               "activity_entries_markdown": list(self.entries[-8:]),
-                              "activity_truncated": self.activity_truncated, "pending_approvals": [],
+                              "activity_truncated": self.activity_truncated, "pending_approvals": list(self.approvals),
                               "last_sequence": self.sequence}
                 elif method == "thread.events":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
@@ -141,14 +144,58 @@ class ProbeFixture:
                         "thinking_supported": True,
                         "thinking_can_disable": True,
                     }
+                elif method == "project.files":
+                    result = {"entries": [
+                        {"path": "src", "kind": "directory", "size": 0},
+                        {"path": "src/main.rs", "kind": "file", "size": 31},
+                        {"path": "README.md", "kind": "file", "size": 18},
+                    ], "truncated": False}
+                elif method == "project.file":
+                    files = {"src/main.rs": "fn main() { println!(\"ready\"); }\n",
+                             "README.md": "# Fixture project\n"}
+                    if params.get("path") not in files:
+                        error = {"code": "FILE_UNAVAILABLE"}
+                    else:
+                        result = {"path": params["path"], "content": files[params["path"]], "truncated": False}
+                elif method == "changes.snapshot":
+                    result = {"repository": {"branch": "main", "head": "fixture-head",
+                                               "revision": "fixture-head:4"},
+                              "entries": [{"path": "src/main.rs", "status": "modified",
+                                           "staging": "unstaged", "added": 2, "deleted": 1}]}
+                elif method == "changes.diff":
+                    if params.get("revision") != "fixture-head:4":
+                        error = {"code": "STALE_REVISION"}
+                    else:
+                        result = {"outcome": "ready", "revision": "fixture-head:4",
+                                  "diff": "diff --git a/src/main.rs b/src/main.rs\n+println!(\"ready\");\n",
+                                  "truncated": False}
+                elif method in ("changes.stage", "changes.unstage"):
+                    key = request["request_id"]
+                    payload = json.dumps(params, sort_keys=True)
+                    if key in self.change_operations and self.change_operations[key] != payload:
+                        error = {"code": "REQUEST_CONFLICT"}
+                    else:
+                        self.change_operations[key] = payload
+                        result = {"outcome": "succeeded", "provisional": False}
+                elif method == "approval.respond":
+                    matching = [item for item in self.approvals
+                                if item["approval_id"] == params.get("approval_id")
+                                and item["turn_id"] == params.get("turn_id")]
+                    if not matching:
+                        error = {"code": "APPROVAL_EXPIRED"}
+                    else:
+                        self.approvals = []
+                        self.approval_decisions += 1
+                        result = {"outcome": "resolved"}
                 elif method == "thread.send":
                     key = request["request_id"]
                     text = params["text"]
-                    if key in self.seen_sends and self.seen_sends[key] != text:
+                    payload = json.dumps(params, sort_keys=True)
+                    if key in self.seen_sends and self.seen_sends[key] != payload:
                         error = {"code": "REQUEST_ID_CONFLICT"}
                     else:
                         if key not in self.seen_sends:
-                            self.seen_sends[key] = text
+                            self.seen_sends[key] = payload
                             self.accepted += 1
                             self.entries.extend([
                                 f"## User\n\n{text}\n\n",
@@ -175,7 +222,10 @@ class ProbeFixture:
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.events",
                                                "thread.commands", "thread.settings", "thread.settings.update",
-                                               "thread.send", "thread.cancel", "request.status"]}
+                                               "thread.send", "thread.attachments", "thread.cancel",
+                                               "thread.approvals", "approval.respond", "project.files",
+                                               "project.file", "changes.snapshot", "changes.diff",
+                                               "changes.stage", "changes.unstage", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
                 response = {"version": 1, "request_id": request["request_id"]}
@@ -329,7 +379,7 @@ def main():
             assert mismatch.returncode == 2 and "Gateway identity changed" in mismatch.stderr
             status, listing = http(base, context, "/v1/rpc", "POST", request, token1)
             assert status == 200 and listing["result"]["threads"][0]["thread_id"] == "fixture-thread"
-            denied = dict(request, method="approval.respond")
+            denied = dict(request, method="arbitrary.shell")
             status, _ = http(base, context, "/v1/rpc", "POST", denied, token1)
             assert status == 403
             cancellation = {"version": 1, "request_id": "cancel-one", "method": "thread.cancel",
@@ -360,6 +410,21 @@ def main():
             assert status == 200 and probe.accepted == 2
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token2)
             assert status == 200 and response["result"]["known"]
+            probe.approvals = [{"approval_id": "race-approval", "turn_id": 11,
+                                "tool_name": "terminal", "display": "Race fixture",
+                                "raw_input": {"command": "printf race"},
+                                "details_truncated": False, "can_approve_once": True,
+                                "can_deny_once": True}]
+            approval = {"version": 1, "request_id": "approval-race",
+                        "method": "approval.respond",
+                        "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                   "thread_id": "fixture-thread", "turn_id": 11,
+                                   "approval_id": "race-approval", "decision": "deny_once"}}
+            status, response = http(base, context, "/v1/rpc", "POST", approval, token1)
+            assert status == 200 and response["result"]["outcome"] == "resolved"
+            status, response = http(base, context, "/v1/rpc", "POST", approval, token2)
+            assert status == 200 and response["error"]["code"] == "APPROVAL_EXPIRED"
+            probe.approval_decisions = 0
             server.terminate()
             server.communicate(timeout=3)
             server = subprocess.Popen([str(BINARY), "serve", f"127.0.0.1:{port}", str(cert), str(key),
@@ -421,7 +486,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.14"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.15"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -472,6 +537,27 @@ def main():
                 browser.save_screenshot("/tmp/zedlink-browser-settings.png")
                 browser.find_element(By.ID, "settings-back").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                browser.find_element(By.ID, "show-context").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "context-panel").is_displayed())
+                wait.until(lambda driver: "src/main.rs" in driver.find_element(By.ID, "file-list").text)
+                file_rows = browser.find_elements(By.CSS_SELECTOR, "#file-list .context-row:not(.directory)")
+                next(row for row in file_rows if "src/main.rs" in row.text).click()
+                wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
+                browser.find_element(By.ID, "attach-preview").click()
+                assert "src/main.rs" in browser.find_element(By.ID, "attachment-strip").text
+                browser.find_element(By.ID, "show-context").click()
+                browser.find_element(By.ID, "context-changes-tab").click()
+                wait.until(lambda driver: "main · 1 changed file" in driver.find_element(By.ID, "changes-summary").text)
+                assert "MODIFIED" in browser.find_element(By.ID, "changes-list").text
+                browser.find_element(By.ID, "load-diff").click()
+                wait.until(lambda driver: "diff --git" in driver.find_element(By.ID, "git-diff").text)
+                browser.find_element(By.CSS_SELECTOR, "#changes-list .change-action").click()
+                wait.until(lambda driver: len(probe.change_operations) == 1)
+                browser.find_element(By.ID, "close-context").click()
+                upload = root / "browser-note.txt"
+                upload.write_text("browser upload fixture\n")
+                browser.find_element(By.ID, "upload-file").send_keys(str(upload))
+                wait.until(lambda driver: "browser-note.txt" in driver.find_element(By.ID, "attachment-strip").text)
                 assert not browser.find_elements(By.CSS_SELECTOR, "#messages img")
                 assert browser.execute_script("return window.syntheticXss || 0") == 0
                 browser.find_element(By.ID, "prompt").send_keys("Browser fixture prompt")
@@ -484,6 +570,9 @@ def main():
                           "accepted:", probe.accepted)
                     raise
                 assert probe.accepted == accepted_before_browser + 1
+                sent_payload = json.loads(list(probe.seen_sends.values())[-1])
+                assert sent_payload["context_paths"] == ["src/main.rs"]
+                assert sent_payload["uploads"][0]["name"] == "browser-note.txt"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.user .message-label")[-1].get_attribute("textContent") == "You"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant .message-label")[-1].get_attribute("textContent") == "Zed Agent"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant strong")
@@ -536,6 +625,17 @@ def main():
                 probe.truncated = False
                 probe.sequence += 1
                 wait.until(lambda driver: "Thread fixture-thre" in driver.find_element(By.ID, "thread-meta").text)
+                probe.approvals = [{"approval_id": "fixture-approval", "turn_id": 8,
+                                    "tool_name": "terminal", "display": "Run fixture command",
+                                    "raw_input": {"command": "printf fixture"},
+                                    "details_truncated": False, "can_approve_once": True,
+                                    "can_deny_once": True}]
+                probe.sequence += 1
+                wait.until(lambda driver: driver.find_element(By.ID, "approvals").is_displayed())
+                assert "printf fixture" in browser.find_element(By.ID, "approvals").text
+                browser.find_element(By.CSS_SELECTOR, "#approvals .primary").click()
+                wait.until(lambda driver: probe.approval_decisions == 1)
+                wait.until(lambda driver: not driver.find_element(By.ID, "approvals").is_displayed())
                 probe.active_turn_id = None
                 probe.sequence += 1
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".thread-item.running"))
@@ -569,7 +669,8 @@ def main():
                 ) == "ok"
                 wait.until(lambda driver: not driver.find_element(By.ID, "agent-health").is_displayed())
                 assert "request failed" not in browser.find_element(By.ID, "header-model").text.casefold()
-                browser.find_element(By.ID, "show-commands").click()
+                browser.find_element(By.ID, "show-actions").click()
+                browser.find_element(By.ID, "action-commands").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
                 assert "/compact" in browser.find_element(By.ID, "command-menu").text
                 browser.find_element(By.ID, "prompt").send_keys("unknown")

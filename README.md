@@ -356,7 +356,13 @@ The square control at the bottom right of the composer shows an up arrow while t
 
 Open **Settings** from the gear beside Sessions or the phone's Settings tab. For the selected exposed thread, ZedLink displays the actual model reported by native Zed and lets you change the native Agent profile and model-thinking toggle while the thread is idle. These controls call Zed's thread settings paths; they do not store model credentials in the browser. Model selection remains in desktop Zed for now. **Sign out** appears once in Settings and removes this device's saved browser credential; use the desktop paired-device task when the server-side device record must also be revoked.
 
-Assistant Markdown renders headings, lists, quotes, links, fenced code with language labels and copy controls, and horizontally scrollable tables. Terminal output and file content use dedicated copyable tool sections. Native image content is currently represented by Zed's snapshot as the text `Image`, so image and graphical-chart parity requires a future structured attachment addition to the native bridge; the browser does not invent or fetch missing image data. Text, Markdown tables, ASCII charts, and chart source in fenced blocks remain readable.
+The compact composer grows only as you type. Select **+** for native slash commands, **Project file**, or **Upload file**. Project file opens the selected exposed thread's configured worktree in a read-only Context panel; **Attach** sends the canonical project path through Zed's normal file-mention path. Browser uploads are limited to eight files and 1 MiB each. Text, JSON, XML, PNG, JPEG, and WebP are mapped to native Agent content blocks. Image understanding still depends on the model selected inside Zed. Uploaded bytes stay in the current tab until the send is accepted and are not written to browser storage.
+
+The Context panel's **Changes** tab reads status and unified diffs from Zed's native repository object. Stage and Unstage require the exact displayed repository revision and a stable request ID, so a stale view or retry cannot silently apply to different changes. ZedLink does not expose commit, checkout, reset, push, pull, arbitrary filesystem access, or a terminal endpoint. Those actions remain in desktop Zed or can be performed by the native Agent under Zed's normal tool permissions.
+
+Pending native tool requests appear inline with **Approve once** and **Deny** only when Zed supplies those exact options. The operation is guarded by instance, event epoch, thread, turn, and tool-call identity. The first desktop or remote decision wins; stale controls become expired and never grant permission.
+
+Assistant Markdown renders headings, lists, quotes, links, fenced code with language labels and copy controls, and horizontally scrollable tables. Terminal output and file content use dedicated copyable tool sections. Native image output is currently represented by Zed's snapshot as the text `Image`, so graphical output parity still requires a future structured outbound attachment projection; the browser does not invent or fetch missing image data. Text, Markdown tables, ASCII charts, and chart source in fenced blocks remain readable.
 
 Long conversations may show “Older conversation omitted here” beneath the thread title. This is quiet status text rather than a popup. The full history remains in desktop Zed, while a separate recent-activity window keeps current reasoning and tool progress visible in the browser.
 
@@ -551,6 +557,7 @@ Still incomplete:
 - release packaging as a stock Zed extension,
 - supervised background startup and certificate renewal,
 - physical Web Push delivery on an installed iPhone/Android web app and native APNs/FCM delivery,
-- fully structured desktop-equivalent tool arguments, output, and diffs,
-- complete real approval-race validation through the paired gateway,
+- paged, structured transcript/tool output and native image output,
+- Git commit, branch, checkout, reset, push, pull, and hunk-level actions,
+- a simultaneous desktop-versus-remote approval race against live Zed (the paired two-device fixture and direct native approve/deny/stale tests pass),
 - broader physical-device and VPN-provider coverage.
