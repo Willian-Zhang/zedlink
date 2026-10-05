@@ -515,7 +515,7 @@ The stock extension API at that revision cannot enumerate or control an existing
 
 ### Zed upstream fork and contribution path
 
-The nested Zed checkout also has a local branch named `zedlink/native-agent-remote-control`, based on the exact pinned revision above. Its two commits separate the native cancellation guard from the opt-in local Agent bridge. Before publishing that branch, create a personal fork of `zed-industries/zed` and push the branch there.
+The nested Zed checkout also has a branch named [`zedlink/native-agent-remote-control`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) on the `tjnull/zed` fork, based on the exact pinned revision above. Its two commits separate the native cancellation guard from the opt-in local Agent bridge. The official `zed-industries/zed` repository remains the checkout's `origin`; the personal fork is the separate `fork` remote.
 
 Zed's contribution policy requires feature work of this size to start as a GitHub Discussion unless a staff-confirmed issue already exists. It also requires the human author to understand and review all AI-assisted code, manually test Zed, retain tests and evidence, sign the CLA, and write the maintainer communication. The checkout deliberately retains Zed's README review marker until that human review is complete. Do not remove it automatically.
 
