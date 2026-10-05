@@ -17,6 +17,7 @@ import Combine
     private var client: GatewayClient?
     private var pollTask: Task<Void, Never>?
     private var generation = UUID()
+    private let threadExposureIssue = "The selected thread is no longer exposed in desktop Zed."
 
     var canSend: Bool { state == .live && selectedThreadID != nil && pending == nil }
 
@@ -100,7 +101,7 @@ import Combine
         if let selectedThreadID, !threads.contains(where: { $0.id == selectedThreadID }) {
             self.selectedThreadID = nil
             snapshot = nil
-            issue = "The selected thread is no longer exposed in desktop Zed."
+            issue = threadExposureIssue
         }
     }
 
@@ -108,7 +109,7 @@ import Combine
         guard threads.contains(where: { $0.id == id }), pending == nil else { return }
         selectedThreadID = id
         snapshot = nil
-        do { try await loadSnapshot(id) }
+        do { try await loadSnapshot(id); issue = "" }
         catch { issue = error.localizedDescription; state = .stale }
     }
 
@@ -157,11 +158,28 @@ import Combine
                     try await loadThreads()
                 }
                 if pending != nil { await reconcilePending() }
-                if current == generation { state = .live; issue = "" }
+                if current == generation {
+                    state = .live
+                    if issue != threadExposureIssue { issue = "" }
+                }
             } catch {
                 if case GatewayFailure.native("RESYNC_REQUIRED") = error, let id = selectedThreadID {
                     do { try await loadSnapshot(id); state = .live }
                     catch { state = .stale; issue = error.localizedDescription }
+                } else if case GatewayFailure.native("THREAD_NOT_EXPOSED") = error {
+                    guard current == generation else { break }
+                    selectedThreadID = nil
+                    snapshot = nil
+                    do {
+                        try await loadThreads()
+                        guard current == generation else { break }
+                        state = .live
+                        issue = threadExposureIssue
+                    } catch {
+                        guard current == generation else { break }
+                        state = .reconnecting
+                        issue = error.localizedDescription
+                    }
                 } else if current == generation {
                     state = .reconnecting
                     issue = error.localizedDescription
