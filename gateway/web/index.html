@@ -44,7 +44,7 @@
         <p class="note">The link and code are single use and expire after five minutes. Pair only a private browser. Model credentials always remain in desktop Zed.</p>
       </section>
       <section class="panel hidden" id="sessions-panel">
-        <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet" aria-label="Create native Zed Agent session" disabled title="Start patched Zed to create a session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button></div></div>
+        <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet" aria-label="Create native Zed Agent session" disabled title="Start patched Zed to create a session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button><button id="open-settings" type="button" class="quiet" aria-label="Open settings">⚙</button></div></div>
         <form id="new-session-form" class="new-session-form hidden">
           <label for="new-session-title">New native Agent session</label>
           <div><input id="new-session-title" maxlength="128" autocomplete="off" placeholder="Optional title"><button id="create-session" class="primary" type="submit">Create</button></div>
@@ -55,7 +55,6 @@
         <div class="list-label"><span>EXPOSED THREADS</span><span id="thread-count">0</span></div>
         <div id="thread-list" class="thread-list" aria-label="Exposed Zed threads"></div>
         <p class="sidebar-tip">To expose another thread, choose <code>/remote-control</code> in desktop Zed.</p>
-        <button id="forget" type="button" class="quiet danger">Forget this browser</button>
       </section>
       <section class="panel hidden" id="connection-panel">
         <p class="eyebrow">PRIVATE CONNECTION</p>
@@ -63,16 +62,30 @@
         <div class="settings-row"><span>Status</span><strong id="mobile-connection-state">Checking…</strong></div>
         <div class="settings-row"><span>Gateway</span><code id="mobile-gateway-id">Unknown</code></div>
         <p class="muted">ZedLink connects only to this saved HTTPS origin. Tailscale or your routed VPN must already be connected.</p>
-        <button id="mobile-forget" type="button" class="quiet danger">Forget this browser</button>
+        <p class="note">To remove this browser’s saved access, open Settings and select Sign out.</p>
       </section>
       <section class="panel hidden" id="settings-panel">
-        <p class="eyebrow">ZEDLINK</p>
-        <h1>Settings</h1>
-        <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
-        <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-        <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.8</code></div>
+        <div class="section-head settings-head"><div><p class="eyebrow">ZEDLINK</p><h1>Settings</h1></div><button id="settings-back" type="button" class="quiet" aria-label="Return to sessions">←</button></div>
+        <section class="settings-group" aria-labelledby="native-settings-heading">
+          <div class="settings-group-head"><div><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="native-settings-heading">Selected session</h2></div><span id="zed-settings-state">No session</span></div>
+          <p id="zed-settings-thread" class="muted">Select an exposed session to manage its native Zed options.</p>
+          <form id="native-settings-form">
+            <div class="setting-field"><label for="zed-model">Current model</label><input id="zed-model" type="text" value="No session selected" readonly></div>
+            <div class="setting-field"><label for="zed-profile">Agent profile</label><select id="zed-profile" disabled><option>Select a session</option></select><small>Changes the native Agent profile and its configured tools for this thread.</small></div>
+            <label class="settings-switch" for="zed-thinking"><span><strong>Model thinking</strong><small>Uses the model’s native thinking control when supported.</small></span><input id="zed-thinking" type="checkbox" disabled></label>
+            <button id="save-zed-settings" class="primary" type="submit" disabled>Apply to Zed</button>
+          </form>
+          <p id="zed-settings-help" class="note">Settings become editable when an idle exposed session is selected.</p>
+        </section>
+        <section class="settings-group" aria-labelledby="browser-settings-heading">
+          <p class="eyebrow">THIS DEVICE</p><h2 id="browser-settings-heading">Browser app</h2>
+          <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
+          <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
+          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.9</code></div>
+        </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
+        <button id="sign-out" type="button" class="quiet danger">Sign out</button>
         <p class="note">The home-screen app uses this gateway’s trusted HTTPS address and saved browser pairing. Model credentials stay in desktop Zed.</p>
       </section>
     </aside>

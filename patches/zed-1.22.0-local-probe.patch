@@ -205,10 +205,10 @@ index bfefb986bd..3f9c2d3a10 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..2aec646c07
+index 0000000000..cb3ec998a9
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,1023 @@
+@@ -0,0 +1,1157 @@
 +use std::{
 +    cell::RefCell,
 +    collections::{HashMap, HashSet, VecDeque},
@@ -229,6 +229,7 @@ index 0000000000..2aec646c07
 +    ThreadStatus, ToolCallStatus,
 +};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_settings::{AgentProfile, AgentProfileId};
 +use anyhow::{Context as _, Result, anyhow};
 +use gpui::{App, Entity, Global, Subscription, Task};
 +use serde::Deserialize;
@@ -501,7 +502,7 @@ index 0000000000..2aec646c07
 +            json!({
 +                "instance_id": state.instance_id,
 +                "epoch": state.epoch,
-+                "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.events", "thread.commands", "thread.send", "thread.cancel", "request.status"],
++                "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.events", "thread.commands", "thread.settings", "thread.settings.update", "thread.send", "thread.cancel", "request.status"],
 +                "provisional": true,
 +            }),
 +        ),
@@ -681,6 +682,8 @@ index 0000000000..2aec646c07
 +            )
 +        }
 +        "thread.commands" => command_list(&request, state, cx),
++        "thread.settings" => thread_settings(&request, state, cx),
++        "thread.settings.update" => update_thread_settings(&request, state, cx),
 +        "thread.send" => send_request(&request, state, cx),
 +        "thread.cancel" => cancel_request(&request, state, cx),
 +        "thread.approvals" => approval_list(&request, state, cx),
@@ -1047,6 +1050,137 @@ index 0000000000..2aec646c07
 +        &request.request_id,
 +        json!({"thread_id": thread_id, "commands": commands}),
 +    )
++}
++
++fn thread_settings(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
++        || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
++    {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let Some((thread, native_thread)) = exposed_native_thread(thread_id, state, cx) else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    success(
++        &request.request_id,
++        thread_settings_value(thread_id, &thread, &native_thread, cx),
++    )
++}
++
++fn update_thread_settings(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
++        || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
++    {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let Some(parameters) = request.params.as_object() else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if parameters.keys().any(|key| {
++        !matches!(
++            key.as_str(),
++            "instance_id" | "epoch" | "thread_id" | "profile_id" | "thinking_enabled"
++        )
++    }) {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    let profile_id = match parameters.get("profile_id") {
++        None => None,
++        Some(Value::String(profile_id)) if !profile_id.is_empty() && profile_id.len() <= 128 => {
++            Some(AgentProfileId(profile_id.as_str().into()))
++        }
++        _ => return error(&request.request_id, "INVALID_REQUEST"),
++    };
++    let thinking_enabled = match parameters.get("thinking_enabled") {
++        None => None,
++        Some(Value::Bool(enabled)) => Some(*enabled),
++        _ => return error(&request.request_id, "INVALID_REQUEST"),
++    };
++    if profile_id.is_none() && thinking_enabled.is_none() {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    let Some((thread, native_thread)) = exposed_native_thread(thread_id, state, cx) else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    if thread.read(cx).status() != ThreadStatus::Idle {
++        return error(&request.request_id, "THREAD_BUSY");
++    }
++    if let Some(profile_id) = profile_id.as_ref()
++        && !AgentProfile::available_profiles(cx).contains_key(profile_id)
++    {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    if let Some(enabled) = thinking_enabled {
++        let native = native_thread.read(cx);
++        let Some(model) = native.model() else {
++            return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
++        };
++        if !model.supports_thinking() || (!enabled && !model.supports_disabling_thinking()) {
++            return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
++        }
++    }
++    native_thread.update(cx, |thread, cx| {
++        if let Some(profile_id) = profile_id {
++            thread.set_profile(profile_id, cx);
++        }
++        if let Some(enabled) = thinking_enabled {
++            thread.set_thinking_enabled(enabled, cx);
++        }
++    });
++    success(
++        &request.request_id,
++        thread_settings_value(thread_id, &thread, &native_thread, cx),
++    )
++}
++
++fn exposed_native_thread(
++    thread_id: &str,
++    state: &ProbeState,
++    cx: &App,
++) -> Option<(Entity<AcpThread>, Entity<agent::Thread>)> {
++    if !state.exposed_threads.borrow().contains(thread_id) {
++        return None;
++    }
++    let (thread, view) = loaded_thread_views(&state.project_root, cx)
++        .into_iter()
++        .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)?;
++    let native_thread = view.read(cx).as_native_thread(cx)?;
++    Some((thread, native_thread))
++}
++
++fn thread_settings_value(
++    thread_id: &str,
++    thread: &Entity<AcpThread>,
++    native_thread: &Entity<agent::Thread>,
++    cx: &App,
++) -> Value {
++    let native = native_thread.read(cx);
++    let model = native.model();
++    let profiles = AgentProfile::available_profiles(cx)
++        .iter()
++        .map(|(id, name)| json!({"id": id.as_str(), "name": name.to_string()}))
++        .collect::<Vec<_>>();
++    json!({
++        "thread_id": thread_id,
++        "status": format!("{:?}", thread.read(cx).status()),
++        "model": model.map(|model| json!({
++            "id": model.id().0.to_string(),
++            "name": model.name().0.to_string(),
++            "provider_id": model.provider_id().0.to_string(),
++        })),
++        "profile_id": native.profile().as_str(),
++        "profiles": profiles,
++        "thinking_enabled": native.thinking_enabled(),
++        "thinking_supported": model.is_some_and(|model| model.supports_thinking()),
++        "thinking_can_disable": model.is_some_and(|model| model.supports_disabling_thinking()),
++        "provisional": true,
++    })
 +}
 +
 +fn send_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {

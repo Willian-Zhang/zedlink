@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.8";
+const UI_BUILD = "2026.10.05.9";
 const state = {
   gatewayId: null,
   token: null,
@@ -29,8 +29,11 @@ const state = {
   snapshotPromise: null,
   snapshotQueued: false,
   lastSnapshotAt: 0,
+  lastThreadsAt: 0,
   gatewayVerified: false,
   stoppingTurn: false,
+  threadSettings: null,
+  settingsBusy: false,
 };
 const safeStore = {
   read(key) {
@@ -173,6 +176,7 @@ function apiError(code) {
   if (code === "RESYNC_REQUIRED") return "Event history changed. Reloading the native snapshot.";
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
   if (code === "REQUEST_CONFLICT") return "That request ID was already used for different content.";
+  if (code === "THREAD_BUSY") return "Wait for the current Zed turn to finish before changing its settings.";
   if (code === "PAIRING_UNAVAILABLE") return "No active pairing request. Create a fresh pairing link in desktop Zed.";
   if (code === "PAIRING_EXPIRED") return "That pairing link expired. Create a fresh one in desktop Zed.";
   if (code === "PAIRING_INVALID") return "That pairing code is incorrect. Check the code or create a fresh pairing link.";
@@ -406,7 +410,9 @@ async function connect() {
       renderCommands();
       state.turnId = null;
       state.threadStatus = null;
+      state.threadSettings = null;
       updateComposerAction();
+      renderThreadSettings();
       document.body.classList.remove("thread-open", "mobile-sessions");
       state.sequence = 0;
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
@@ -437,6 +443,7 @@ async function loadThreads() {
   identity(result);
   if (!Array.isArray(result.threads)) throw new Error("Invalid thread list.");
   state.threads = result.threads;
+  state.lastThreadsAt = Date.now();
   renderThreads();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     closeEventStream();
@@ -446,7 +453,9 @@ async function loadThreads() {
     renderCommands();
     state.turnId = null;
     state.threadStatus = null;
+    state.threadSettings = null;
     updateComposerAction();
+    renderThreadSettings();
     document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
     $("transcript-entries").replaceChildren();
@@ -514,13 +523,23 @@ function renderThreads() {
   for (const thread of visible) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""}`;
+    const busy = thread.status && thread.status !== "Idle";
+    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${busy ? "running" : ""}`;
     const badge = document.createElement("span");
     badge.className = "thread-badge";
     badge.textContent = "ZED AGENT";
     const status = document.createElement("span");
-    status.className = `thread-status ${thread.status === "Idle" ? "" : "busy"}`;
-    status.textContent = thread.status || "Unknown";
+    status.className = `thread-status ${busy ? "busy" : ""}`;
+    if (busy) {
+      const progress = document.createElement("span");
+      progress.className = "thread-progress";
+      progress.setAttribute("aria-hidden", "true");
+      progress.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+      const label = document.createElement("span");
+      label.textContent = "Working";
+      status.setAttribute("aria-label", `Agent is active: ${thread.status}`);
+      status.append(progress, label);
+    } else status.textContent = thread.status || "Unknown";
     const title = document.createElement("strong");
     title.textContent = thread.title || "Untitled Agent thread";
     const detail = document.createElement("small");
@@ -539,7 +558,9 @@ async function selectThread(threadId) {
   renderCommands();
   state.turnId = null;
   state.threadStatus = null;
+  state.threadSettings = null;
   updateComposerAction();
+  renderThreadSettings();
   document.body.classList.add("thread-open");
   document.body.classList.remove("mobile-sessions");
   updateSidebarToggle();
@@ -558,6 +579,7 @@ async function selectThread(threadId) {
   try {
     await refreshSnapshot();
     await loadCommands();
+    await loadThreadSettings();
     startEventStream();
     notice("");
   } catch (error) { notice(error.message); }
@@ -574,6 +596,115 @@ async function loadCommands() {
     state.commands = result.commands.filter((command) =>
       typeof command.name === "string" && typeof command.description === "string");
     renderCommands();
+  }
+}
+
+async function loadThreadSettings() {
+  const threadId = state.threadId;
+  if (!threadId || !state.capabilities.includes("thread.settings")) {
+    state.threadSettings = null;
+    renderThreadSettings();
+    return;
+  }
+  state.settingsBusy = true;
+  renderThreadSettings();
+  try {
+    const result = await rpc("thread.settings", {
+      instance_id: state.instanceId, epoch: state.epoch, thread_id: threadId,
+    });
+    if (state.threadId !== threadId) return;
+    if (result.thread_id !== threadId || !Array.isArray(result.profiles)) {
+      throw new Error("Zed returned invalid thread settings.");
+    }
+    state.threadSettings = result;
+  } finally {
+    state.settingsBusy = false;
+    renderThreadSettings();
+  }
+}
+
+function renderThreadSettings() {
+  const settings = state.threadSettings;
+  const selected = state.threads.find((thread) => thread.thread_id === state.threadId);
+  const supported = state.capabilities.includes("thread.settings")
+    && state.capabilities.includes("thread.settings.update");
+  const busy = state.threadStatus && state.threadStatus !== "Idle";
+  const stateLabel = $("zed-settings-state");
+  $("zed-settings-thread").textContent = selected?.title || "Select an exposed session to manage its native Zed options.";
+  $("zed-model").value = settings?.model
+    ? `${settings.model.name} · ${settings.model.provider_id}`
+    : state.threadId ? "Model identity unavailable" : "No session selected";
+  const profile = $("zed-profile");
+  profile.replaceChildren();
+  for (const item of settings?.profiles || []) {
+    if (typeof item.id !== "string" || typeof item.name !== "string") continue;
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.name;
+    option.selected = item.id === settings.profile_id;
+    profile.append(option);
+  }
+  if (!profile.options.length) {
+    const option = document.createElement("option");
+    option.textContent = state.threadId ? "Unavailable" : "Select a session";
+    profile.append(option);
+  }
+  const thinking = $("zed-thinking");
+  thinking.checked = settings?.thinking_enabled === true;
+  const thinkingEditable = !!settings?.thinking_supported && !!settings?.thinking_can_disable;
+  const editable = supported && !!settings && !busy && !state.settingsBusy;
+  profile.disabled = !editable;
+  thinking.disabled = !editable || !thinkingEditable;
+  $("save-zed-settings").disabled = !editable || (!profile.options.length && !thinkingEditable);
+  stateLabel.className = editable ? "ready" : "";
+  if (state.settingsBusy) stateLabel.textContent = "Loading";
+  else if (!state.threadId) stateLabel.textContent = "No session";
+  else if (!supported) stateLabel.textContent = "Update required";
+  else if (busy) stateLabel.textContent = "Agent running";
+  else stateLabel.textContent = "Ready";
+  if (!state.threadId) {
+    $("zed-settings-help").textContent = "Select an exposed session to edit its native options.";
+  } else if (!supported) {
+    $("zed-settings-help").textContent = "Restart the updated patched Zed build to enable native session settings.";
+  } else if (busy) {
+    $("zed-settings-help").textContent = "Settings are locked while this Agent turn is running.";
+  } else if (settings && !thinkingEditable) {
+    $("zed-settings-help").textContent = "The Agent profile is editable. This model does not expose an on/off thinking control.";
+  } else {
+    $("zed-settings-help").textContent = "Changes apply to this native Zed Agent thread. Model credentials remain in Zed.";
+  }
+}
+
+async function saveThreadSettings(event) {
+  event.preventDefault();
+  if (!state.threadId || !state.threadSettings || state.settingsBusy
+      || !state.capabilities.includes("thread.settings.update")) return;
+  const threadId = state.threadId;
+  const profileId = $("zed-profile").value;
+  const thinkingEnabled = $("zed-thinking").checked;
+  state.settingsBusy = true;
+  renderThreadSettings();
+  try {
+    const params = {
+      instance_id: state.instanceId, epoch: state.epoch, thread_id: threadId,
+      profile_id: profileId,
+    };
+    if (state.threadSettings.thinking_supported && state.threadSettings.thinking_can_disable) {
+      params.thinking_enabled = thinkingEnabled;
+    }
+    const result = await rpc("thread.settings.update", params);
+    if (state.threadId !== threadId || result.thread_id !== threadId) return;
+    state.threadSettings = result;
+    notice("Native Zed session settings updated.");
+    setTimeout(() => {
+      if ($("notice").textContent === "Native Zed session settings updated.") notice("");
+    }, 4000);
+  } catch (error) {
+    notice(error.message);
+    try { await loadThreadSettings(); } catch { /* Keep the original settings error visible. */ }
+  } finally {
+    state.settingsBusy = false;
+    renderThreadSettings();
   }
 }
 
@@ -1057,6 +1188,16 @@ async function snapshot() {
   }
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
   state.threadStatus = result.status;
+  const summary = state.threads.find((thread) => thread.thread_id === result.thread_id);
+  if (summary && (summary.status !== result.status || summary.current_turn_id !== state.turnId)) {
+    summary.status = result.status;
+    summary.current_turn_id = state.turnId;
+    renderThreads();
+  }
+  if (state.threadSettings && state.threadSettings.status !== result.status) {
+    state.threadSettings.status = result.status;
+    renderThreadSettings();
+  }
   updateComposerAction();
   if (result.pending_approvals?.length) {
     notice("Approval pending in desktop Zed. Remote approval controls are awaiting native race validation.");
@@ -1100,7 +1241,8 @@ async function poll() {
       if ((state.threadStatus && state.threadStatus !== "Idle") || Date.now() - state.lastSnapshotAt > 3000) {
         await refreshSnapshot();
       }
-    } else await loadThreads();
+    }
+    if (!state.threadId || Date.now() - state.lastThreadsAt > 2000) await loadThreads();
     if (state.pending) await reconcilePending();
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Live with Zed" : "Connected to Zed", "online");
   } catch (error) {
@@ -1272,7 +1414,7 @@ $("prompt").addEventListener("keydown", (event) => {
     $("composer-form").requestSubmit();
   }
 });
-function forgetBrowser() {
+function signOut() {
   closeEventStream();
   safeStore.remove(tokenKey());
   safeStore.remove(pendingKey());
@@ -1280,20 +1422,38 @@ function forgetBrowser() {
   state.token = null;
   state.pending = null;
   state.threadId = null;
+  state.threadSettings = null;
   requireManualGatewayVerification();
   document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
   document.body.classList.add("pairing");
   $("pair-panel").classList.remove("hidden");
   $("sessions-panel").classList.add("hidden");
+  $("settings-panel").classList.add("hidden");
   $("transcript-entries").replaceChildren();
   $("activity").classList.add("hidden");
   $("prompt").disabled = true;
   delivery("");
-  connection("Browser token forgotten");
-  notice("This only removes the tab token. Revoke the paired device through the workstation admin command.");
+  renderThreadSettings();
+  connection("Signed out");
+  notice("Signed out on this device. Revoke its paired-device record from desktop Zed if this device should not connect again.");
 }
-$("forget").addEventListener("click", forgetBrowser);
-$("mobile-forget").addEventListener("click", forgetBrowser);
+$("sign-out").addEventListener("click", signOut);
+$("native-settings-form").addEventListener("submit", saveThreadSettings);
+$("open-settings").addEventListener("click", () => {
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("settings");
+  else {
+    $("sessions-panel").classList.add("hidden");
+    $("settings-panel").classList.remove("hidden");
+  }
+  loadThreadSettings().catch((error) => notice(error.message));
+});
+$("settings-back").addEventListener("click", () => {
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
+  else {
+    $("settings-panel").classList.add("hidden");
+    $("sessions-panel").classList.remove("hidden");
+  }
+});
 $("composer-form").addEventListener("submit", sendPrompt);
 $("activity-toggle").addEventListener("click", () => {
   state.activityCollapsed = !state.activityCollapsed;
@@ -1347,6 +1507,7 @@ function showMobileView(view) {
   } else {
     document.body.classList.remove("mobile-sessions");
     document.body.classList.add("mobile-settings");
+    loadThreadSettings().catch((error) => notice(error.message));
   }
   updateSidebarToggle();
 }

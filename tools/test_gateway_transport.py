@@ -23,6 +23,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
+from selenium.webdriver.support.ui import Select
 from selenium.webdriver.support.ui import WebDriverWait
 from pair_phone import qr_svg
 
@@ -44,6 +45,9 @@ class ProbeFixture:
         self.activity_truncated = False
         self.active_turn_id = None
         self.cancelled = 0
+        self.profile_id = "write"
+        self.thinking_enabled = True
+        self.settings_updates = 0
         self.drop_send_before_accept_once = False
         self.stopped = False
         self.listener = socket.socket(socket.AF_UNIX)
@@ -72,7 +76,9 @@ class ProbeFixture:
                 result = {}
                 error = None
                 if method == "thread.list":
-                    threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread", "status": "Idle"}]
+                    threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread",
+                                "status": "Generating" if self.active_turn_id is not None else "Idle",
+                                "current_turn_id": self.active_turn_id}]
                     if self.extra_thread:
                         threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread", "status": "Idle"})
                     if self.created_thread:
@@ -111,6 +117,23 @@ class ProbeFixture:
                         {"name": "compact", "description": "Compact context", "category": "native", "requires_argument": False},
                         {"name": "help", "description": "Show agent help", "category": "agent", "requires_argument": False},
                     ]}
+                elif method in ("thread.settings", "thread.settings.update"):
+                    if method == "thread.settings.update":
+                        if "profile_id" in params:
+                            self.profile_id = params["profile_id"]
+                        if "thinking_enabled" in params:
+                            self.thinking_enabled = params["thinking_enabled"]
+                        self.settings_updates += 1
+                    result = {
+                        "thread_id": params["thread_id"],
+                        "status": "Generating" if self.active_turn_id is not None else "Idle",
+                        "model": {"id": "glm-local", "name": "Local GLM fixture", "provider_id": "openai-compatible"},
+                        "profile_id": self.profile_id,
+                        "profiles": [{"id": "write", "name": "Write"}, {"id": "ask", "name": "Ask"}],
+                        "thinking_enabled": self.thinking_enabled,
+                        "thinking_supported": True,
+                        "thinking_can_disable": True,
+                    }
                 elif method == "thread.send":
                     key = request["request_id"]
                     text = params["text"]
@@ -144,7 +167,8 @@ class ProbeFixture:
                 elif method == "instance.info":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.events",
-                                               "thread.commands", "thread.send", "thread.cancel", "request.status"]}
+                                               "thread.commands", "thread.settings", "thread.settings.update",
+                                               "thread.send", "thread.cancel", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
                 response = {"version": 1, "request_id": request["request_id"]}
@@ -374,7 +398,10 @@ def main():
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.8"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.9"
+                assert len(browser.find_elements(By.ID, "sign-out")) == 1
+                assert not browser.find_elements(By.ID, "forget")
+                assert not browser.find_elements(By.ID, "mobile-forget")
                 assert browser.find_element(By.ID, "device-name").get_attribute("value") == "Firefox on Linux"
                 assert browser.execute_script(
                     "return browserDeviceName(arguments[0])",
@@ -401,6 +428,18 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 wait.until(lambda driver: "Live with Zed" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                browser.find_element(By.ID, "open-settings").click()
+                wait.until(lambda driver: "Local GLM fixture" in driver.find_element(By.ID, "zed-model").get_attribute("value"))
+                assert Select(browser.find_element(By.ID, "zed-profile")).first_selected_option.get_attribute("value") == "write"
+                Select(browser.find_element(By.ID, "zed-profile")).select_by_value("ask")
+                browser.find_element(By.ID, "zed-thinking").click()
+                browser.find_element(By.ID, "save-zed-settings").click()
+                wait.until(lambda driver: probe.settings_updates == 1)
+                assert probe.profile_id == "ask" and probe.thinking_enabled is False
+                assert "updated" in browser.find_element(By.ID, "notice").text
+                browser.save_screenshot("/tmp/zedlink-browser-settings.png")
+                browser.find_element(By.ID, "settings-back").click()
+                assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 assert not browser.find_elements(By.CSS_SELECTOR, "#messages img")
                 assert browser.execute_script("return window.syntheticXss || 0") == 0
                 browser.find_element(By.ID, "prompt").send_keys("Browser fixture prompt")
@@ -424,6 +463,9 @@ def main():
                 probe.active_turn_id = 8
                 probe.entries[-1] = "## Assistant\n\n<thinking>\nChecking the fixture stream\n</thinking>\n\n**Synthetic fixture reply.**\n\n"
                 probe.sequence += 1
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.running .thread-progress"))
+                assert "Working" in browser.find_element(By.CSS_SELECTOR, ".thread-status.busy").text
+                browser.save_screenshot("/tmp/zedlink-browser-active-session.png")
                 wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "activity-content").text)
                 assert browser.find_element(By.ID, "activity").is_displayed()
                 assert browser.execute_script("return document.getElementById('messages').contains(document.getElementById('activity'))")
@@ -464,6 +506,7 @@ def main():
                 wait.until(lambda driver: "Thread fixture-thre" in driver.find_element(By.ID, "thread-meta").text)
                 probe.active_turn_id = None
                 probe.sequence += 1
+                wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".thread-item.running"))
                 wait.until(lambda driver: driver.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false")
                 browser.find_element(By.ID, "show-commands").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
@@ -556,6 +599,7 @@ def main():
                 wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 os.unlink(probe.path)
                 probe = ProbeFixture(probe_dir / "zedlink.sock")
+                probe.extra_thread = True
                 wait.until(lambda driver: "online" in driver.find_element(By.ID, "connection").get_attribute("class")
                            and "Zed" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "Second synthetic thread")
@@ -591,7 +635,9 @@ def main():
                 browser.find_element(By.ID, "verify-gateway").click()
                 assert browser.find_element(By.ID, "pair-button").is_enabled()
                 browser.find_element(By.ID, "pair-button").click()
-                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                wait.until(lambda driver: not driver.find_element(By.ID, "pair-panel").is_displayed())
+                assert (browser.find_element(By.ID, "sessions-panel").is_displayed()
+                        or browser.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
                 manual_device = next(device for device in admin(state, "devices")["devices"]
                                      if device["name"] == "Firefox on Linux")
                 assert admin(state, "revoke", manual_device["id"])["revoked"]
@@ -619,12 +665,16 @@ def main():
                 assert not admin(state, "devices")["devices"]
                 assert "pair=" not in browser.current_url
                 browser.get(base + "/?pair-test=correct#v=1&gateway=" + info["gateway_id"] + "&pair=" + quick_code)
-                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                wait.until(lambda driver: not driver.find_element(By.ID, "pair-panel").is_displayed())
+                assert (browser.find_element(By.ID, "sessions-panel").is_displayed()
+                        or browser.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
                 assert "pair=" not in browser.current_url
                 quick_device = next(device for device in admin(state, "devices")["devices"]
                                     if device["name"] == "Firefox on Linux")
                 browser.refresh()
-                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
+                wait.until(lambda driver: not driver.find_element(By.ID, "pair-panel").is_displayed())
+                assert (browser.find_element(By.ID, "sessions-panel").is_displayed()
+                        or browser.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
                 assert admin(state, "revoke", quick_device["id"])["revoked"]
             finally:
                 browser.quit()

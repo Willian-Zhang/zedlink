@@ -21,7 +21,9 @@ def main() -> int:
     parser.add_argument("--decision", choices=("approve_once", "deny_once"))
     parser.add_argument("--after-sequence", type=int, default=0, help="Event cursor for events")
     parser.add_argument("--title", help="Optional title for a new native Zed Agent session")
-    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "send", "cancel", "status", "approvals", "respond"))
+    parser.add_argument("--profile-id", help="Native Agent profile ID for update-settings")
+    parser.add_argument("--thinking-enabled", choices=("true", "false"), help="Native model thinking state for update-settings")
+    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "settings", "update-settings", "send", "cancel", "status", "approvals", "respond"))
     parser.add_argument("thread_id", nargs="?")
     parser.add_argument("text", nargs="?")
     args = parser.parse_args()
@@ -30,7 +32,7 @@ def main() -> int:
         parser.error(f"{args.operation} does not accept a thread_id or text")
     if args.operation == "status" and (args.thread_id or args.text or not args.original_request_id):
         parser.error("status requires --original-request-id and no positional arguments")
-    if args.operation in ("snapshot", "events", "watch", "commands", "approvals") and (not args.thread_id or args.text):
+    if args.operation in ("snapshot", "events", "watch", "commands", "settings", "update-settings", "approvals") and (not args.thread_id or args.text):
         parser.error(f"{args.operation} requires only a thread_id")
     if args.operation == "send" and (not args.thread_id or not args.text):
         parser.error("send requires a thread_id and text")
@@ -44,10 +46,10 @@ def main() -> int:
         parser.error("create, send, cancel, and respond require a stable --request-id")
     if args.operation not in ("create", "send", "cancel", "respond") and args.request_id:
         parser.error("--request-id is only available for create, send, cancel, or respond")
-    if args.operation not in ("create", "send", "cancel", "status", "respond", "commands") and (args.instance_id or args.epoch):
-        parser.error("--instance-id and --epoch are only available for create, send, cancel, status, commands, or respond")
-    if args.operation == "commands" and (not args.instance_id or not args.epoch):
-        parser.error("commands requires --instance-id and --epoch from thread.list")
+    if args.operation not in ("create", "send", "cancel", "status", "respond", "commands", "settings", "update-settings") and (args.instance_id or args.epoch):
+        parser.error("--instance-id and --epoch are not available for this operation")
+    if args.operation in ("commands", "settings", "update-settings") and (not args.instance_id or not args.epoch):
+        parser.error(f"{args.operation} requires --instance-id and --epoch from thread.list")
     if args.operation not in ("cancel", "respond") and args.turn_id is not None:
         parser.error("--turn-id is only available for cancel or respond")
     if args.operation != "respond" and (args.approval_id or args.decision):
@@ -56,6 +58,10 @@ def main() -> int:
         parser.error("--original-request-id is only available for status")
     if args.operation != "create" and args.title:
         parser.error("--title is only available for create")
+    if args.operation != "update-settings" and (args.profile_id or args.thinking_enabled):
+        parser.error("--profile-id and --thinking-enabled are only available for update-settings")
+    if args.operation == "update-settings" and not (args.profile_id or args.thinking_enabled):
+        parser.error("update-settings requires --profile-id or --thinking-enabled")
     if args.operation in ("cancel", "respond") and args.turn_id < 0:
         parser.error("--turn-id must be nonnegative")
     if args.after_sequence < 0 or (
@@ -113,6 +119,13 @@ def main() -> int:
         params.update(title=args.title, instance_id=args.instance_id, epoch=args.epoch)
     if args.operation == "commands":
         params.update(instance_id=args.instance_id, epoch=args.epoch)
+    if args.operation in ("settings", "update-settings"):
+        params.update(instance_id=args.instance_id, epoch=args.epoch)
+    if args.operation == "update-settings":
+        if args.profile_id:
+            params["profile_id"] = args.profile_id
+        if args.thinking_enabled:
+            params["thinking_enabled"] = args.thinking_enabled == "true"
     if args.operation == "cancel":
         params.update(
             turn_id=args.turn_id,
@@ -134,7 +147,8 @@ def main() -> int:
             epoch=args.epoch,
         )
     payload = call(
-        {"info": "instance.info", "status": "request.status", "respond": "approval.respond"}.get(
+        {"info": "instance.info", "status": "request.status", "respond": "approval.respond",
+         "settings": "thread.settings", "update-settings": "thread.settings.update"}.get(
             args.operation, f"thread.{args.operation}"
         ),
         params,

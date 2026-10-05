@@ -531,6 +531,8 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.snapshot"
             | "thread.events"
             | "thread.commands"
+            | "thread.settings"
+            | "thread.settings.update"
             | "thread.send"
             | "thread.cancel"
             | "request.status"
