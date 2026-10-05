@@ -2,7 +2,7 @@
 
 Brand: ZedLink. Tagline: Your Zed agent, wherever you are.
 
-Status: product/build specification. An initial native SwiftUI application now exists in `ios/` and compiled with Xcode 16.4 on the hosted macOS runner. The UI and transport have not been tested against a live exposed Zed thread from an iPhone; the requirements below remain the acceptance target. Preserve the real native Zed thread and local LLM architecture.
+Status: product/build specification. An initial native SwiftUI application now exists in `ios/`, compiled with Xcode 16.4, and launched on a hosted iPhone 16 Pro simulator. The UI and transport have not been tested against a live exposed Zed thread from an iPhone; the requirements below remain the acceptance target. Preserve the real native Zed thread and local LLM architecture.
 
 ## Design principles
 
