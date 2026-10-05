@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -29,6 +30,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
 private val Black = Color.Black
 private val Surface = Color(0xFF0D0E10)
@@ -295,20 +299,38 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
 @Composable
 private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val scanner = remember {
+        GmsBarcodeScanning.getClient(context, GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build())
+    }
     var name by remember(state.profile) { mutableStateOf(state.profile?.name ?: "My Zed") }
     var endpoint by remember(state.profile) { mutableStateOf(state.profile?.endpoint.orEmpty()) }
     var gateway by remember(state.profile) { mutableStateOf(state.profile?.gatewayId.orEmpty()) }
     var code by remember { mutableStateOf("") }
     var device by remember { mutableStateOf("Android phone") }
+    var localIssue by remember { mutableStateOf("") }
+    fun applyLink(link: String) {
+        runCatching { model.applyPairingLink(link) }
+            .onSuccess { (profile, pairCode) ->
+                name = profile.name; endpoint = profile.endpoint; gateway = profile.gatewayId
+                if (pairCode != null) code = pairCode
+                localIssue = ""
+            }
+            .onFailure { localIssue = it.message ?: "Pairing link could not be read." }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Header("Connections", "Private HTTPS profiles")
         Text("QUICK PAIR", style = monoLabel(), modifier = Modifier.padding(16.dp, 24.dp, 16.dp, 8.dp))
-        Text("Copy the QR pairing link on your workstation, then paste it here.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp))
-        FlatButton("PASTE PAIRING LINK", Modifier.padding(16.dp)) {
-            runCatching { model.applyPairingLink(clipboard.getText()?.text.orEmpty()) }.onSuccess { (profile, pairCode) ->
-                name = profile.name; endpoint = profile.endpoint; gateway = profile.gatewayId; if (pairCode != null) code = pairCode
-            }
+        Text("Scan the workstation QR, or copy its trusted HTTPS link and paste it here.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp))
+        FlatButton("SCAN PAIRING QR", Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            scanner.startScan().addOnSuccessListener { barcode -> barcode.rawValue?.let(::applyLink) }
+                .addOnFailureListener { localIssue = it.message ?: "QR scanner unavailable." }
         }
+        FlatButton("PASTE PAIRING LINK", Modifier.padding(16.dp)) {
+            applyLink(clipboard.getText()?.text.orEmpty())
+        }
+        if (localIssue.isNotBlank()) Notice(localIssue)
         SectionHeading("CONNECTION DETAILS", "HTTPS")
         FlatInput(name, { name = it }, "Profile name", Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
         FlatInput(endpoint, { endpoint = it }, "https://host:port", Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
