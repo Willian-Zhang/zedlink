@@ -104,8 +104,15 @@ def zedlink_tasks() -> list:
     ]
     for label, action in (
         ("Configure", "configure"),
+        ("Diagnose setup", "diagnose"),
+        ("Repair setup", "repair"),
+        ("Install patched Zed launcher", "install-launcher"),
         ("Start patched Zed", "start-zed"),
         ("Start gateway", "start-gateway"),
+        ("Restart gateway", "restart-gateway"),
+        ("Stop gateway", "stop-gateway"),
+        ("Manage connections", "manage-routes"),
+        ("Check connections", "check-routes"),
         ("Pair a device", "pair"),
         ("Status", "status"),
         ("Paired devices", "devices"),

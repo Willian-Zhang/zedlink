@@ -13,9 +13,10 @@ if [[ "$actual_revision" != "$pinned_zed_revision" ]] &&
 fi
 
 RUSTUP_TOOLCHAIN=stable cargo fmt --manifest-path "$project_root/zed-source/Cargo.toml" \
-  --package acp_thread --package agent --package agent_ui -- --check
-RUSTUP_TOOLCHAIN=stable cargo check --manifest-path "$project_root/zed-source/Cargo.toml" \
-  -p agent_ui --offline
+  --package acp_thread --package agent --package agent_ui --package settings \
+  --package settings_content --package settings_ui -- --check
+CARGO_INCREMENTAL=0 RUSTUP_TOOLCHAIN=stable cargo check --manifest-path "$project_root/zed-source/Cargo.toml" \
+  -p agent_ui -p settings_ui --offline
 git -C "$project_root/zed-source" apply --reverse --check \
   "$project_root/patches/zed-1.22.0-local-probe.patch"
 
@@ -28,7 +29,11 @@ bash -n "$project_root/tools/install_linux.sh"
 bash -n "$project_root/tools/setup_zed_ide.sh"
 python3 -m py_compile "$project_root/tools/zedlink_probe_client.py" \
   "$project_root/tools/zedlink_gateway_client.py" \
+  "$project_root/tools/launch_patched_zed.py" \
   "$project_root/tools/test_gateway_transport.py" \
+  "$project_root/tools/test_connection_routes.py" \
+  "$project_root/tools/test_desktop_launcher.py" \
+  "$project_root/tools/test_zed_settings.py" \
   "$project_root/tools/test_tailnet_bind.py" \
   "$project_root/tools/test_moshi_discovery.py" \
   "$project_root/tools/test_native_fixture.py" \
@@ -40,4 +45,6 @@ python3 -m py_compile "$project_root/tools/zedlink_probe_client.py" \
   "$project_root/tools/zedlink_manager.py" \
   "$project_root/tools/zed_task_installer.py" \
   "$project_root/tools/deterministic_model_fixture.py"
+python3 "$project_root/tools/test_desktop_launcher.py"
+python3 "$project_root/tools/test_zed_settings.py"
 printf 'Linux checks passed. Gateway transport integration requires tools/test_gateway_transport.py with loopback access.\n'

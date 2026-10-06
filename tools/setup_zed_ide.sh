@@ -117,6 +117,12 @@ if ! $skip_tasks; then
   fi
 fi
 
+config_base="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [[ -f "$config_base/zedlink/config.json" ]]; then
+  python3 "$zedlink_root/tools/zedlink_manager.py" install-launcher
+  python3 "$zedlink_root/tools/zedlink_manager.py" install-cli
+fi
+
 cat <<'TEXT'
 
 Setup finished.
@@ -124,7 +130,7 @@ Setup finished.
 Next steps in Zed:
   1. Press Ctrl+Shift+P, type "task: spawn", and select it.
   2. Run "ZedLink: Status". If it says not configured, run "ZedLink: Configure".
-  3. Run "ZedLink: Start patched Zed" and confirm your normal model is selected.
+  3. Open "ZedLink — Patched Zed" from the application menu and confirm your normal model is selected.
   4. In that patched window, open the native Agent thread you want to access remotely.
   5. Type /remote-control in the Agent composer and select "Remote Control".
   6. Run "ZedLink: Start gateway" and leave its task terminal running.

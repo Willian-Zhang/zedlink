@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.18";
+const UI_BUILD = "2026.10.06.26";
 const state = {
   gatewayId: null,
   token: null,
@@ -36,6 +36,8 @@ const state = {
   connectionStatus: "",
   threadError: null,
   retryStatus: null,
+  imageRecovery: null,
+  rewindingImage: false,
   errorSignature: null,
   snapshotPromise: null,
   snapshotQueued: false,
@@ -60,6 +62,9 @@ const state = {
   reviewSource: "",
   reviewLanguage: "text",
   approvals: [],
+  subagents: [],
+  subagentsSignature: null,
+  stoppingSubagent: null,
 };
 const safeStore = {
   read(key) {
@@ -94,6 +99,7 @@ function connection(message, status = "") {
   renderConnectionHealth();
   updateComposerAction();
   showCreateAvailability();
+  renderEmptyWorkspace();
 }
 function setHealthText(id, text, status = "") {
   const element = $(id);
@@ -162,9 +168,32 @@ function pairingStatus() {
 function showCreateAvailability() {
   const available = state.live && state.capabilities.includes("thread.create") && !state.creatingThread;
   $("new-session").disabled = !available;
+  $("empty-create").disabled = !available;
+  $("empty-create").classList.toggle("hidden", !state.capabilities.includes("thread.create"));
   $("new-session").title = available
     ? "Create a native Zed Agent session"
     : "Start patched Zed to create a session";
+}
+
+function renderEmptyWorkspace() {
+  const noSession = !state.threadId;
+  document.body.classList.toggle("no-session", noSession && !!state.token);
+  $("empty-state").classList.toggle("hidden", !noSession);
+  if (!noSession) return;
+  const connected = state.desktopReachable === true;
+  $("empty-description").textContent = connected
+    ? state.threads.length
+      ? "Choose an exposed session from the sidebar to continue its conversation."
+      : "Desktop Zed is connected, but no agent thread is currently exposed. Start a Zed Agent session here or expose an existing Zed or ACP conversation."
+    : "Start the patched Zed Dev window, then refresh this page when the desktop bridge is online.";
+  $("thread-title").textContent = state.threads.length ? "Choose a session" : "No remote sessions";
+  $("thread-meta").textContent = connected
+    ? "Remote control is ready when an agent thread is exposed."
+    : "Waiting for the patched desktop Zed bridge.";
+  $("thread-state").textContent = connected ? "Connected" : "Zed unavailable";
+  $("thread-state").className = `state-pill ${connected ? "online" : "offline"}`;
+  $("show-context").disabled = true;
+  showCreateAvailability();
 }
 function notice(message) {
   for (const id of ["notice", "pair-notice"]) {
@@ -186,6 +215,30 @@ function pendingKey() { return `zedlink.pending.${state.gatewayId}`; }
 function tokenKey() { return `zedlink.token.${state.gatewayId}`; }
 function selectedThreadKey() { return `zedlink.selectedThread.${state.gatewayId}`; }
 
+function normalizeAgent(agent) {
+  if (!agent || typeof agent !== "object") return { id: "zed-agent", name: "Zed Agent", kind: "zed" };
+  return {
+    id: typeof agent.id === "string" && agent.id ? agent.id : "unknown-agent",
+    name: typeof agent.name === "string" && agent.name ? agent.name : "Agent",
+    kind: agent.kind === "external_acp" ? "external_acp" : "zed",
+  };
+}
+
+function selectedAgent() {
+  const thread = state.threads.find((item) => item.thread_id === state.threadId);
+  return normalizeAgent(state.threadSettings?.agent || thread?.agent);
+}
+
+function renderSelectedAgent() {
+  const agent = selectedAgent();
+  const external = agent.kind === "external_acp";
+  $("thread-agent-kind").textContent = external ? "EXTERNAL ACP AGENT" : "NATIVE ZED AGENT";
+  $("settings-agent-kind").textContent = external ? "EXTERNAL ACP AGENT" : "NATIVE ZED AGENT";
+  $("prompt").placeholder = `Message ${agent.name}…`;
+  $("prompt-label").textContent = `Message ${agent.name}`;
+  return agent;
+}
+
 function pushSupported() {
   return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 }
@@ -199,8 +252,14 @@ function setHeaderRuntime(id, text, status = "", title = text) {
 
 function renderHeaderModel() {
   const supported = state.capabilities.includes("thread.settings");
+  const agent = selectedAgent();
   if (!state.threadId) {
-    setHeaderRuntime("header-model", "No session", "", "Select a native Zed Agent session to see its current model.");
+    setHeaderRuntime("header-model", "No session", "", "Select an exposed agent session.");
+  } else if (agent.kind === "external_acp") {
+    const suffix = state.retryStatus ? " · retrying" : state.threadError ? " · request failed" : "";
+    const status = state.retryStatus ? "warning" : state.threadError ? "error" : "";
+    setHeaderRuntime("header-model", `Agent · ${agent.name}${suffix}`, status,
+      `${agent.name} owns its model, authentication, and runtime configuration. The session is hosted in desktop Zed.`);
   } else if (!supported) {
     setHeaderRuntime("header-model", "Model · update Zed", "warning", "Restart the updated patched Zed build to report this session's model.");
   } else if (state.settingsBusy && !state.threadSettings?.model?.name) {
@@ -494,11 +553,12 @@ function canStopTurn() {
 function updateComposerAction() {
   const button = $("send");
   const stopping = canStopTurn();
+  const agent = selectedAgent();
   button.dataset.mode = stopping ? "stop" : "send";
   button.classList.toggle("stop-mode", stopping);
   button.textContent = stopping ? "■" : "↑";
-  button.setAttribute("aria-label", stopping ? "Stop current Zed Agent turn" : "Send message");
-  button.title = stopping ? "Stop current Zed Agent turn" : "Send message";
+  button.setAttribute("aria-label", stopping ? `Stop current ${agent.name} turn` : "Send message");
+  button.title = stopping ? `Stop current ${agent.name} turn` : "Send message";
   button.disabled = stopping
     ? state.stoppingTurn
     : !state.threadId || !!state.pending || !state.token || !state.live
@@ -513,6 +573,7 @@ function apiError(code) {
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
   if (code === "REQUEST_CONFLICT") return "That request ID was already used for different content.";
   if (code === "THREAD_BUSY") return "Wait for the current Zed turn to finish before changing its settings.";
+  if (code === "STALE_SEQUENCE") return "The native thread changed. Refresh it before trying this action again.";
   if (code === "FILE_UNAVAILABLE") return "That file is unavailable or excluded from remote project access.";
   if (code === "UNSUPPORTED_FILE") return "That file type cannot be previewed or attached.";
   if (code === "FILE_TOO_LARGE") return "That file is too large to attach. The limit is 256 KiB for text files.";
@@ -581,6 +642,8 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     state.threadStatus = null;
     state.threadError = null;
     state.retryStatus = null;
+    state.imageRecovery = null;
+    state.rewindingImage = false;
     state.errorSignature = null;
     renderAgentHealth();
     safeStore.remove(tokenKey());
@@ -819,6 +882,8 @@ async function connect() {
       state.threadStatus = null;
       state.threadError = null;
       state.retryStatus = null;
+      state.imageRecovery = null;
+      state.rewindingImage = false;
       renderAgentHealth();
       state.threadSettings = null;
       updateComposerAction();
@@ -881,18 +946,32 @@ async function loadThreads() {
     state.threadStatus = null;
     state.threadError = null;
     state.retryStatus = null;
+    state.imageRecovery = null;
+    state.rewindingImage = false;
     renderAgentHealth();
     state.threadSettings = null;
     updateComposerAction();
     renderThreadSettings();
     document.body.classList.remove("thread-open", "mobile-sessions");
     state.sequence = 0;
+    state.renderedEntries = [];
+    state.renderedThreadId = null;
+    state.activitySignature = null;
+    state.activityBusy = false;
+    state.subagents = [];
+    state.subagentsSignature = null;
+    state.stoppingSubagent = null;
+    state.approvals = [];
     $("transcript-entries").replaceChildren();
     $("activity").classList.add("hidden");
+    renderSubagents([]);
+    renderApprovals([]);
     $("prompt").disabled = true;
-    $("thread-title").textContent = "Zed Agent";
+    $("thread-title").textContent = "Agent session";
+    renderSelectedAgent();
     $("thread-state").textContent = "No session";
     $("thread-state").className = "state-pill";
+    renderEmptyWorkspace();
     notice("The selected thread is no longer exposed in desktop Zed.");
   } else if (state.threadId && priorHealth !== null && priorHealth !== nextHealth) {
     await refreshSnapshot();
@@ -959,6 +1038,17 @@ function validRetryStatus(retry) {
   };
 }
 
+function validImageRecovery(recovery) {
+  if (!recovery || typeof recovery !== "object") return null;
+  if (typeof recovery.client_user_message_id !== "string" || !recovery.client_user_message_id) return null;
+  if (!Number.isInteger(recovery.entry_index) || !Number.isInteger(recovery.entries_removed)) return null;
+  return {
+    clientUserMessageId: recovery.client_user_message_id,
+    entryIndex: recovery.entry_index,
+    entriesRemoved: recovery.entries_removed,
+  };
+}
+
 function renderAgentHealth() {
   const panel = $("agent-health");
   const retry = state.retryStatus;
@@ -970,6 +1060,12 @@ function renderAgentHealth() {
   state.errorSignature = signature;
   panel.classList.toggle("hidden", !retry && !error);
   panel.classList.toggle("retrying", !!retry);
+  const rewind = $("rewind-image");
+  const canRewind = error?.kind === "unsupported_image_input" && !!state.imageRecovery
+    && state.capabilities.includes("thread.rewind_image") && state.threadStatus === "Idle";
+  rewind.classList.toggle("hidden", !canRewind);
+  rewind.disabled = state.rewindingImage;
+  rewind.textContent = state.rewindingImage ? "Rewinding…" : "Rewind before image";
   renderHeaderModel();
   if (!retry && !error) return;
   if (retry) {
@@ -980,9 +1076,18 @@ function renderAgentHealth() {
   } else {
     $("agent-health-title").textContent = error.title;
     $("agent-health-message").textContent = error.message;
-    $("agent-health-recovery").textContent = error.retrying
-      ? "Zed may retry · restore the model endpoint"
-      : "Check desktop Zed";
+    if (error.kind === "unsupported_image_input") {
+      $("agent-health-message").textContent = state.imageRecovery
+        ? `${error.message} This thread still contains that image, so another message will repeat the failure.`
+        : error.message;
+      $("agent-health-recovery").textContent = canRewind
+        ? `${state.imageRecovery.entriesRemoved} conversation item${state.imageRecovery.entriesRemoved === 1 ? "" : "s"} will be removed`
+        : state.imageRecovery ? "Wait until the current turn is idle" : "Use a vision model or a new text-only thread";
+    } else {
+      $("agent-health-recovery").textContent = error.retrying
+        ? "Zed may retry · restore the model endpoint"
+        : "Check desktop Zed";
+    }
   }
   renderConnectionHealth();
   if (newlyVisible) requestAnimationFrame(() => panel.scrollIntoView({
@@ -1003,7 +1108,7 @@ function renderThreads() {
     text.className = "muted";
     text.textContent = state.threads.length
       ? "No sessions match this search."
-      : "No exposed threads. Choose /remote-control in a native Zed Agent thread.";
+      : "No exposed threads. Choose /remote-control in a Zed Agent or external ACP agent thread.";
     list.append(text);
   }
   for (const thread of visible) {
@@ -1015,7 +1120,8 @@ function renderThreads() {
     button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${busy || retrying ? "running" : ""} ${failed ? "error" : ""}`;
     const badge = document.createElement("span");
     badge.className = "thread-badge";
-    badge.textContent = "ZED AGENT";
+    const agent = normalizeAgent(thread.agent);
+    badge.textContent = agent.name.toLocaleUpperCase();
     const status = document.createElement("span");
     status.className = `thread-status ${busy || retrying ? "busy" : ""} ${failed ? "error" : ""}`;
     if (busy || retrying) {
@@ -1031,17 +1137,21 @@ function renderThreads() {
     const title = document.createElement("strong");
     title.textContent = thread.title || "Untitled Agent thread";
     const detail = document.createElement("small");
-    detail.textContent = `Native thread · ${String(thread.thread_id).slice(0, 10)}…`;
+    detail.textContent = `${agent.kind === "external_acp" ? "External ACP" : "Native Zed"} thread · ${String(thread.thread_id).slice(0, 10)}…`;
     button.append(badge, status, title, detail);
     button.addEventListener("click", () => selectThread(thread.thread_id));
     list.append(button);
   }
+  renderEmptyWorkspace();
 }
 
 async function selectThread(threadId) {
   closeEventStream("connecting");
   state.errorSignature = null;
   state.threadId = threadId;
+  document.body.classList.remove("no-session");
+  $("empty-state").classList.add("hidden");
+  $("show-context").disabled = false;
   safeStore.write(selectedThreadKey(), threadId);
   state.commands = [];
   renderCommands();
@@ -1049,6 +1159,8 @@ async function selectThread(threadId) {
   state.threadStatus = null;
   state.threadError = null;
   state.retryStatus = null;
+  state.imageRecovery = null;
+  state.rewindingImage = false;
   renderAgentHealth();
   state.threadSettings = null;
   state.projectFiles = [];
@@ -1075,10 +1187,15 @@ async function selectThread(threadId) {
   state.activityCollapsed = true;
   state.activityBusy = false;
   $("activity").classList.add("hidden");
+  state.subagents = [];
+  state.subagentsSignature = null;
+  state.stoppingSubagent = null;
+  renderSubagents([]);
   $("prompt").disabled = false;
   $("jump-latest").classList.add("hidden");
   updateComposerAction();
   $("thread-title").textContent = state.threads.find((thread) => thread.thread_id === threadId)?.title || "Untitled Agent thread";
+  renderSelectedAgent();
   await loadThreads();
   try {
     await refreshSnapshot();
@@ -1621,6 +1738,10 @@ async function addUploads(files) {
       notice(`${file.name} is not a supported text or image file.`);
       continue;
     }
+    if (file.type.startsWith("image/") && state.threadSettings?.supports_images === false) {
+      notice("The selected Zed model does not support images. Switch to a vision-capable model in desktop Zed, or attach text instead.");
+      continue;
+    }
     state.uploads.push(await readUpload(file));
   }
   renderAttachmentStrip();
@@ -1638,6 +1759,13 @@ function renderApprovals(approvals) {
     const details = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = approval.display || approval.tool_name || "Zed tool approval";
+    if (approval.subagent_id) {
+      const origin = document.createElement("span");
+      origin.className = "approval-origin";
+      const agent = state.subagents.find((item) => item.session_id === approval.subagent_id);
+      origin.textContent = `Parallel agent · ${agent?.title || agent?.label || String(approval.subagent_id).slice(0, 10)}`;
+      details.append(origin);
+    }
     const input = document.createElement("small");
     input.textContent = approval.raw_input ? JSON.stringify(approval.raw_input) : "Details unavailable; approval is disabled.";
     details.append(title, input);
@@ -1666,10 +1794,121 @@ async function respondApproval(approval, decision) {
     await rpc("approval.respond", {
       ...baseThreadParams(), approval_id: approval.approval_id,
       turn_id: approval.turn_id, decision,
+      ...(approval.subagent_id ? { subagent_id: approval.subagent_id } : {}),
     });
     notice(decision === "approve_once" ? "Approved this tool call once." : "Denied this tool call.");
   } catch (error) { notice(error.message); }
   await refreshSnapshot().catch((error) => notice(error.message));
+}
+
+function validSubagents(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((agent) => agent && typeof agent.session_id === "string"
+    && typeof agent.status === "string" && Array.isArray(agent.entries_markdown)
+    && agent.entries_markdown.every((entry) => typeof entry === "string"));
+}
+
+function subagentIsActive(agent) {
+  return /Pending|Running|InProgress|In Progress|Waiting|Generating/i.test(agent.status)
+    || Number.isInteger(agent.current_turn_id);
+}
+
+function renderSubagents(subagents) {
+  const next = validSubagents(subagents);
+  const signature = JSON.stringify([next, state.stoppingSubagent]);
+  if (signature === state.subagentsSignature) return;
+  const panel = $("subagents");
+  const disclosure = new Map(Array.from(panel.querySelectorAll(".subagent")).map((details) => [
+    details.dataset.sessionId,
+    { open: details.open, userToggled: details.dataset.userToggled === "true" },
+  ]));
+  state.subagents = next;
+  state.subagentsSignature = signature;
+  panel.replaceChildren();
+  panel.classList.toggle("hidden", state.subagents.length === 0);
+  if (!state.subagents.length) return;
+  const head = document.createElement("div");
+  head.className = "subagents-head";
+  const title = document.createElement("strong");
+  title.textContent = "Parallel agents";
+  const activeCount = state.subagents.filter(subagentIsActive).length;
+  const count = document.createElement("span");
+  count.textContent = activeCount ? `${activeCount} active · ${state.subagents.length} total` : `${state.subagents.length} complete`;
+  head.append(title, count);
+  panel.append(head);
+  const grid = document.createElement("div");
+  grid.className = "subagent-grid";
+  for (const agent of state.subagents) {
+    const active = subagentIsActive(agent);
+    const details = document.createElement("details");
+    details.className = `subagent ${active ? "active" : ""}`;
+    details.dataset.sessionId = agent.session_id;
+    const previous = disclosure.get(agent.session_id);
+    details.open = previous?.userToggled ? previous.open : active;
+    details.dataset.userToggled = String(previous?.userToggled === true);
+    details.addEventListener("toggle", () => { details.dataset.userToggled = "true"; });
+    const summary = document.createElement("summary");
+    const indicator = document.createElement("span");
+    indicator.className = "subagent-indicator";
+    const names = document.createElement("span");
+    names.className = "subagent-names";
+    const name = document.createElement("strong");
+    name.textContent = agent.title || agent.label || "Zed subagent";
+    const id = document.createElement("small");
+    id.textContent = `Child ${agent.session_id.slice(0, 10)}…`;
+    names.append(name, id);
+    const status = document.createElement("span");
+    status.className = "subagent-status";
+    status.textContent = agent.status;
+    summary.append(indicator, names, status);
+    const body = document.createElement("div");
+    body.className = "subagent-body";
+    if (agent.entries_markdown.length) {
+      for (const [index, markdown] of agent.entries_markdown.entries()) body.append(makeEntry(markdown, index));
+    } else {
+      const waiting = document.createElement("p");
+      waiting.className = "muted";
+      waiting.textContent = active ? "Waiting for this agent’s first update…" : "No child transcript is loaded.";
+      body.append(waiting);
+    }
+    if (agent.entries_truncated) {
+      const note = document.createElement("p");
+      note.className = "subagent-note";
+      note.textContent = "Earlier child activity remains available in desktop Zed.";
+      body.prepend(note);
+    }
+    if (active && Number.isInteger(agent.current_turn_id) && state.capabilities.includes("subagent.cancel")) {
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "quiet subagent-stop";
+      stop.textContent = state.stoppingSubagent === agent.session_id ? "Stopping…" : "Stop agent";
+      stop.disabled = state.stoppingSubagent !== null;
+      stop.addEventListener("click", (event) => { event.preventDefault(); cancelSubagent(agent); });
+      body.prepend(stop);
+    }
+    details.append(summary, body);
+    grid.append(details);
+  }
+  panel.append(grid);
+}
+
+async function cancelSubagent(agent) {
+  if (!Number.isInteger(agent.current_turn_id) || state.stoppingSubagent) return;
+  state.stoppingSubagent = agent.session_id;
+  renderSubagents(state.subagents);
+  try {
+    const result = await rpc("subagent.cancel", {
+      ...baseThreadParams(), subagent_id: agent.session_id, turn_id: agent.current_turn_id,
+    });
+    if (result.outcome !== "requested" || result.subagent_id !== agent.session_id) {
+      throw new Error("Zed did not confirm the child-agent stop request.");
+    }
+    notice(`Stop requested for ${agent.title || agent.label || "parallel agent"}.`);
+  } catch (error) { notice(error.message); }
+  finally {
+    state.stoppingSubagent = null;
+    await refreshSnapshot().catch((error) => notice(error.message));
+  }
 }
 
 async function loadThreadSettings() {
@@ -1702,12 +1941,19 @@ function renderThreadSettings() {
   const supported = state.capabilities.includes("thread.settings")
     && state.capabilities.includes("thread.settings.update");
   const busy = state.threadStatus && state.threadStatus !== "Idle";
+  const agent = normalizeAgent(settings?.agent || selected?.agent);
+  const external = agent.kind === "external_acp";
+  renderSelectedAgent();
+  $("zed-model-label").textContent = external ? "Agent configuration" : "Current model";
+  $("zed-profile-field").classList.toggle("hidden", external);
+  $("zed-thinking-row").classList.toggle("hidden", external);
+  $("save-zed-settings").classList.toggle("hidden", external);
   renderHeaderModel();
   const stateLabel = $("zed-settings-state");
   $("zed-settings-thread").textContent = selected?.title || "Select an exposed session to manage its native Zed options.";
   $("zed-model").value = settings?.model
     ? `${settings.model.name} · ${settings.model.provider_id}`
-    : state.threadId ? "Model identity unavailable" : "No session selected";
+    : external ? `Managed by ${agent.name}` : state.threadId ? "Model identity unavailable" : "No session selected";
   const profile = $("zed-profile");
   profile.replaceChildren();
   for (const item of settings?.profiles || []) {
@@ -1726,18 +1972,21 @@ function renderThreadSettings() {
   const thinking = $("zed-thinking");
   thinking.checked = settings?.thinking_enabled === true;
   const thinkingEditable = !!settings?.thinking_supported && !!settings?.thinking_can_disable;
-  const editable = supported && !!settings && !busy && !state.settingsBusy;
+  const editable = supported && !!settings && settings.editable !== false && !external && !busy && !state.settingsBusy;
   profile.disabled = !editable;
   thinking.disabled = !editable || !thinkingEditable;
   $("save-zed-settings").disabled = !editable || (!profile.options.length && !thinkingEditable);
   stateLabel.className = editable ? "ready" : "";
   if (state.settingsBusy) stateLabel.textContent = "Loading";
   else if (!state.threadId) stateLabel.textContent = "No session";
+  else if (external) stateLabel.textContent = agent.name;
   else if (!supported) stateLabel.textContent = "Update required";
   else if (busy) stateLabel.textContent = "Agent running";
   else stateLabel.textContent = "Ready";
   if (!state.threadId) {
     $("zed-settings-help").textContent = "Select an exposed session to edit its native options.";
+  } else if (external) {
+    $("zed-settings-help").textContent = `${agent.name} owns its model, authentication, and configuration. Change those options in its desktop Zed controls; ZedLink can still stream, send, cancel, run commands, and resolve approvals.`;
   } else if (!supported) {
     $("zed-settings-help").textContent = "Restart the updated patched Zed build to enable native session settings.";
   } else if (busy) {
@@ -1822,9 +2071,10 @@ function renderCommands() {
 }
 
 function entryPresentation(markdown, index) {
+  const agentName = selectedAgent().name;
   const headings = [
     [/^## User(?: \(checkpoint\))?\n\n/, "user", "You"],
-    [/^## Assistant\n\n/, "assistant", "Zed Agent"],
+    [/^## Assistant\n\n/, "assistant", agentName],
     [/^## Input Requested\n\n/, "tool", "Input requested in Zed"],
     [/^## Plan\n\n/, "tool", "Plan"],
     [/^## Context Compaction[^\n]*\n\n/, "tool", "Context summary"],
@@ -2146,7 +2396,7 @@ function renderActivity(entries, status, activityTruncated = false) {
       else if (markdown.startsWith("## Input Requested")) updates.push({ kind: "approval", label: "Approval", body: "Input requested in desktop Zed" });
     }
   }
-  $("activity-title").textContent = busy ? "Zed is working" : `Turn activity${updates.length ? ` · ${updates.length}` : ""}`;
+  $("activity-title").textContent = busy ? `${selectedAgent().name} is working` : `Turn activity${updates.length ? ` · ${updates.length}` : ""}`;
   panel.classList.toggle("hidden", !busy && !updates.length);
   panel.classList.toggle("collapsed", state.activityCollapsed);
   $("activity-toggle").textContent = state.activityCollapsed ? "View" : "Close";
@@ -2159,7 +2409,7 @@ function renderActivity(entries, status, activityTruncated = false) {
   if (!updates.length) {
     const empty = document.createElement("div");
     empty.className = "activity-item";
-    empty.textContent = "Waiting for reasoning or tool activity shared by the native Zed thread…";
+    empty.textContent = `Waiting for reasoning or tool activity shared by ${selectedAgent().name} through Zed…`;
     content.append(empty);
   }
   for (const update of updates) {
@@ -2246,8 +2496,13 @@ async function snapshot() {
   while (container.children.length > result.entries_markdown.length) container.lastElementChild.remove();
   state.renderedEntries.length = result.entries_markdown.length;
   const busy = result.status !== "Idle";
+  state.threadStatus = result.status;
+  const summary = state.threads.find((thread) => thread.thread_id === result.thread_id);
+  if (summary && result.agent) summary.agent = result.agent;
+  renderSelectedAgent();
   state.threadError = validAgentError(result.agent_error);
   state.retryStatus = validRetryStatus(result.retry_status);
+  state.imageRecovery = validImageRecovery(result.image_recovery);
   renderAgentHealth();
   for (const details of container.querySelectorAll("details.thinking-block")) details.open = false;
   if (busy) {
@@ -2263,7 +2518,9 @@ async function snapshot() {
     && result.activity_entries_markdown.every((entry) => typeof entry === "string")
     ? result.activity_entries_markdown : result.entries_markdown;
   renderActivity(activityEntries, result.status, result.activity_truncated === true);
-  renderApprovals(result.pending_approvals);
+  renderSubagents(result.subagents);
+  const childApprovals = state.subagents.flatMap((agent) => Array.isArray(agent.pending_approvals) ? agent.pending_approvals : []);
+  renderApprovals([...(Array.isArray(result.pending_approvals) ? result.pending_approvals : []), ...childApprovals]);
   if (document.body.classList.contains("context-open")) renderActivityIndex();
   if (follow) {
     scroller.scrollTop = scroller.scrollHeight;
@@ -2272,8 +2529,6 @@ async function snapshot() {
     $("jump-latest").classList.remove("hidden");
   }
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
-  state.threadStatus = result.status;
-  const summary = state.threads.find((thread) => thread.thread_id === result.thread_id);
   if (summary && (summary.status !== result.status || summary.current_turn_id !== state.turnId
       || summary.had_error !== result.had_error || summary.agent_error !== result.agent_error
       || summary.retry_status !== result.retry_status)) {
@@ -2289,6 +2544,43 @@ async function snapshot() {
     renderThreadSettings();
   }
   updateComposerAction();
+}
+
+async function rewindImage() {
+  const recovery = state.imageRecovery;
+  if (!state.threadId || !recovery || state.rewindingImage || state.threadStatus !== "Idle") return;
+  const count = recovery.entriesRemoved;
+  const confirmed = confirm(`Rewind this native Zed thread before the first image?\n\nThis removes the image message and ${count - 1} later conversation item${count - 1 === 1 ? "" : "s"} from this thread. Zed may also reject edits made by the Agent after that point. This cannot be undone from ZedLink.`);
+  if (!confirmed) return;
+  state.rewindingImage = true;
+  renderAgentHealth();
+  const requestId = crypto.randomUUID();
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await rpc("thread.rewind_image", {
+        ...baseThreadParams(),
+        client_user_message_id: recovery.clientUserMessageId,
+        expected_last_sequence: state.sequence,
+      }, requestId);
+      if (result.outcome === "succeeded") break;
+      if (result.outcome !== "running") throw new Error("Desktop Zed returned an invalid rewind result.");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (attempt === 39) throw new Error("Desktop Zed is still rewinding the thread. Refresh to check its state.");
+    }
+    state.threadError = null;
+    state.retryStatus = null;
+    state.imageRecovery = null;
+    state.errorSignature = null;
+    notice("Image turn removed. Describe what you need in text, or switch Zed to a vision-capable model before attaching another image.");
+    await refreshSnapshot();
+    await loadThreads();
+  } catch (error) {
+    notice(error.message);
+    await refreshSnapshot().catch(() => {});
+  } finally {
+    state.rewindingImage = false;
+    renderAgentHealth();
+  }
 }
 
 async function reconcilePending() {
@@ -2460,6 +2752,13 @@ $("verify-gateway").addEventListener("change", () => {
   $("pair-button").disabled = !state.gatewayVerified;
 });
 $("refresh").addEventListener("click", () => connect());
+$("empty-refresh").addEventListener("click", () => connect());
+$("empty-create").addEventListener("click", () => {
+  if ($("new-session").disabled) return;
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
+  $("new-session-form").classList.remove("hidden");
+  $("new-session-title").focus();
+});
 $("new-session").addEventListener("click", () => {
   const form = $("new-session-form");
   form.classList.toggle("hidden");
@@ -2583,7 +2882,7 @@ $("prompt").addEventListener("keydown", (event) => {
     const first = $("command-menu").querySelector(".command-option");
     if (first) { event.preventDefault(); first.focus(); }
   }
-  if (event.key === "Enter" && !event.shiftKey && (event.ctrlKey || event.metaKey || matchMedia("(pointer: fine)").matches)) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     $("composer-form").requestSubmit();
   }
@@ -2600,6 +2899,8 @@ async function signOut() {
   state.threadStatus = null;
   state.threadError = null;
   state.retryStatus = null;
+  state.imageRecovery = null;
+  state.rewindingImage = false;
   state.desktopReachable = null;
   state.threadSettings = null;
   state.contextPaths = [];
@@ -2615,7 +2916,7 @@ async function signOut() {
   closeCodeReview();
   closeContextPanel();
   requireManualGatewayVerification();
-  document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
+  document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings", "no-session");
   document.body.classList.add("pairing");
   $("pair-panel").classList.remove("hidden");
   $("sessions-panel").classList.add("hidden");
@@ -2649,6 +2950,7 @@ $("settings-back").addEventListener("click", () => {
   }
 });
 $("composer-form").addEventListener("submit", sendPrompt);
+$("rewind-image").addEventListener("click", rewindImage);
 $("activity-toggle").addEventListener("click", () => {
   state.activityCollapsed = !state.activityCollapsed;
   $("activity").classList.toggle("collapsed", state.activityCollapsed);

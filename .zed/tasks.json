@@ -32,6 +32,30 @@
     "use_new_terminal": true
   },
   {
+    "label": "ZedLink: Diagnose setup",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "diagnose"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Repair setup",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "repair"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Install patched Zed launcher",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "install-launcher"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
     "label": "ZedLink: Start patched Zed",
     "command": "python3",
     "args": ["tools/zedlink_manager.py", "start-zed"],
@@ -43,6 +67,38 @@
     "label": "ZedLink: Start gateway",
     "command": "python3",
     "args": ["tools/zedlink_manager.py", "start-gateway"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Restart gateway",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "restart-gateway"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Stop gateway",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "stop-gateway"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Manage connections",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "manage-routes"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Check connections",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "check-routes"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "shell": { "program": "/bin/sh" },
     "use_new_terminal": true

@@ -40,11 +40,13 @@ class ProbeFixture:
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
         self.sequence = 0
         self.extra_thread = False
+        self.no_threads = False
         self.created_thread = False
         self.truncated = False
         self.activity_truncated = False
         self.active_turn_id = None
         self.agent_error = None
+        self.image_recovery = None
         self.retry_status = None
         self.cancelled = 0
         self.profile_id = "write"
@@ -52,6 +54,26 @@ class ProbeFixture:
         self.settings_updates = 0
         self.approvals = []
         self.approval_decisions = 0
+        self.subagent_cancellations = 0
+        self.subagents = [
+            {"session_id": "fixture-child-running", "tool_call_id": "spawn-running",
+             "label": "Inspect transport tests", "title": "Transport investigator",
+             "status": "Generating", "current_turn_id": 31,
+             "message_start_index": 0, "message_end_index": None,
+             "entries_markdown": ["## Assistant\n\n<thinking>\nChecking concurrent gateway behavior\n</thinking>\n\nReviewing the transport fixture.\n\n"],
+             "entries_truncated": False,
+             "pending_approvals": [{"approval_id": "child-approval", "turn_id": 31,
+                                      "subagent_id": "fixture-child-running", "tool_name": "terminal",
+                                      "display": "Run child fixture command", "raw_input": {"command": "printf child"},
+                                      "details_truncated": False, "can_approve_once": True,
+                                      "can_deny_once": True}]},
+            {"session_id": "fixture-child-complete", "tool_call_id": "spawn-complete",
+             "label": "Review browser layout", "title": "UI reviewer",
+             "status": "Completed", "current_turn_id": None,
+             "message_start_index": 1, "message_end_index": 2,
+             "entries_markdown": ["## Assistant\n\nThe layout review is complete.\n\n"],
+             "entries_truncated": False, "pending_approvals": []},
+        ]
         self.change_operations = {}
         self.drop_send_before_accept_once = False
         self.stopped = False
@@ -82,15 +104,22 @@ class ProbeFixture:
                 error = None
                 if method == "thread.list":
                     threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread",
+                                "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"},
                                 "status": "Generating" if self.active_turn_id is not None else "Idle",
                                 "current_turn_id": self.active_turn_id,
                                 "had_error": self.agent_error is not None,
                                 "agent_error": self.agent_error,
                                 "retry_status": self.retry_status}]
                     if self.extra_thread:
-                        threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread", "status": "Idle"})
+                        threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread",
+                                        "agent": {"id": "codex-acp", "name": "Codex", "kind": "external_acp"},
+                                        "status": "Idle"})
                     if self.created_thread:
-                        threads.append({"thread_id": "fixture-created", "title": "Created from browser", "status": "Idle"})
+                        threads.append({"thread_id": "fixture-created", "title": "Created from browser",
+                                        "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"},
+                                        "status": "Idle"})
+                    if self.no_threads:
+                        threads = []
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "threads": threads}
                 elif method == "thread.create":
@@ -105,6 +134,9 @@ class ProbeFixture:
                 elif method == "thread.snapshot":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "thread_id": params["thread_id"],
+                              "agent": ({"id": "codex-acp", "name": "Codex", "kind": "external_acp"}
+                                        if params["thread_id"] == "fixture-second"
+                                        else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
                               "title": ("Second synthetic thread" if params["thread_id"] == "fixture-second"
                                         else "Created from browser" if params["thread_id"] == "fixture-created"
                                         else "Synthetic test thread"),
@@ -112,9 +144,11 @@ class ProbeFixture:
                               "current_turn_id": self.active_turn_id, "truncated": self.truncated,
                               "had_error": self.agent_error is not None,
                               "agent_error": self.agent_error, "retry_status": self.retry_status,
+                              "image_recovery": self.image_recovery,
                               "entries_markdown": list(self.entries),
                               "activity_entries_markdown": list(self.entries[-8:]),
                               "activity_truncated": self.activity_truncated, "pending_approvals": list(self.approvals),
+                              "subagents": list(self.subagents),
                               "last_sequence": self.sequence}
                 elif method == "thread.events":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
@@ -128,7 +162,10 @@ class ProbeFixture:
                         {"name": "help", "description": "Show agent help", "category": "agent", "requires_argument": False},
                     ]}
                 elif method in ("thread.settings", "thread.settings.update"):
-                    if method == "thread.settings.update":
+                    external = params["thread_id"] == "fixture-second"
+                    if method == "thread.settings.update" and external:
+                        error = {"code": "UNSUPPORTED_CAPABILITY"}
+                    elif method == "thread.settings.update":
                         if "profile_id" in params:
                             self.profile_id = params["profile_id"]
                         if "thinking_enabled" in params:
@@ -136,13 +173,18 @@ class ProbeFixture:
                         self.settings_updates += 1
                     result = {
                         "thread_id": params["thread_id"],
+                        "agent": ({"id": "codex-acp", "name": "Codex", "kind": "external_acp"}
+                                  if external else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
                         "status": "Generating" if self.active_turn_id is not None else "Idle",
-                        "model": {"id": "glm-local", "name": "Local GLM fixture", "provider_id": "openai-compatible"},
-                        "profile_id": self.profile_id,
-                        "profiles": [{"id": "write", "name": "Write"}, {"id": "ask", "name": "Ask"}],
-                        "thinking_enabled": self.thinking_enabled,
-                        "thinking_supported": True,
-                        "thinking_can_disable": True,
+                        "model": None if external else {"id": "glm-local", "name": "Local GLM fixture", "provider_id": "openai-compatible"},
+                        "profile_id": None if external else self.profile_id,
+                        "profiles": [] if external else [{"id": "write", "name": "Write"}, {"id": "ask", "name": "Ask"}],
+                        "thinking_enabled": None if external else self.thinking_enabled,
+                        "supports_images": None if external else False,
+                        "thinking_supported": False if external else True,
+                        "thinking_can_disable": False if external else True,
+                        "editable": not external,
+                        "configuration_owner": "external_agent" if external else "zed",
                     }
                 elif method == "project.files":
                     result = {"entries": [
@@ -186,13 +228,22 @@ class ProbeFixture:
                         self.change_operations[key] = payload
                         result = {"outcome": "succeeded", "provisional": False}
                 elif method == "approval.respond":
-                    matching = [item for item in self.approvals
+                    available = list(self.approvals)
+                    for subagent in self.subagents:
+                        available.extend(subagent.get("pending_approvals", []))
+                    matching = [item for item in available
                                 if item["approval_id"] == params.get("approval_id")
-                                and item["turn_id"] == params.get("turn_id")]
+                                and item["turn_id"] == params.get("turn_id")
+                                and item.get("subagent_id") == params.get("subagent_id")]
                     if not matching:
                         error = {"code": "APPROVAL_EXPIRED"}
                     else:
-                        self.approvals = []
+                        if params.get("subagent_id"):
+                            for subagent in self.subagents:
+                                if subagent["session_id"] == params["subagent_id"]:
+                                    subagent["pending_approvals"] = []
+                        else:
+                            self.approvals = []
                         self.approval_decisions += 1
                         result = {"outcome": "resolved"}
                 elif method == "thread.send":
@@ -226,11 +277,38 @@ class ProbeFixture:
                         self.cancelled += 1
                         self.sequence += 1
                         result = {"outcome": "requested", "turn_id": params["turn_id"]}
+                elif method == "subagent.cancel":
+                    matching = [agent for agent in self.subagents
+                                if agent["session_id"] == params.get("subagent_id")]
+                    if not matching:
+                        error = {"code": "SUBAGENT_NOT_FOUND"}
+                    elif matching[0]["current_turn_id"] != params.get("turn_id"):
+                        error = {"code": "STALE_TURN"}
+                    else:
+                        matching[0]["current_turn_id"] = None
+                        matching[0]["status"] = "Canceled"
+                        self.subagent_cancellations += 1
+                        self.sequence += 1
+                        result = {"outcome": "requested", "subagent_id": params["subagent_id"],
+                                  "turn_id": params["turn_id"]}
+                elif method == "thread.rewind_image":
+                    if params.get("expected_last_sequence") != self.sequence:
+                        error = {"code": "STALE_SEQUENCE"}
+                    elif not self.image_recovery or params.get("client_user_message_id") != self.image_recovery["client_user_message_id"]:
+                        error = {"code": "STALE_SEQUENCE"}
+                    else:
+                        self.entries = self.entries[:self.image_recovery["entry_index"]]
+                        self.image_recovery = None
+                        self.agent_error = None
+                        self.sequence += 1
+                        result = {"outcome": "succeeded", "provisional": False}
                 elif method == "instance.info":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.events",
                                                "thread.commands", "thread.settings", "thread.settings.update",
                                                "thread.send", "thread.attachments", "thread.cancel",
+                                               "thread.subagents", "subagent.cancel",
+                                               "thread.rewind_image",
                                                "thread.approvals", "approval.respond", "project.files",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
                                                "changes.stage", "changes.unstage", "request.status"]}
@@ -494,7 +572,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.18"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.26"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -532,6 +610,17 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 wait.until(lambda driver: "Zed connected · live updates" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, "#subagents .subagent")) == 2)
+                assert "2 total" in browser.find_element(By.CSS_SELECTOR, ".subagents-head").text
+                assert "Checking concurrent gateway behavior" in browser.find_element(By.ID, "subagents").get_attribute("textContent")
+                assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") == "true"
+                assert "parallel agent" in browser.find_element(By.ID, "approvals").text.casefold()
+                assert "printf child" in browser.find_element(By.ID, "approvals").text
+                browser.find_element(By.CSS_SELECTOR, "#approvals .primary").click()
+                wait.until(lambda driver: probe.approval_decisions == 1)
+                browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-stop").click()
+                wait.until(lambda driver: probe.subagent_cancellations == 1)
+                wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".subagent.active"))
                 browser.find_element(By.ID, "open-settings").click()
                 wait.until(lambda driver: "Local GLM fixture" in driver.find_element(By.ID, "zed-model").get_attribute("value"))
                 assert "Local GLM fixture" in browser.find_element(By.ID, "header-model").text
@@ -597,7 +686,7 @@ def main():
                 assert not browser.find_elements(By.CSS_SELECTOR, "#messages img")
                 assert browser.execute_script("return window.syntheticXss || 0") == 0
                 browser.find_element(By.ID, "prompt").send_keys("Browser fixture prompt")
-                browser.find_element(By.ID, "send").click()
+                browser.execute_script("const original = window.matchMedia; window.matchMedia = () => ({matches:false}); const prompt = document.getElementById('prompt'); prompt.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true, cancelable:true})); window.matchMedia = original;")
                 try:
                     wait.until(lambda driver: "Browser fixture prompt" in driver.find_element(By.ID, "messages").text)
                 except TimeoutException:
@@ -680,7 +769,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "approvals").is_displayed())
                 assert "printf fixture" in browser.find_element(By.ID, "approvals").text
                 browser.find_element(By.CSS_SELECTOR, "#approvals .primary").click()
-                wait.until(lambda driver: probe.approval_decisions == 1)
+                wait.until(lambda driver: probe.approval_decisions == 2)
                 wait.until(lambda driver: not driver.find_element(By.ID, "approvals").is_displayed())
                 probe.active_turn_id = None
                 probe.sequence += 1
@@ -689,6 +778,10 @@ def main():
                 probe.agent_error = {"kind": "other", "title": "Agent request failed",
                                      "message": "image input requires a supported vision checkpoint served with --vision",
                                      "retrying": True}
+                image_entry_index = max(0, len(probe.entries) - 2)
+                probe.image_recovery = {"client_user_message_id": "fixture-image-message",
+                                        "entry_index": image_entry_index,
+                                        "entries_removed": len(probe.entries) - image_entry_index}
                 assert browser.execute_async_script(
                     "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
                 ) == "ok"
@@ -696,13 +789,24 @@ def main():
                 assert browser.find_element(By.ID, "agent-health").find_element(By.XPATH, "..").get_attribute("id") == "messages"
                 assert browser.find_element(By.ID, "agent-health-title").text == "Image input unavailable"
                 assert "supported vision checkpoint" in browser.find_element(By.ID, "agent-health-message").text
-                assert browser.find_element(By.ID, "agent-health-recovery").text == "CHECK DESKTOP ZED"
+                assert "CONVERSATION ITEMS WILL BE REMOVED" in browser.find_element(By.ID, "agent-health-recovery").text
+                assert browser.find_element(By.ID, "rewind-image").is_displayed()
                 assert browser.find_element(By.ID, "thread-state").text == "REQUEST FAILED"
                 assert "request failed" in browser.find_element(By.ID, "header-model").text.casefold()
                 assert "error" in browser.find_element(By.ID, "header-model").get_attribute("class")
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.error"))
+                rewind_button = browser.find_element(By.ID, "rewind-image")
+                browser.execute_script("arguments[0].scrollIntoView({block:'center'})", rewind_button)
+                browser.execute_script("arguments[0].click()", rewind_button)
+                wait.until(lambda driver: driver.switch_to.alert)
+                browser.switch_to.alert.accept()
+                wait.until(lambda driver: probe.image_recovery is None)
+                wait.until(lambda driver: not driver.find_element(By.ID, "agent-health").is_displayed())
+                assert len(probe.entries) == image_entry_index
                 probe.retry_status = {"last_error": "Local model connection refused", "attempt": 2,
                                       "max_attempts": 5, "next_attempt_in_ms": 3000}
+                probe.agent_error = {"kind": "provider_error", "title": "Agent request failed",
+                                     "message": "Local model connection refused", "retrying": True}
                 probe.active_turn_id = 10
                 assert browser.execute_async_script(
                     "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
@@ -749,6 +853,9 @@ def main():
                 browser.set_window_size(1920, 1080)
                 wide = browser.execute_script("return {width:innerWidth, layoutWidth:document.querySelector('.layout').getBoundingClientRect().width, sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width, workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width}")
                 assert wide["layoutWidth"] >= wide["width"] - 2 and wide["sidebarWidth"] >= 340, wide
+                composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); const workspace=document.querySelector('.workspace').getBoundingClientRect(); const add=document.getElementById('show-actions').getBoundingClientRect(); const send=document.getElementById('send').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,addWidth:add.width,sendWidth:send.width,centerDelta:Math.abs((box.left+box.width/2)-(workspace.left+workspace.width/2))}")
+                assert composer["width"] <= 922 and composer["height"] <= 54, composer
+                assert composer["radius"] == "14px" and composer["addWidth"] == 40 and composer["sendWidth"] == 40 and composer["centerDelta"] <= 1, composer
                 browser.find_element(By.ID, "show-sessions").click()
                 collapsed = browser.execute_script("return {sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).visibility==='hidden', workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width, width:innerWidth}")
                 assert collapsed["sidebarHidden"] and collapsed["workspaceWidth"] >= collapsed["width"] - 20, collapsed
@@ -767,6 +874,8 @@ def main():
                 assert layout["messagesHeight"] >= 390 and layout["sidebarHidden"], layout
                 assert browser.find_element(By.ID, "prompt").is_displayed()
                 assert browser.find_element(By.ID, "send").is_displayed()
+                mobile_composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,viewport:innerWidth}")
+                assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and mobile_composer["height"] <= 54 and mobile_composer["radius"] == "13px", mobile_composer
                 assert not browser.find_elements(By.ID, "toggle-compose")
                 assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.execute_script("openCodeReview('src/main.rs', 'fn main() { println!(\\\"ready\\\"); }\\n', 'rust', 1)")
@@ -780,6 +889,9 @@ def main():
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 assert browser.find_element(By.ID, "tab-sessions").is_displayed()
+                mobile_icons = browser.execute_script("return [...document.querySelectorAll('.mobile-tab-icon')].map(icon => { const box=icon.getBoundingClientRect(); const style=getComputedStyle(icon); return {width:box.width,height:box.height,fontSize:style.fontSize,lineHeight:style.lineHeight}; })")
+                assert len(mobile_icons) == 3 and len({tuple(icon.values()) for icon in mobile_icons}) == 1, mobile_icons
+                assert "\ufe0e" in browser.find_element(By.CSS_SELECTOR, "#tab-settings .mobile-tab-icon").get_attribute("textContent")
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
                 assert browser.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false"
@@ -802,6 +914,16 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
                 assert browser.find_element(By.ID, "messages").is_displayed()
                 assert browser.find_element(By.ID, "send").is_enabled()
+                assert browser.find_element(By.ID, "thread-agent-kind").get_attribute("textContent") == "EXTERNAL ACP AGENT"
+                assert browser.find_element(By.ID, "prompt").get_attribute("placeholder") == "Message Codex…"
+                assert browser.find_element(By.CSS_SELECTOR, ".message.assistant .message-label").get_attribute("textContent") == "Codex"
+                browser.find_element(By.ID, "show-sessions").click()
+                browser.find_element(By.ID, "tab-settings").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "zed-model").get_attribute("value") == "Managed by Codex")
+                assert browser.find_element(By.ID, "settings-agent-kind").get_attribute("textContent") == "EXTERNAL ACP AGENT"
+                assert not browser.find_element(By.ID, "save-zed-settings").is_enabled()
+                assert "owns its model" in browser.find_element(By.ID, "zed-settings-help").text
+                browser.find_element(By.ID, "settings-back").click()
                 assert probe.accepted == accepted_before_browser + 2
                 browser.refresh()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "Second synthetic thread")
@@ -819,6 +941,32 @@ def main():
                 assert probe.accepted == accepted_before_browser + 2
                 browser.close()
                 browser.switch_to.window(original_tab)
+                browser.set_window_size(1440, 900)
+                probe.no_threads = True
+                assert browser.execute_async_script(
+                    "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
+                ) == "ok"
+                wait.until(lambda driver: driver.find_element(By.ID, "empty-state").is_displayed())
+                assert not browser.find_element(By.ID, "subagents").is_displayed()
+                assert not browser.find_element(By.ID, "approvals").is_displayed()
+                browser.refresh()
+                wait.until(lambda driver: driver.find_element(By.ID, "empty-state").is_displayed())
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").get_attribute("textContent") == "No remote sessions")
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-state").get_attribute("textContent") == "Connected")
+                assert "no agent thread" in browser.find_element(By.ID, "empty-description").text
+                wait.until(lambda driver: driver.find_element(By.ID, "empty-create").is_enabled())
+                assert browser.execute_script(
+                    "return getComputedStyle(document.querySelector('.composer-wrap')).display"
+                ) == "none"
+                browser.find_element(By.CSS_SELECTOR, "#empty-help summary").click()
+                assert "/remote-control" in browser.find_element(By.ID, "empty-help").text
+                browser.save_screenshot("/tmp/zedlink-browser-empty.png")
+                probe.no_threads = False
+                probe.extra_thread = True
+                assert browser.execute_async_script(
+                    "const done=arguments[0]; loadThreads().then(() => selectThread('fixture-second')).then(() => done('ok'), error => done(String(error)))"
+                ) == "ok"
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
                 probe.close()
                 wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 assert browser.find_element(By.ID, "zed-connection-state").get_attribute("textContent") == "Unavailable"

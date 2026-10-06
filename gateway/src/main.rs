@@ -22,6 +22,7 @@ use std::{
     io::Write,
     net::{IpAddr, SocketAddr},
     os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
+    os::unix::net::UnixStream as StdUnixStream,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -30,7 +31,8 @@ use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, Semaphore},
+    sync::{Mutex, Notify, Semaphore},
+    task::JoinSet,
 };
 use uuid::Uuid;
 use web_push::{
@@ -53,6 +55,7 @@ struct Inner {
     persisted: Mutex<Persisted>,
     pairing: Mutex<Option<Pairing>>,
     probe_limit: Arc<Semaphore>,
+    shutdown: Arc<Notify>,
     push_client: IsahcWebPushClient,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -133,67 +136,180 @@ enum PushOutcome {
     Failed,
 }
 
+#[derive(Clone, Deserialize)]
+struct TlsListenerConfig {
+    id: String,
+    bind: SocketAddr,
+    cert: PathBuf,
+    key: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct ListenerFile {
+    version: u8,
+    listeners: Vec<TlsListenerConfig>,
+}
+
+fn application(state: Gateway) -> Router {
+    Router::new()
+        .route("/", get(browser_page))
+        .route("/app.js", get(browser_script))
+        .route("/style.css", get(browser_style))
+        .route("/manifest.webmanifest", get(browser_manifest))
+        .route("/service-worker.js", get(browser_service_worker))
+        .route("/icons/icon-192.png", get(browser_icon_192))
+        .route("/icons/icon-512.png", get(browser_icon_512))
+        .route("/v1/gateway", get(info))
+        .route("/v1/pair", post(pair))
+        .route("/v1/rpc", post(rpc))
+        .route("/v1/events", get(events))
+        .route("/v1/notifications/config", get(notification_config))
+        .route("/v1/notifications/subscribe", post(notification_subscribe))
+        .route("/v1/notifications/status", post(notification_status))
+        .route(
+            "/v1/notifications/unsubscribe",
+            post(notification_unsubscribe),
+        )
+        .route("/v1/notifications/test", post(notification_test))
+        .layer(DefaultBodyLimit::max(MAX_RPC))
+        .with_state(state)
+}
+
+fn validate_listener(listener: &TlsListenerConfig) -> Result<()> {
+    if listener.id.trim().is_empty() || listener.id.len() > 64 {
+        bail!("listener id must contain 1 to 64 characters");
+    }
+    if !private_ip(listener.bind.ip()) {
+        bail!(
+            "listener {} must bind a loopback or private address",
+            listener.id
+        );
+    }
+    if !listener.cert.is_absolute() || !listener.key.is_absolute() {
+        bail!(
+            "listener {} certificate and key paths must be absolute",
+            listener.id
+        );
+    }
+    if fs::metadata(&listener.key)?.permissions().mode() & 0o077 != 0 {
+        bail!(
+            "listener {} TLS private key must be mode 0600 or stricter",
+            listener.id
+        );
+    }
+    Ok(())
+}
+
+async fn run_gateway(
+    listeners: Vec<TlsListenerConfig>,
+    probe: PathBuf,
+    directory: PathBuf,
+) -> Result<()> {
+    if listeners.is_empty() || listeners.len() > 16 {
+        bail!("configure between 1 and 16 TLS listeners");
+    }
+    if !probe.is_absolute() || !directory.is_absolute() {
+        bail!("socket and state paths must be absolute");
+    }
+    let admin_socket = directory.join("admin.sock");
+    if admin_socket.exists() && StdUnixStream::connect(&admin_socket).is_ok() {
+        bail!("another ZedLink gateway already owns this state directory");
+    }
+    let mut addresses = HashSet::new();
+    for listener in &listeners {
+        validate_listener(listener)?;
+        if !addresses.insert(listener.bind) {
+            bail!("duplicate listener address: {}", listener.bind);
+        }
+    }
+
+    let state = Gateway::load(directory, probe)?;
+    let admin = state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = admin.admin_server().await {
+            eprintln!("admin socket stopped: {error:#}");
+        }
+    });
+    let notifications = state.clone();
+    tokio::spawn(async move { notifications.notification_monitor().await });
+
+    let mut servers = JoinSet::new();
+    for listener in listeners {
+        let tls = RustlsConfig::from_pem_file(&listener.cert, &listener.key)
+            .await
+            .with_context(|| format!("load TLS identity for listener {}", listener.id))?;
+        let app = application(state.clone());
+        eprintln!(
+            "ZedLink route {} listening on https://{}",
+            listener.id, listener.bind
+        );
+        servers.spawn(async move {
+            axum_server::bind_rustls(listener.bind, tls)
+                .serve(app.into_make_service())
+                .await
+                .with_context(|| format!("listener {} stopped", listener.id))
+        });
+    }
+    tokio::select! {
+        result = servers.join_next() => match result {
+            Some(result) => result.context("gateway listener task failed")??,
+            None => bail!("no gateway listener started"),
+        },
+        _ = state.0.shutdown.notified() => return Ok(()),
+    }
+    bail!("gateway listener stopped unexpectedly")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.first().map(String::as_str) {
         Some("serve") if args.len() == 6 => {
             let address: SocketAddr = args[1].parse().context("invalid listen address")?;
-            if !private_ip(address.ip()) {
-                bail!("bind a loopback or private address");
-            }
             let probe = PathBuf::from(&args[4]);
             let directory = PathBuf::from(&args[5]);
-            if !probe.is_absolute() || !directory.is_absolute() {
-                bail!("socket and state paths must be absolute");
+            run_gateway(
+                vec![TlsListenerConfig {
+                    id: "primary".into(),
+                    bind: address,
+                    cert: PathBuf::from(&args[2]),
+                    key: PathBuf::from(&args[3]),
+                }],
+                probe,
+                directory,
+            )
+            .await
+        }
+        Some("serve-routes") if args.len() == 4 => {
+            let path = PathBuf::from(&args[1]);
+            if !path.is_absolute() {
+                bail!("listener configuration path must be absolute");
             }
-            if fs::metadata(&args[3])?.permissions().mode() & 0o077 != 0 {
-                bail!("TLS private key must be mode 0600 or stricter");
+            if fs::metadata(&path)?.permissions().mode() & 0o077 != 0 {
+                bail!("listener configuration must be mode 0600 or stricter");
             }
-            let tls = RustlsConfig::from_pem_file(&args[2], &args[3]).await?;
-            let state = Gateway::load(directory, probe)?;
-            let admin = state.clone();
-            tokio::spawn(async move {
-                if let Err(error) = admin.admin_server().await {
-                    eprintln!("admin socket stopped: {error:#}");
-                }
-            });
-            let notifications = state.clone();
-            tokio::spawn(async move { notifications.notification_monitor().await });
-            let app = Router::new()
-                .route("/", get(browser_page))
-                .route("/app.js", get(browser_script))
-                .route("/style.css", get(browser_style))
-                .route("/manifest.webmanifest", get(browser_manifest))
-                .route("/service-worker.js", get(browser_service_worker))
-                .route("/icons/icon-192.png", get(browser_icon_192))
-                .route("/icons/icon-512.png", get(browser_icon_512))
-                .route("/v1/gateway", get(info))
-                .route("/v1/pair", post(pair))
-                .route("/v1/rpc", post(rpc))
-                .route("/v1/events", get(events))
-                .route("/v1/notifications/config", get(notification_config))
-                .route("/v1/notifications/subscribe", post(notification_subscribe))
-                .route("/v1/notifications/status", post(notification_status))
-                .route(
-                    "/v1/notifications/unsubscribe",
-                    post(notification_unsubscribe),
-                )
-                .route("/v1/notifications/test", post(notification_test))
-                .layer(DefaultBodyLimit::max(MAX_RPC))
-                .with_state(state);
-            axum_server::bind_rustls(address, tls)
-                .serve(app.into_make_service())
-                .await?;
-            Ok(())
+            let config: ListenerFile = serde_json::from_slice(&fs::read(&path)?)
+                .context("invalid listener configuration")?;
+            if config.version != 1 {
+                bail!("unsupported listener configuration version");
+            }
+            run_gateway(
+                config.listeners,
+                PathBuf::from(&args[2]),
+                PathBuf::from(&args[3]),
+            )
+            .await
         }
         Some("admin") if args.len() >= 3 => {
             let command = match args[2].as_str() {
                 "pair-code" if args.len() == 3 => json!({"method":"pair-code"}),
                 "pair-short-code" if args.len() == 3 => json!({"method":"pair-short-code"}),
                 "devices" if args.len() == 3 => json!({"method":"devices"}),
+                "shutdown" if args.len() == 3 => json!({"method":"shutdown"}),
                 "revoke" if args.len() == 4 => json!({"method":"revoke","device_id":args[3]}),
-                _ => bail!("admin STATE_DIR pair-code|pair-short-code|devices|revoke DEVICE_ID"),
+                _ => bail!(
+                    "admin STATE_DIR pair-code|pair-short-code|devices|shutdown|revoke DEVICE_ID"
+                ),
             };
             let mut stream = UnixStream::connect(Path::new(&args[1]).join("admin.sock")).await?;
             stream
@@ -206,7 +322,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|revoke DEVICE_ID"
+            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | serve-routes LISTENERS_JSON PROBE_SOCKET STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|shutdown|revoke DEVICE_ID"
         ),
     }
 }
@@ -395,6 +511,7 @@ impl Gateway {
             persisted: Mutex::new(persisted),
             pairing: Mutex::new(None),
             probe_limit: Arc::new(Semaphore::new(16)),
+            shutdown: Arc::new(Notify::new()),
             push_client: IsahcWebPushClient::new().context("Web Push client unavailable")?,
         })))
     }
@@ -487,6 +604,7 @@ impl Gateway {
             bail!("invalid admin request");
         }
         let request: Value = serde_json::from_slice(&request)?;
+        let shutdown = request["method"].as_str() == Some("shutdown");
         let response = match request["method"].as_str() {
             Some("pair-code") => {
                 let code: [u8; 32] = rand::random();
@@ -517,6 +635,7 @@ impl Gateway {
                         "notifications":persisted.push_subscriptions.iter().any(|subscription| subscription.device_id == device.id)
                     })).collect::<Vec<_>>()})
             }
+            Some("shutdown") => json!({"stopping":true}),
             Some("revoke") => {
                 let id =
                     Uuid::parse_str(request["device_id"].as_str().context("device ID missing")?)?;
@@ -539,6 +658,9 @@ impl Gateway {
             .write_all(serde_json::to_string(&response)?.as_bytes())
             .await?;
         stream.write_all(b"\n").await?;
+        if shutdown {
+            self.0.shutdown.notify_one();
+        }
         Ok(())
     }
 
@@ -970,6 +1092,8 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "changes.unstage"
             | "thread.send"
             | "thread.cancel"
+            | "subagent.cancel"
+            | "thread.rewind_image"
             | "request.status"
     ) {
         return (
@@ -989,7 +1113,11 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
     };
     if matches!(
         method.as_str(),
-        "thread.send" | "thread.create" | "changes.stage" | "changes.unstage"
+        "thread.send"
+            | "thread.create"
+            | "thread.rewind_image"
+            | "changes.stage"
+            | "changes.unstage"
     ) {
         request["request_id"] = json!(format!("{device_id}:{original_request_id}"));
     } else if method == "request.status" {

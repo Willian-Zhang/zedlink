@@ -2,7 +2,7 @@
   "id": "/",
   "name": "ZedLink",
   "short_name": "ZedLink",
-  "description": "Private remote access to exposed native Zed Agent conversations.",
+  "description": "Private remote access to exposed Zed hosted agent conversations.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

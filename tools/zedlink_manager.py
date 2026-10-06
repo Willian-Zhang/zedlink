@@ -6,20 +6,254 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parent.parent
 GATEWAY = ROOT / "gateway/target/debug/zedlink-gateway"
 ZED = ROOT / "zed-source/target/debug/zed"
+PROVIDERS = {
+    "tailscale": "Tailscale",
+    "netbird": "NetBird",
+    "wireguard": "WireGuard",
+    "zerotier": "ZeroTier",
+    "twingate": "Twingate",
+    "headscale": "Headscale",
+    "cloudflare": "Cloudflare Tunnel + Access",
+    "ssh-reverse": "SSH reverse tunnel + VPS/Caddy",
+    "ssh-local": "Direct SSH forwarding",
+    "lan": "Local LAN HTTPS",
+    "custom": "Custom private HTTPS",
+}
+PROXY_PROVIDERS = {"cloudflare", "ssh-reverse"}
+DESKTOP_ENTRY_NAME = "dev.zed.Zed-Dev.desktop"
+DESKTOP_ENTRY_MARKER = "X-ZedLink-Managed=true"
+CLI_LAUNCHER_MARKER = "# ZedLink managed patched-Zed launcher"
 
 
 def config_path() -> Path:
     base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return base / "zedlink/config.json"
+
+
+def zed_settings_path(data: dict) -> Path:
+    custom_data = str(data.get("zed_user_data_dir", "")).strip()
+    if custom_data:
+        return Path(custom_data) / "config/settings.json"
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "zed/settings.json"
+
+
+def sync_zed_settings(data: dict) -> bool:
+    """Persist native bridge configuration in Zed's own settings file.
+
+    Existing strict JSON settings are updated atomically. JSONC files with
+    comments remain untouched because rewriting them would discard user text;
+    the launcher retains its environment fallback for that case.
+    """
+    data = validate(data)
+    path = zed_settings_path(data)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace symbolic link: {path}")
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except json.JSONDecodeError:
+        print(f"Zed settings contain JSON comments or syntax ZedLink will not rewrite: {path}")
+        print("Configure the ZedLink page in Zed Settings; launcher compatibility mode remains available.")
+        return False
+    if not isinstance(settings, dict):
+        raise ValueError(f"Zed settings root must be an object: {path}")
+    active_route = primary_route(data)
+    existing_zedlink = settings.get("zedlink")
+    if not isinstance(existing_zedlink, dict):
+        existing_zedlink = {}
+    desired = {
+        "enabled": True,
+        "state_directory": data["state_dir"],
+        "project_root": data["project_root"],
+        "start_gateway_on_launch": existing_zedlink.get("start_gateway_on_launch", True),
+        "manager_path": str(Path(__file__).resolve()),
+        "allow_session_creation": existing_zedlink.get("allow_session_creation", True),
+        "allow_attachments": existing_zedlink.get("allow_attachments", True),
+        "allow_project_context": existing_zedlink.get("allow_project_context", True),
+        "allow_git_changes": existing_zedlink.get("allow_git_changes", True),
+        "allow_approval_decisions": existing_zedlink.get("allow_approval_decisions", True),
+        "allow_agent_settings": existing_zedlink.get("allow_agent_settings", True),
+        "connection_id": active_route["id"],
+        "connection_label": active_route["label"],
+        "connection_provider": active_route["provider"],
+        "connection_enabled": active_route["enabled"],
+        "connection_bind": active_route["bind"],
+        "connection_url": active_route["url"],
+        "connection_tls_certificate": active_route["cert"],
+        "connection_tls_private_key": active_route["key"],
+        "connection_origin_tls_name": active_route.get("origin_tls_name", ""),
+    }
+    if settings.get("zedlink") == desired:
+        return True
+    settings["zedlink"] = desired
+    descriptor, temporary_name = tempfile.mkstemp(prefix="settings-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(settings, stream, indent=2)
+            stream.write("\n")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    print(f"Enabled the native ZedLink bridge in Zed Settings: {path}")
+    return True
+
+
+def has_native_zedlink_settings(data: dict) -> bool:
+    """Return true when the selected Zed profile owns bridge configuration."""
+    path = zed_settings_path(data)
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    return isinstance(settings, dict) and isinstance(settings.get("zedlink"), dict)
+
+
+def desktop_launcher_path() -> Path:
+    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return base / "applications" / DESKTOP_ENTRY_NAME
+
+
+def cli_launcher_path() -> Path:
+    """Return the conventional per-user CLI location used by Zed's installer."""
+    return Path.home() / ".local/bin/zed"
+
+
+def install_cli_launcher(data: dict, path: Path | None = None) -> Path:
+    """Install a guarded `zed` command that always starts the patched build."""
+    data = validate(data)
+    destination = path or cli_launcher_path()
+    destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise ValueError(f"refusing to replace symbolic link: {destination}")
+    if destination.exists() and CLI_LAUNCHER_MARKER not in destination.read_text(
+            encoding="utf-8", errors="replace"):
+        raise ValueError(f"zed command already exists and is not managed by ZedLink: {destination}")
+    default_args = [data["project_root"]]
+    user_data_dir = str(data.get("zed_user_data_dir", "")).strip()
+    contents = "\n".join((
+        "#!/usr/bin/env python3",
+        CLI_LAUNCHER_MARKER,
+        "import os",
+        "import sys",
+        f"executable = {str(ZED)!r}",
+        f"default_args = {default_args!r}",
+        f"user_data_dir = {user_data_dir!r}",
+        "arguments = sys.argv[1:] or default_args",
+        "command = [executable]",
+        "if user_data_dir:",
+        "    command += ['--user-data-dir', user_data_dir]",
+        "command += arguments",
+        "environment = os.environ.copy()",
+        "environment['ZED_RELEASE_CHANNEL'] = 'dev'",
+        "os.execve(executable, command, environment)",
+        "",
+    ))
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(contents)
+        os.chmod(temporary, 0o755)
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return destination
+
+
+def remove_cli_launcher(path: Path | None = None) -> bool:
+    destination = path or cli_launcher_path()
+    if not destination.exists():
+        return False
+    if destination.is_symlink() or CLI_LAUNCHER_MARKER not in destination.read_text(
+            encoding="utf-8", errors="replace"):
+        raise ValueError(f"refusing to remove zed command not managed by ZedLink: {destination}")
+    destination.unlink()
+    return True
+
+
+def desktop_exec_argument(value: str) -> str:
+    if any(character in value for character in ("\n", "\r", "\0")):
+        raise ValueError("desktop launcher path contains an unsupported character")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
+
+
+def refresh_desktop_database(directory: Path) -> None:
+    updater = shutil.which("update-desktop-database")
+    if updater:
+        subprocess.run([updater, str(directory)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def install_desktop_launcher(path: Path | None = None) -> Path:
+    destination = path or desktop_launcher_path()
+    destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise ValueError(f"refusing to replace symbolic link: {destination}")
+    if destination.exists() and DESKTOP_ENTRY_MARKER not in destination.read_text(encoding="utf-8"):
+        raise ValueError(f"desktop entry already exists and is not managed by ZedLink: {destination}")
+    launcher = ROOT / "tools/launch_patched_zed.py"
+    icon = ROOT / "gateway/web/icons/icon-512.png"
+    contents = "\n".join((
+        "[Desktop Entry]",
+        "Version=1.0",
+        "Type=Application",
+        "Name=ZedLink — Patched Zed",
+        "GenericName=Code Editor with ZedLink",
+        "Comment=Open the patched Zed Dev build with native remote control",
+        f"Exec={desktop_exec_argument(sys.executable)} {desktop_exec_argument(str(launcher))}",
+        f"TryExec={ZED}",
+        f"Icon={icon}",
+        "Terminal=false",
+        "Categories=Development;IDE;",
+        "Keywords=zed;editor;agent;remote;zedlink;",
+        "StartupNotify=false",
+        "StartupWMClass=dev.zed.Zed-Dev",
+        DESKTOP_ENTRY_MARKER,
+        "",
+    ))
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(contents)
+        os.chmod(temporary, 0o644)
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    refresh_desktop_database(destination.parent)
+    return destination
+
+
+def remove_desktop_launcher(path: Path | None = None) -> bool:
+    destination = path or desktop_launcher_path()
+    if not destination.exists():
+        return False
+    if destination.is_symlink() or DESKTOP_ENTRY_MARKER not in destination.read_text(encoding="utf-8"):
+        raise ValueError(f"refusing to remove desktop entry not managed by ZedLink: {destination}")
+    destination.unlink()
+    refresh_desktop_database(destination.parent)
+    return True
 
 
 def private_directory(path: Path) -> None:
@@ -52,17 +286,14 @@ def tailscale_defaults() -> tuple[str | None, str | None]:
         return None, None
 
 
-def validate(data: dict) -> dict:
-    project = Path(data["project_root"]).expanduser().resolve(strict=True)
-    if not project.is_dir():
-        raise ValueError("project root must be an existing directory")
-    state = Path(data["state_dir"]).expanduser().resolve()
-    if not state.is_absolute():
-        raise ValueError("state directory must be absolute")
-    host, separator, port = data["bind"].rpartition(":")
+def split_bind(bind: str) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, int]:
+    host, separator, port = bind.rpartition(":")
     if not separator or not port.isdigit() or not 1 <= int(port) <= 65535:
         raise ValueError("bind must be PRIVATE_IP:PORT")
-    address = ipaddress.ip_address(host.strip("[]"))
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError as error:
+        raise ValueError("bind host must be a numeric private or loopback IP") from error
     allowed = (address.is_loopback or
                isinstance(address, ipaddress.IPv4Address) and (
                    address in ipaddress.ip_network("10.0.0.0/8") or
@@ -73,31 +304,247 @@ def validate(data: dict) -> dict:
                address in ipaddress.ip_network("fc00::/7"))
     if not allowed:
         raise ValueError("gateway must bind to a private or loopback IP")
-    parsed = urlsplit(data["url"])
+    return address, int(port)
+
+
+def validate_origin(url: str) -> tuple[str, int | None]:
+    parsed = urlsplit(url)
     if (parsed.scheme != "https" or not parsed.hostname or parsed.username or
             parsed.password or parsed.path not in ("", "/") or parsed.query or
-            parsed.fragment or not parsed.port):
-        raise ValueError("URL must be a trusted HTTPS origin with an explicit port")
-    if parsed.port != int(port):
-        raise ValueError("URL and bind port must match")
-    if not str(data.get("cert", "")).strip():
-        raise ValueError("TLS certificate path is required")
-    if not str(data.get("key", "")).strip():
-        raise ValueError("TLS private key path is required")
-    cert = Path(data["cert"]).expanduser().resolve(strict=True)
-    key = Path(data["key"]).expanduser().resolve(strict=True)
+            parsed.fragment):
+        raise ValueError("URL must be a trusted HTTPS origin without a path")
+    return parsed.hostname, parsed.port
+
+
+def validate_route(route: dict) -> dict:
+    identifier = str(route.get("id", "")).strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", identifier):
+        raise ValueError("route id must use lowercase letters, numbers, and dashes")
+    provider = str(route.get("provider", "custom")).strip()
+    if provider not in PROVIDERS:
+        raise ValueError(f"unsupported route provider: {provider}")
+    label = str(route.get("label", PROVIDERS[provider])).strip()
+    if not label or len(label) > 80:
+        raise ValueError("route label must contain 1 to 80 characters")
+    bind = str(route.get("bind", "")).strip()
+    address, bind_port = split_bind(bind)
+    url = str(route.get("url", "")).strip().rstrip("/")
+    _, url_port = validate_origin(url)
+    kind = str(route.get("kind", "proxy_tls" if provider in PROXY_PROVIDERS else "direct_tls"))
+    if kind not in ("direct_tls", "proxy_tls"):
+        raise ValueError("route kind must be direct_tls or proxy_tls")
+    if kind == "direct_tls" and (url_port or 443) != bind_port:
+        raise ValueError("direct route URL and bind port must match")
+    if kind == "proxy_tls" and not address.is_loopback:
+        raise ValueError("proxy frontend origins must bind only to loopback")
+    if not str(route.get("cert", "")).strip() or not str(route.get("key", "")).strip():
+        raise ValueError("TLS certificate and private key paths are required")
+    cert = Path(route["cert"]).expanduser().resolve(strict=True)
+    key = Path(route["key"]).expanduser().resolve(strict=True)
     if not cert.is_file() or not key.is_file():
         raise ValueError("certificate and key must be files")
     if key.stat().st_mode & 0o077:
         raise ValueError("TLS key must be mode 0600 or stricter")
+    origin_tls_name = str(route.get("origin_tls_name", "")).strip()
+    if kind == "proxy_tls" and not origin_tls_name:
+        raise ValueError("proxy route requires the TLS hostname served by its local certificate")
+    if origin_tls_name and (len(origin_tls_name) > 253 or "/" in origin_tls_name):
+        raise ValueError("invalid origin TLS hostname")
+    return {
+        "id": identifier,
+        "label": label,
+        "provider": provider,
+        "kind": kind,
+        "bind": bind,
+        "url": url,
+        "cert": str(cert),
+        "key": str(key),
+        "enabled": bool(route.get("enabled", True)),
+        **({"origin_tls_name": origin_tls_name} if origin_tls_name else {}),
+    }
+
+
+def legacy_route(data: dict) -> dict:
+    return {
+        "id": "primary",
+        "label": "Tailscale" if "ts.net" in str(data.get("url", "")) else "Primary route",
+        "provider": "tailscale" if "ts.net" in str(data.get("url", "")) else "custom",
+        "kind": "direct_tls",
+        "bind": data["bind"],
+        "url": data["url"],
+        "cert": data["cert"],
+        "key": data["key"],
+        "enabled": True,
+    }
+
+
+def validate(data: dict) -> dict:
+    project = Path(data["project_root"]).expanduser().resolve(strict=True)
+    if not project.is_dir():
+        raise ValueError("project root must be an existing directory")
+    state = Path(data["state_dir"]).expanduser().resolve()
+    if not state.is_absolute():
+        raise ValueError("state directory must be absolute")
+    raw_routes = data.get("routes")
+    if raw_routes is None:
+        raw_routes = [legacy_route(data)]
+    if not isinstance(raw_routes, list) or not 1 <= len(raw_routes) <= 16:
+        raise ValueError("configure between 1 and 16 routes")
+    routes = [validate_route(route) for route in raw_routes]
+    ids = [route["id"] for route in routes]
+    binds = [route["bind"] for route in routes if route["enabled"]]
+    if len(ids) != len(set(ids)):
+        raise ValueError("route ids must be unique")
+    if len(binds) != len(set(binds)):
+        raise ValueError("enabled route bind addresses must be unique")
+    if not any(route["enabled"] for route in routes):
+        raise ValueError("at least one route must be enabled")
+    primary_id = str(data.get("primary_route_id", routes[0]["id"]))
+    if primary_id not in ids:
+        raise ValueError("primary route does not exist")
+    if not next(route for route in routes if route["id"] == primary_id)["enabled"]:
+        raise ValueError("primary route must be enabled")
     profile = data.get("zed_user_data_dir", "")
     if profile:
         profile = str(Path(profile).expanduser().resolve(strict=True))
         if not Path(profile).is_dir():
             raise ValueError("Zed user data directory must exist")
-    return dict(project_root=str(project), state_dir=str(state), bind=data["bind"],
-                url=data["url"].rstrip("/"), cert=str(cert), key=str(key),
-                zed_user_data_dir=profile)
+    return dict(version=2, project_root=str(project), state_dir=str(state),
+                primary_route_id=primary_id, routes=routes, zed_user_data_dir=profile)
+
+
+def primary_route(data: dict) -> dict:
+    return next(route for route in data["routes"] if route["id"] == data["primary_route_id"])
+
+
+def connection_route_from_settings(settings: dict) -> dict:
+    zedlink = settings.get("zedlink")
+    if not isinstance(zedlink, dict):
+        raise ValueError("ZedLink settings are unavailable; run 'ZedLink: Repair setup'")
+    provider = str(zedlink.get("connection_provider", "")).strip()
+    route = {
+        "id": str(zedlink.get("connection_id", "")).strip(),
+        "label": str(zedlink.get("connection_label", "")).strip(),
+        "provider": provider,
+        "kind": "proxy_tls" if provider in PROXY_PROVIDERS else "direct_tls",
+        "bind": str(zedlink.get("connection_bind", "")).strip(),
+        "url": str(zedlink.get("connection_url", "")).strip(),
+        "cert": str(zedlink.get("connection_tls_certificate", "")).strip(),
+        "key": str(zedlink.get("connection_tls_private_key", "")).strip(),
+        "enabled": bool(zedlink.get("connection_enabled", True)),
+    }
+    origin_tls_name = str(zedlink.get("connection_origin_tls_name", "")).strip()
+    if origin_tls_name and provider in PROXY_PROVIDERS:
+        route["origin_tls_name"] = origin_tls_name
+    return route
+
+
+def read_zed_settings(data: dict) -> dict:
+    path = zed_settings_path(data)
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError("Zed settings use JSON comments; save this connection through settings.json") from error
+    if not isinstance(settings, dict):
+        raise ValueError("Zed settings root must be an object")
+    return settings
+
+
+def write_zed_settings(data: dict, settings: dict) -> None:
+    path = zed_settings_path(data)
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace symbolic link: {path}")
+    descriptor, temporary_name = tempfile.mkstemp(prefix="settings-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(settings, stream, indent=2)
+            stream.write("\n")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def prepare_connection_settings(data: dict, settings: dict) -> dict:
+    zedlink = settings.get("zedlink")
+    if not isinstance(zedlink, dict):
+        raise ValueError("ZedLink settings are unavailable; run 'ZedLink: Repair setup'")
+    provider = str(zedlink.get("connection_provider", "")).strip()
+    if provider not in PROVIDERS:
+        raise ValueError(f"unsupported connection provider: {provider}")
+    current = primary_route(data)
+    try:
+        _, port = split_bind(str(zedlink.get("connection_bind", "")))
+    except ValueError:
+        port = next_route_port(data)
+    address = None
+    hostname = None
+    if provider in ("tailscale", "headscale"):
+        address, hostname = tailscale_defaults()
+    elif provider == "netbird":
+        address, hostname = netbird_defaults()
+    elif provider in PROXY_PROVIDERS or provider == "ssh-local":
+        address = "127.0.0.1"
+    if address is None:
+        raise ValueError(
+            "automatic address detection is available for Tailscale, Headscale, NetBird, "
+            "Cloudflare, and SSH profiles; enter this provider's private IP and hostname manually")
+    updated = json.loads(json.dumps(settings))
+    draft = updated["zedlink"]
+    draft["connection_label"] = PROVIDERS[provider]
+    draft["connection_bind"] = f"{address}:{port}"
+    if hostname:
+        draft["connection_url"] = f"https://{hostname}:{port}"
+    draft["connection_tls_certificate"] = current["cert"]
+    draft["connection_tls_private_key"] = current["key"]
+    draft["connection_origin_tls_name"] = (
+        urlsplit(current["url"]).hostname or "" if provider in PROXY_PROVIDERS else "")
+    return updated
+
+
+def update_connection_from_settings(data: dict, settings: dict) -> dict:
+    route = connection_route_from_settings(settings)
+    routes = [dict(existing) for existing in data["routes"]]
+    existing_index = next(
+        (index for index, existing in enumerate(routes) if existing["id"] == route["id"]),
+        None)
+    if existing_index is None:
+        if len(routes) >= 16:
+            raise ValueError("a maximum of 16 connection profiles is supported")
+        routes.append(route)
+    else:
+        routes[existing_index] = route
+    updated = dict(data)
+    updated["routes"] = routes
+    updated["primary_route_id"] = route["id"]
+    return validate(updated)
+
+
+def select_connection_from_settings(data: dict, settings: dict) -> dict:
+    zedlink = settings.get("zedlink")
+    if not isinstance(zedlink, dict):
+        raise ValueError("ZedLink settings are unavailable; run 'ZedLink: Repair setup'")
+    identifier = str(zedlink.get("connection_id", "")).strip()
+    route = next((route for route in data["routes"] if route["id"] == identifier), None)
+    if route is None:
+        raise ValueError(f"connection profile does not exist: {identifier}")
+    if not route["enabled"]:
+        raise ValueError("enable the connection before making it primary")
+    updated = dict(data)
+    updated["primary_route_id"] = identifier
+    return validate(updated)
+
+
+def restart_gateway_detached() -> None:
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "restart-gateway"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def ensure_tailscale_certificate(cert_path: Path, key_path: Path, hostname: str) -> None:
@@ -148,7 +595,7 @@ def save_config(data: dict) -> None:
 
 def configure() -> None:
     try:
-        old = read_config()
+        old = validate(read_config())
     except FileNotFoundError:
         old = {}
 
@@ -185,9 +632,19 @@ def configure() -> None:
         print(f"Detected Tailscale address: {tailscale_address}")
     if tailscale_hostname:
         print(f"Detected Tailscale DNS name: {tailscale_hostname}")
-    data = {}
+    current_route = primary_route(old) if old else {}
+    old_values = {
+        "project_root": old.get("project_root", ""),
+        "state_dir": old.get("state_dir", ""),
+        "bind": current_route.get("bind", ""),
+        "url": current_route.get("url", ""),
+        "cert": current_route.get("cert", ""),
+        "key": current_route.get("key", ""),
+        "zed_user_data_dir": old.get("zed_user_data_dir", ""),
+    }
+    answers = {}
     for field, label in prompts.items():
-        current = old.get(field, defaults[field])
+        current = old_values.get(field) or defaults[field]
         print(f"\n{label}")
         print(f"  {help_text[field]}")
         while True:
@@ -196,13 +653,37 @@ def configure() -> None:
             if field == "project_root" and not answer:
                 print("  A project path is required. Example: /home/you/Documents/my-project")
                 continue
-            data[field] = answer
+            answers[field] = answer
             break
-    cert_path = Path(data["cert"]).expanduser()
-    key_path = Path(data["key"]).expanduser()
-    if tailscale_hostname:
+    cert_path = Path(answers["cert"]).expanduser()
+    key_path = Path(answers["key"]).expanduser()
+    route_hostname = urlsplit(answers["url"]).hostname
+    if tailscale_hostname and route_hostname == tailscale_hostname:
         ensure_tailscale_certificate(cert_path, key_path, tailscale_hostname)
+    route_id = current_route.get("id", "tailscale" if route_hostname == tailscale_hostname else "primary")
+    updated_route = {
+        "id": route_id,
+        "label": current_route.get("label", "Tailscale" if route_hostname == tailscale_hostname else "Primary route"),
+        "provider": current_route.get("provider", "tailscale" if route_hostname == tailscale_hostname else "custom"),
+        "kind": current_route.get("kind", "direct_tls"),
+        "bind": answers["bind"],
+        "url": answers["url"],
+        "cert": answers["cert"],
+        "key": answers["key"],
+        "enabled": True,
+    }
+    routes = [route for route in old.get("routes", []) if route["id"] != route_id]
+    routes.insert(0, updated_route)
+    data = {
+        "version": 2,
+        "project_root": answers["project_root"],
+        "state_dir": answers["state_dir"],
+        "primary_route_id": route_id,
+        "routes": routes,
+        "zed_user_data_dir": answers["zed_user_data_dir"],
+    }
     save_config(data)
+    sync_zed_settings(data)
 
 
 def quick_setup(project_root: str) -> None:
@@ -222,23 +703,354 @@ def quick_setup(project_root: str) -> None:
         cert_path = tls_directory / f"{hostname}.crt"
         key_path = tls_directory / f"{hostname}.key"
         ensure_tailscale_certificate(cert_path, key_path, hostname)
+        route = dict(
+            id="tailscale", label="Tailscale", provider="tailscale", kind="direct_tls",
+            enabled=True,
+            bind=f"{address}:44679", url=f"https://{hostname}:44679",
+            cert=str(cert_path), key=str(key_path),
+        )
         data = dict(
+            version=2,
             project_root=str(project),
             state_dir=str(Path.home() / ".local/state/zedlink"),
-            bind=f"{address}:44679",
-            url=f"https://{hostname}:44679",
-            cert=str(cert_path),
-            key=str(key_path),
+            primary_route_id="tailscale",
+            routes=[route],
             zed_user_data_dir="",
         )
     else:
         data["project_root"] = str(project)
     save_config(data)
+    sync_zed_settings(data)
     subprocess.run([sys.executable, str(ROOT / "tools/zed_task_installer.py"), "install"],
                    check=True)
+    launcher = install_desktop_launcher()
+    cli = install_cli_launcher(data)
     print(f"\nZedLink is configured for this Zed project: {project}")
     print("Global ZedLink tasks are installed and available from any Zed project.")
-    print("Next: run 'ZedLink: Start patched Zed', then use /remote-control in its Agent thread.")
+    print(f"Application launcher installed: {launcher}")
+    print(f"Patched Zed command installed: {cli}")
+    print("Next: open 'ZedLink — Patched Zed', then use /remote-control in its Agent thread.")
+
+
+def netbird_defaults() -> tuple[str | None, str | None]:
+    try:
+        status = json.loads(subprocess.check_output(
+            ["netbird", "status", "--json"], text=True, timeout=4,
+            stderr=subprocess.DEVNULL))
+        address = str(status.get("netbirdIp", "")).strip()
+        hostname = str(status.get("fqdn", "")).rstrip(".")
+        if address:
+            ipaddress.ip_address(address)
+            return address, hostname or None
+    except (FileNotFoundError, ValueError, json.JSONDecodeError,
+            subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+    return None, None
+
+
+def next_route_port(data: dict) -> int:
+    used = {split_bind(route["bind"])[1] for route in data["routes"]}
+    for port in range(44679, 44779):
+        if port not in used:
+            return port
+    raise ValueError("no free ZedLink route port in the managed range")
+
+
+def prompt_value(label: str, default: str = "", required: bool = True) -> str:
+    while True:
+        suffix = f" [{default}]" if default else ""
+        value = input(f"{label}{suffix}: ").strip() or default
+        if value or not required:
+            return value
+        print("  A value is required.")
+
+
+def write_frontend_template(route: dict, state: Path) -> Path | None:
+    if route["provider"] not in ("cloudflare", "ssh-reverse", "ssh-local"):
+        return None
+    directory = state / "frontends" / route["id"]
+    private_directory(directory.parent)
+    private_directory(directory)
+    address, port = split_bind(route["bind"])
+    public_hostname = urlsplit(route["url"]).hostname
+    origin_name = route.get("origin_tls_name", public_hostname)
+    if route["provider"] == "cloudflare":
+        content = f"""# Replace the two placeholders after creating a named Cloudflare Tunnel.
+# Protect {route['url']} with a Cloudflare Access self-hosted application.
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /private/path/REPLACE_WITH_TUNNEL_UUID.json
+ingress:
+  - hostname: {public_hostname}
+    service: https://{address}:{port}
+    originRequest:
+      originServerName: {origin_name}
+      connectTimeout: 10s
+  - service: http_status:404
+"""
+        path = directory / "cloudflared.yml"
+    elif route["provider"] == "ssh-reverse":
+        content = f"""# VPS Caddyfile. The reverse SSH port stays on VPS loopback.
+{public_hostname} {{
+    reverse_proxy https://127.0.0.1:{port} {{
+        transport http {{
+            tls_server_name {origin_name}
+        }}
+    }}
+}}
+
+# Workstation command template. Replace USER and VPS_HOST.
+# ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \\
+#   -o ServerAliveCountMax=3 -R 127.0.0.1:{port}:127.0.0.1:{port} USER@VPS_HOST
+"""
+        path = directory / "Caddyfile"
+    else:
+        content = f"""Open an SSH local forward from the client computer:
+
+ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \\
+  -o ServerAliveCountMax=3 -L {port}:127.0.0.1:{port} USER@ZED_WORKSTATION
+
+Map {public_hostname} to 127.0.0.1 on that client, then open {route['url']}.
+The hostname must match the configured TLS certificate. Keep strict host-key checking enabled.
+"""
+        path = directory / "README.txt"
+    path.write_text(content, encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
+def add_route(data: dict) -> dict:
+    print("\nConnection providers")
+    keys = list(PROVIDERS)
+    for index, key in enumerate(keys, 1):
+        print(f"{index}. {PROVIDERS[key]}")
+    choice = prompt_value("Provider number")
+    if not choice.isdigit() or not 1 <= int(choice) <= len(keys):
+        raise ValueError("invalid provider number")
+    provider = keys[int(choice) - 1]
+    existing = {route["id"] for route in data["routes"]}
+    identifier = provider
+    counter = 2
+    while identifier in existing:
+        identifier = f"{provider}-{counter}"
+        counter += 1
+    identifier = prompt_value("Route ID", identifier)
+    label = prompt_value("Display name", PROVIDERS[provider])
+    port = next_route_port(data)
+    address = None
+    hostname = None
+    if provider in ("tailscale", "headscale"):
+        address, hostname = tailscale_defaults()
+    elif provider == "netbird":
+        address, hostname = netbird_defaults()
+    if provider in PROXY_PROVIDERS or provider == "ssh-local":
+        address = "127.0.0.1"
+    bind = prompt_value("Private or loopback listener IP:port",
+                        f"{address}:{port}" if address else "")
+    if provider in PROXY_PROVIDERS:
+        url = prompt_value("Public trusted HTTPS origin")
+    else:
+        suggested_url = f"https://{hostname}:{port}" if hostname else ""
+        url = prompt_value("Trusted HTTPS origin", suggested_url)
+    primary = primary_route(data)
+    cert = prompt_value("TLS certificate PEM path", primary["cert"])
+    key = prompt_value("TLS private key PEM path", primary["key"])
+    route = {
+        "id": identifier,
+        "label": label,
+        "provider": provider,
+        "kind": "proxy_tls" if provider in PROXY_PROVIDERS else "direct_tls",
+        "bind": bind,
+        "url": url,
+        "cert": cert,
+        "key": key,
+        "enabled": True,
+    }
+    if provider in PROXY_PROVIDERS:
+        route["origin_tls_name"] = prompt_value(
+            "Hostname covered by the local origin certificate",
+            urlsplit(primary["url"]).hostname or "")
+    updated = dict(data)
+    updated["routes"] = data["routes"] + [route]
+    updated = validate(updated)
+    template = write_frontend_template(
+        next(item for item in updated["routes"] if item["id"] == identifier),
+        Path(updated["state_dir"]))
+    save_config(updated)
+    print(f"Added enabled listener definition: {label}")
+    print("The provider route remains unavailable until its VPN, connector, tunnel, or SSH path is configured.")
+    if template:
+        print(f"Frontend template: {template}")
+    print("Run 'ZedLink: Restart gateway' to activate enabled listener changes.")
+    return updated
+
+
+def manage_routes(data: dict) -> None:
+    print("\nConfigured ZedLink routes")
+    for index, route in enumerate(data["routes"], 1):
+        flags = []
+        if route["id"] == data["primary_route_id"]:
+            flags.append("primary")
+        flags.append("enabled" if route["enabled"] else "disabled")
+        print(f"{index}. {route['label']} [{route['provider']}] {route['url']} -> {route['bind']} ({', '.join(flags)})")
+    print("\na. Add route\nt. Toggle enabled\np. Make primary\nr. Remove route\ng. Generate frontend template\nEnter. Exit")
+    action = input("Action: ").strip().lower()
+    if not action:
+        return
+    if action == "a":
+        add_route(data)
+        return
+    if action not in ("t", "p", "r", "g"):
+        raise ValueError("invalid route action")
+    choice = prompt_value("Route number")
+    if not choice.isdigit() or not 1 <= int(choice) <= len(data["routes"]):
+        raise ValueError("invalid route number")
+    index = int(choice) - 1
+    route = data["routes"][index]
+    updated = dict(data)
+    updated["routes"] = [dict(item) for item in data["routes"]]
+    if action == "t":
+        updated["routes"][index]["enabled"] = not route["enabled"]
+    elif action == "p":
+        if not route["enabled"]:
+            raise ValueError("enable the route before making it primary")
+        updated["primary_route_id"] = route["id"]
+    elif action == "r":
+        if len(updated["routes"]) == 1:
+            raise ValueError("cannot remove the only route")
+        if input(f"Type REMOVE to delete {route['label']}: ").strip() != "REMOVE":
+            return
+        updated["routes"].pop(index)
+        if updated["primary_route_id"] == route["id"]:
+            enabled = next((item for item in updated["routes"] if item["enabled"]), None)
+            if enabled is None:
+                updated["routes"][0]["enabled"] = True
+                enabled = updated["routes"][0]
+            updated["primary_route_id"] = enabled["id"]
+    else:
+        template = write_frontend_template(route, Path(data["state_dir"]))
+        if template is None:
+            raise ValueError("this route does not use a generated frontend template")
+        print(f"Frontend template: {template}")
+        return
+    save_config(updated)
+    print("Route configuration updated. Run 'ZedLink: Restart gateway' to apply it.")
+
+
+def write_listener_file(data: dict) -> Path:
+    state = Path(data["state_dir"])
+    directory = state / "gateway"
+    private_directory(directory)
+    path = directory / "listeners.json"
+    payload = {
+        "version": 1,
+        "listeners": [
+            {key: route[key] for key in ("id", "bind", "cert", "key")}
+            for route in data["routes"] if route["enabled"]
+        ],
+    }
+    descriptor, name = tempfile.mkstemp(prefix="listeners-", dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return path
+
+
+def choose_route(data: dict) -> dict:
+    enabled = [route for route in data["routes"] if route["enabled"]]
+    if len(enabled) == 1:
+        return enabled[0]
+    primary = primary_route(data)
+    print("Choose the origin this device can reach:")
+    for index, route in enumerate(enabled, 1):
+        marker = " (default)" if route["id"] == primary["id"] else ""
+        print(f"{index}. {route['label']} — {route['url']}{marker}")
+    answer = input("Route number [default]: ").strip()
+    if not answer:
+        return primary
+    if not answer.isdigit() or not 1 <= int(answer) <= len(enabled):
+        raise ValueError("invalid route number")
+    return enabled[int(answer) - 1]
+
+
+def check_routes(data: dict) -> None:
+    expected = None
+    try:
+        expected = admin(Path(data["state_dir"]), "devices")["gateway_id"]
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+        pass
+    for route in data["routes"]:
+        if not route["enabled"]:
+            print(f"SKIP {route['label']}: disabled")
+            continue
+        try:
+            result = subprocess.run(
+                ["curl", "--silent", "--show-error", "--fail", "--max-time", "8",
+                 f"{route['url']}/v1/gateway"], check=True, capture_output=True, text=True)
+            identity = json.loads(result.stdout)["gateway_id"]
+            if expected and identity != expected:
+                print(f"FAIL {route['label']}: gateway identity mismatch")
+            else:
+                print(f"PASS {route['label']}: TLS, HTTPS, and gateway identity")
+        except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as error:
+            detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
+            print(f"FAIL {route['label']}: {detail}")
+
+
+def check_selected_connection(data: dict, settings: dict) -> str:
+    zedlink = settings.get("zedlink")
+    if not isinstance(zedlink, dict):
+        raise ValueError("ZedLink settings are unavailable; run 'ZedLink: Repair setup'")
+    identifier = str(zedlink.get("connection_id", "")).strip()
+    route = next((route for route in data["routes"] if route["id"] == identifier), None)
+    if route is None:
+        raise ValueError("save this connection before checking it")
+    if not route["enabled"]:
+        raise ValueError("enable and save this connection before checking it")
+
+    try:
+        expected_gateway_id = admin(Path(data["state_dir"]), "devices")["gateway_id"]
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as error:
+        raise ValueError("the local ZedLink gateway is unavailable") from error
+
+    try:
+        result = subprocess.run(
+            ["curl", "--silent", "--show-error", "--fail", "--max-time", "5",
+             f"{route['url']}/v1/gateway"],
+            check=True, capture_output=True, text=True)
+        gateway_id = json.loads(result.stdout)["gateway_id"]
+    except FileNotFoundError as error:
+        raise ValueError("curl is required to check the connection") from error
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or "HTTPS request failed"
+        raise ValueError(detail) from error
+    except (json.JSONDecodeError, KeyError) as error:
+        raise ValueError("endpoint did not return a ZedLink gateway identity") from error
+    if gateway_id != expected_gateway_id:
+        raise ValueError("endpoint belongs to a different ZedLink gateway")
+    return f"{route['label']} passed trusted TLS, HTTPS, and gateway identity checks."
+
+
+def stop_gateway(state: Path) -> bool:
+    try:
+        result = admin(state, "shutdown")
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return False
+    if result.get("stopping") is not True:
+        raise ValueError("gateway rejected the shutdown request")
+    for _ in range(50):
+        time.sleep(0.1)
+        try:
+            admin(state, "devices")
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return True
+    raise ValueError("gateway did not stop within five seconds")
 
 
 def admin(state: Path, action: str, identifier: str | None = None) -> dict:
@@ -247,13 +1059,114 @@ def admin(state: Path, action: str, identifier: str | None = None) -> dict:
     command = [str(GATEWAY), "admin", str(state / "gateway"), action]
     if identifier:
         command.append(identifier)
-    return json.loads(subprocess.check_output(command, text=True))
+    return json.loads(subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL))
+
+
+def diagnose(data: dict) -> None:
+    state = Path(data["state_dir"])
+    failures = 0
+
+    def report(ok: bool, label: str, detail: str) -> None:
+        nonlocal failures
+        print(f"{'PASS' if ok else 'FAIL'}  {label}: {detail}")
+        if not ok:
+            failures += 1
+
+    report(Path(data["project_root"]).is_dir(), "Project", data["project_root"])
+    report(state.is_dir() and not state.is_symlink() and state.stat().st_mode & 0o077 == 0,
+           "Private state", "directory exists with private permissions")
+    report(ZED.is_file(), "Patched Zed", str(ZED))
+    report(GATEWAY.is_file(), "Gateway binary", str(GATEWAY))
+
+    settings_path = zed_settings_path(data)
+    try:
+        native = json.loads(settings_path.read_text(encoding="utf-8")).get("zedlink", {})
+        settings_ok = (
+            native.get("enabled") is True
+            and native.get("state_directory") == data["state_dir"]
+            and native.get("project_root") == data["project_root"]
+            and native.get("manager_path") == str(Path(__file__).resolve())
+        )
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+        settings_ok = False
+    report(settings_ok, "Native settings", str(settings_path))
+
+    for route in data["routes"]:
+        if not route["enabled"]:
+            continue
+        certificate = Path(route["cert"])
+        key = Path(route["key"])
+        route_ok = certificate.is_file() and key.is_file() and key.stat().st_mode & 0o077 == 0
+        report(route_ok, f"TLS route {route['label']}", route["url"])
+
+    socket_path = state / "probe/zedlink.sock"
+    try:
+        subprocess.run(
+            [sys.executable, str(ROOT / "tools/zedlink_probe_client.py"),
+             "--socket", str(socket_path), "info"],
+            check=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        bridge_ok = True
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        bridge_ok = False
+    report(bridge_ok, "Native bridge", "patched Zed is connected")
+
+    try:
+        devices = admin(state, "devices")["devices"]
+        gateway_detail = f"online with {len(devices)} paired device(s)"
+        gateway_ok = True
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+        gateway_detail = "offline"
+        gateway_ok = False
+    report(gateway_ok, "Gateway", gateway_detail)
+
+    print("INFO  Model provider: owned and tested by the selected Agent thread inside Zed")
+    if failures:
+        raise ValueError(f"diagnostics found {failures} problem(s); run 'ZedLink: Repair setup'")
+
+
+def repair(data: dict) -> None:
+    state = Path(data["state_dir"])
+    for directory in (state, state / "probe", state / "gateway"):
+        private_directory(directory)
+    if not sync_zed_settings(data):
+        raise ValueError("native settings use JSON comments; update the ZedLink Settings page manually")
+    subprocess.run([sys.executable, str(ROOT / "tools/zed_task_installer.py"), "install"],
+                   check=True)
+    install_desktop_launcher()
+    install_cli_launcher(data)
+    try:
+        admin(state, "devices")
+        gateway_started = False
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "start-gateway"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        gateway_started = True
+        for _ in range(50):
+            time.sleep(0.1)
+            try:
+                admin(state, "devices")
+                break
+            except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+                continue
+        else:
+            raise ValueError("gateway did not become ready within five seconds")
+    print("Repaired native settings, tasks, launchers, and private directories.")
+    print("Started the configured gateway." if gateway_started else "Gateway was already running.")
+    print("Restart patched Zed once if it was open so the updated bridge settings take effect.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("quick-setup", "configure", "status", "start-zed",
-                                           "start-gateway", "pair", "devices", "revoke"))
+    parser.add_argument("action", choices=("quick-setup", "configure", "manage-routes",
+                                           "check-routes", "status", "start-zed",
+                                           "start-gateway", "restart-gateway", "stop-gateway",
+                                           "install-launcher", "remove-launcher",
+                                           "install-cli", "remove-cli",
+                                           "pair", "devices", "revoke", "diagnose", "repair",
+                                           "save-connection", "select-connection",
+                                           "detect-connection", "check-connection"))
     parser.add_argument("project_root", nargs="?")
     args = parser.parse_args()
     try:
@@ -276,8 +1189,41 @@ def main() -> None:
         data = validate(read_config())
         state = Path(data["state_dir"])
         socket_path = state / "probe/zedlink.sock"
-        if args.action == "status":
-            print(f"Project: {data['project_root']}\nGateway: {data['url']} ({data['bind']})")
+        if args.action == "manage-routes":
+            manage_routes(data)
+        elif args.action == "detect-connection":
+            settings = prepare_connection_settings(data, read_zed_settings(data))
+            write_zed_settings(data, settings)
+            print("Detected provider defaults. Review the URL and TLS fields before saving.")
+        elif args.action == "save-connection":
+            updated = update_connection_from_settings(data, read_zed_settings(data))
+            save_config(updated)
+            sync_zed_settings(updated)
+            restart_gateway_detached()
+            route = primary_route(updated)
+            print(f"Saved and activated {route['label']} ({route['provider']}).")
+        elif args.action == "check-connection":
+            print(check_selected_connection(data, read_zed_settings(data)))
+        elif args.action == "select-connection":
+            updated = select_connection_from_settings(data, read_zed_settings(data))
+            save_config(updated)
+            sync_zed_settings(updated)
+            restart_gateway_detached()
+            route = primary_route(updated)
+            print(f"Activated {route['label']} ({route['provider']}).")
+        elif args.action == "diagnose":
+            diagnose(data)
+        elif args.action == "repair":
+            repair(data)
+        elif args.action == "check-routes":
+            check_routes(data)
+        elif args.action == "status":
+            print(f"Project: {data['project_root']}")
+            print("Gateway routes:")
+            for route in data["routes"]:
+                state_label = "enabled" if route["enabled"] else "disabled"
+                primary_label = ", primary" if route["id"] == data["primary_route_id"] else ""
+                print(f"  {route['label']}: {route['url']} -> {route['bind']} ({state_label}{primary_label})")
             try:
                 subprocess.run(
                     [sys.executable, str(ROOT / "tools/zedlink_probe_client.py"),
@@ -288,38 +1234,74 @@ def main() -> None:
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 print("Patched Zed bridge: offline")
             print(f"Patched Zed: {'built' if ZED.is_file() else 'not built'}")
+            print(f"Patched Zed executable: {ZED}")
+            print(f"Patched Zed launcher: {'installed' if desktop_launcher_path().is_file() else 'not installed'}")
+            print(f"Patched Zed command: {'installed' if cli_launcher_path().is_file() else 'not installed'}")
             print(f"Gateway binary: {'built' if GATEWAY.is_file() else 'not built'}")
             try:
                 result = admin(state, "devices")
                 print(f"Gateway admin: online; paired devices: {len(result['devices'])}")
             except (OSError, subprocess.CalledProcessError, ValueError):
                 print("Gateway admin: offline")
+        elif args.action == "install-launcher":
+            launcher = install_desktop_launcher()
+            print(f"Installed application launcher: {launcher}")
+            print("Open 'ZedLink — Patched Zed' from the application menu for future remote-control sessions.")
+        elif args.action == "remove-launcher":
+            removed = remove_desktop_launcher()
+            print("Removed the ZedLink application launcher." if removed else "ZedLink application launcher is not installed.")
+        elif args.action == "install-cli":
+            cli = install_cli_launcher(data)
+            print(f"Installed patched Zed command: {cli}")
+            print("Use 'zed', 'zed .', or 'zed path/to/file'.")
+        elif args.action == "remove-cli":
+            removed = remove_cli_launcher()
+            print("Removed the ZedLink zed command." if removed else "ZedLink zed command is not installed.")
         elif args.action == "start-zed":
             if not ZED.is_file():
                 raise ValueError("build patched Zed first (ZedLink: Install / build)")
             for directory in (state, state / "probe"):
                 private_directory(directory)
             environment = os.environ.copy()
-            environment.update(ZEDLINK_PROBE_DIR=str(state / "probe"),
-                               ZEDLINK_PROBE_PROJECT_ROOT=data["project_root"],
-                               ZED_RELEASE_CHANNEL="dev")
+            environment["ZED_RELEASE_CHANNEL"] = "dev"
+            if not has_native_zedlink_settings(data):
+                environment.update(ZEDLINK_PROBE_DIR=str(state / "probe"),
+                                   ZEDLINK_PROBE_PROJECT_ROOT=data["project_root"])
             command = [str(ZED)]
             if data["zed_user_data_dir"]:
                 command += ["--user-data-dir", data["zed_user_data_dir"]]
             command.append(data["project_root"])
             print("Starting patched Zed as a separate Zed Dev instance.", flush=True)
+            print(f"Executable: {ZED}", flush=True)
+            print(f"Project: {data['project_root']}", flush=True)
             print("Use /remote-control only in the Zed Dev window; ordinary Zed does not contain it.",
                   flush=True)
             os.execve(str(ZED), command, environment)
-        elif args.action == "start-gateway":
+        elif args.action in ("start-gateway", "restart-gateway"):
             if not GATEWAY.is_file():
                 raise ValueError("build gateway first (ZedLink: Install / build)")
             for directory in (state, state / "gateway"):
                 private_directory(directory)
-            os.execv(str(GATEWAY), [str(GATEWAY), "serve", data["bind"], data["cert"],
-                                    data["key"], str(socket_path), str(state / "gateway")])
+            if args.action == "restart-gateway" and stop_gateway(state):
+                print("Stopped the existing ZedLink gateway.")
+            try:
+                existing = admin(state, "devices")
+                print(f"ZedLink gateway is already running with {len(existing['devices'])} paired devices.")
+                print("Stop its existing Zed task before restarting it to apply route changes.")
+                return
+            except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+                pass
+            listener_file = write_listener_file(data)
+            os.execv(str(GATEWAY), [str(GATEWAY), "serve-routes", str(listener_file),
+                                    str(socket_path), str(state / "gateway")])
+        elif args.action == "stop-gateway":
+            if stop_gateway(state):
+                print("ZedLink gateway stopped.")
+            else:
+                print("ZedLink gateway is not running.")
         elif args.action == "pair":
-            subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), data["url"],
+            route = choose_route(data)
+            subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
                             str(state / "gateway")], check=True)
         elif args.action == "devices":
             result = admin(state, "devices")
