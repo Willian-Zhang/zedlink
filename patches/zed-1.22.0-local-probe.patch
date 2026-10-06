@@ -194,7 +194,7 @@ index 6b6196c438..d156a03abe 100644
      }
  }
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index bfefb986bd..e341fa6a35 100644
+index bfefb986bd..c2bee51c84 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -1163,6 +1163,19 @@ impl ThreadView {
@@ -228,7 +228,7 @@ index bfefb986bd..e341fa6a35 100644
      /// Sends a bare `/command` turn and queues everything the user typed after
      /// it as a follow-up message. The queued remainder auto-processes when the
      /// command turn stops, so e.g. `/compact do X` compacts and then runs `do X`
-@@ -1861,6 +1878,125 @@ impl ThreadView {
+@@ -1861,6 +1878,137 @@ impl ThreadView {
          cx.notify();
      }
  
@@ -328,12 +328,24 @@ index bfefb986bd..e341fa6a35 100644
 +                format!("{provider}'s API returned an unexpected error."),
 +                true,
 +            ),
-+            ThreadError::Other { message, .. } => (
-+                "other",
-+                "Agent request failed".into(),
-+                message.to_string(),
-+                true,
-+            ),
++            ThreadError::Other { message, .. } => {
++                let normalized = message.to_lowercase();
++                if normalized.contains("image input") && normalized.contains("vision") {
++                    (
++                        "unsupported_image_input",
++                        "Image input unavailable".into(),
++                        message.to_string(),
++                        false,
++                    )
++                } else {
++                    (
++                        "other",
++                        "Agent request failed".into(),
++                        message.to_string(),
++                        false,
++                    )
++                }
++            }
 +        })
 +    }
 +
@@ -354,7 +366,7 @@ index bfefb986bd..e341fa6a35 100644
      fn emit_thread_error_telemetry(&self, error: &ThreadError, cx: &mut Context<Self>) {
          let (error_kind, acp_error_code, message): (&str, Option<SharedString>, SharedString) =
              match error {
-@@ -6984,6 +7120,14 @@ impl ThreadView {
+@@ -6984,6 +7132,14 @@ impl ThreadView {
              commands.push(PromptLocalCommand::ThumbsDown);
          }
  

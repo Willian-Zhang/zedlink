@@ -96,7 +96,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Native Zed Agent</strong></div>
-            <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.15</code></div>
+            <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.05.16</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
@@ -107,9 +107,8 @@
     <section class="workspace" aria-label="Native Zed conversation">
       <div class="conversation-toolbar"><div class="conversation-head"><div class="conversation-title"><p class="eyebrow">NATIVE ZED AGENT</p><h2 id="thread-title">Zed Agent</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">No session</span><button id="show-context" class="toolbar-action" type="button" aria-label="Open project context" aria-expanded="false">Context</button></div></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
-      <section id="agent-health" class="agent-health hidden" role="alert" aria-live="assertive"><div><strong id="agent-health-title">Agent request failed</strong><p id="agent-health-message"></p></div><span id="agent-health-recovery"></span></section>
       <section id="approvals" class="approvals hidden" aria-label="Pending Zed approvals"></section>
-      <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your workspace is ready</h3><p>Expose a thread in desktop Zed or start a new session from the sidebar.</p></div></div><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
+      <div id="messages" class="messages" aria-live="off"><div id="transcript-entries" class="transcript-entries"><div class="empty"><span class="empty-icon" aria-hidden="true">✦</span><h3>Your workspace is ready</h3><p>Expose a thread in desktop Zed or start a new session from the sidebar.</p></div></div><section id="agent-health" class="agent-health hidden" role="alert" aria-live="assertive"><div><strong id="agent-health-title">Agent request failed</strong><p id="agent-health-message"></p></div><span id="agent-health-recovery"></span></section><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
       <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
       <div class="composer-wrap">
         <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>

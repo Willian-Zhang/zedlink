@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.15";
+const UI_BUILD = "2026.10.05.16";
 const state = {
   gatewayId: null,
   token: null,
@@ -36,6 +36,7 @@ const state = {
   connectionStatus: "",
   threadError: null,
   retryStatus: null,
+  errorSignature: null,
   snapshotPromise: null,
   snapshotQueued: false,
   lastSnapshotAt: 0,
@@ -573,6 +574,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     state.threadStatus = null;
     state.threadError = null;
     state.retryStatus = null;
+    state.errorSignature = null;
     renderAgentHealth();
     safeStore.remove(tokenKey());
     requireManualGatewayVerification();
@@ -930,11 +932,12 @@ async function createSession(event) {
 function validAgentError(error) {
   if (!error || typeof error !== "object") return null;
   if (typeof error.title !== "string" || typeof error.message !== "string") return null;
+  const unsupportedImage = /image input/i.test(error.message) && /vision/i.test(error.message);
   return {
-    kind: typeof error.kind === "string" ? error.kind : "agent_error",
-    title: error.title,
+    kind: unsupportedImage ? "unsupported_image_input" : typeof error.kind === "string" ? error.kind : "agent_error",
+    title: unsupportedImage ? "Image input unavailable" : error.title,
     message: error.message,
-    retrying: error.retrying === true,
+    retrying: unsupportedImage ? false : error.retrying === true,
   };
 }
 
@@ -953,6 +956,11 @@ function renderAgentHealth() {
   const panel = $("agent-health");
   const retry = state.retryStatus;
   const error = state.threadError;
+  const signature = retry
+    ? `retry:${retry.lastError}:${retry.attempt}:${retry.maxAttempts}`
+    : error ? `error:${error.kind}:${error.message}` : null;
+  const newlyVisible = signature && signature !== state.errorSignature;
+  state.errorSignature = signature;
   panel.classList.toggle("hidden", !retry && !error);
   panel.classList.toggle("retrying", !!retry);
   renderHeaderModel();
@@ -970,6 +978,10 @@ function renderAgentHealth() {
       : "Check desktop Zed";
   }
   renderConnectionHealth();
+  if (newlyVisible) requestAnimationFrame(() => panel.scrollIntoView({
+    block: "nearest",
+    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+  }));
 }
 
 function renderThreads() {
@@ -1021,6 +1033,7 @@ function renderThreads() {
 
 async function selectThread(threadId) {
   closeEventStream("connecting");
+  state.errorSignature = null;
   state.threadId = threadId;
   safeStore.write(selectedThreadKey(), threadId);
   state.commands = [];

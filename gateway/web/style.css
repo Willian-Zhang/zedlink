@@ -146,7 +146,7 @@ input[type=search] { appearance: none; }
 .notice, .delivery { border: 1px solid #735f43; background: #1c1915; color: #edcf9d; font-size: .76rem; line-height: 1.45; }
 .notice { margin: 12px max(24px, calc((100% - 1220px) / 2)) 0; padding: 9px 12px; }
 .panel .notice { margin: 14px 0 0; }
-.agent-health { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; margin: 12px max(24px, calc((100% - 1220px) / 2)) 0; padding: 12px 14px; border: 1px solid #7f4545; background: #1d0f10; color: #ffd0d0; }
+.agent-health { display: grid; align-self: flex-start; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; width: min(100%, 1060px); margin: 12px 0; padding: 12px 14px; border: 1px solid #7f4545; background: #1d0f10; color: #ffd0d0; }
 .agent-health strong { display: block; font-size: .82rem; }
 .agent-health p { margin: 5px 0 0; color: #dfb0b0; font-size: .76rem; line-height: 1.45; overflow-wrap: anywhere; }
 .agent-health > span { color: #e2bc80; font: .68rem ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; }
@@ -301,7 +301,7 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .git-diff { margin: 14px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--line); background: #050607; color: #d7dbd9; white-space: pre; font: .7rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (min-width: 1180px) {
   body.context-open .conversation-toolbar, body.context-open .messages, body.context-open .composer-wrap,
-  body.context-open .notice, body.context-open .agent-health, body.context-open .approvals { margin-right: 390px; }
+  body.context-open .notice, body.context-open .approvals { margin-right: 390px; }
 }
 .mobile-tabs { display: none; }
 .settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 15px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .78rem; }
@@ -386,7 +386,7 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   body:not(.thread-open) .conversation-head { visibility: visible; }
   .state-pill { font-size: .62rem; }
   .notice { max-height: 58px; overflow: auto; margin: 6px 11px 0; padding: 7px 9px; font-size: .72rem; }
-  .agent-health { grid-template-columns: 1fr; gap: 7px; margin: 6px 11px 0; padding: 9px 10px; }
+  .agent-health { grid-template-columns: 1fr; gap: 7px; margin: 8px 0; padding: 9px 10px; }
   .agent-health p { font-size: .72rem; }
   .messages { padding: 7px 12px 12px; }
   .message { padding: 14px 0; }

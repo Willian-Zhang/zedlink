@@ -486,7 +486,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.15"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.16"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -640,13 +640,17 @@ def main():
                 probe.sequence += 1
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".thread-item.running"))
                 wait.until(lambda driver: driver.find_element(By.ID, "activity-toggle").get_attribute("aria-expanded") == "false")
-                probe.agent_error = {"kind": "stream_error", "title": "Model connection interrupted",
-                                     "message": "The local model endpoint refused the connection.", "retrying": True}
+                probe.agent_error = {"kind": "other", "title": "Agent request failed",
+                                     "message": "image input requires a supported vision checkpoint served with --vision",
+                                     "retrying": True}
                 assert browser.execute_async_script(
                     "const done=arguments[0]; loadThreads().then(() => done('ok'), error => done(String(error)))"
                 ) == "ok"
                 wait.until(lambda driver: driver.find_element(By.ID, "agent-health").is_displayed())
-                assert "local model endpoint" in browser.find_element(By.ID, "agent-health-message").text
+                assert browser.find_element(By.ID, "agent-health").find_element(By.XPATH, "..").get_attribute("id") == "messages"
+                assert browser.find_element(By.ID, "agent-health-title").text == "Image input unavailable"
+                assert "supported vision checkpoint" in browser.find_element(By.ID, "agent-health-message").text
+                assert browser.find_element(By.ID, "agent-health-recovery").text == "CHECK DESKTOP ZED"
                 assert browser.find_element(By.ID, "thread-state").text == "REQUEST FAILED"
                 assert "request failed" in browser.find_element(By.ID, "header-model").text.casefold()
                 assert "error" in browser.find_element(By.ID, "header-model").get_attribute("class")
