@@ -963,6 +963,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "approval.respond"
             | "project.files"
             | "project.file"
+            | "project.search"
             | "changes.snapshot"
             | "changes.diff"
             | "changes.stage"

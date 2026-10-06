@@ -289,6 +289,13 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .context-summary { margin-bottom: 10px; padding: 10px 0; color: var(--muted); font-size: .74rem; line-height: 1.5; }
 .context-primary { width: 100%; margin-bottom: 11px; }
 .context-list { display: grid; }
+.context-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; margin: 8px 0; }
+.context-search input, .diff-actions input, .code-review-search input { min-width: 0; }
+.context-search button { min-height: 40px; padding: 6px 10px; }
+.search-result { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 9px 7px; border-bottom: 1px solid var(--line); text-align: left; }
+.search-result strong { overflow: hidden; color: var(--ink); font: .72rem ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.search-result small { color: var(--subtle); font: .65rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.search-result span { grid-column: 1 / -1; overflow: hidden; color: var(--muted); font: .7rem ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .change-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-bottom: 1px solid var(--line); }
 .change-item .context-row { border-bottom: 0; }
 .change-action { min-height: 34px; margin-right: 5px; padding: 4px 7px; font-size: .68rem; }
@@ -301,9 +308,37 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .file-preview header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 45px; padding: 6px 8px 6px 11px; border-bottom: 1px solid var(--line); }
 .file-preview header strong { overflow: hidden; font: .7rem ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .file-preview header button { min-height: 32px; padding: 4px 8px; }
-.file-preview pre { max-height: 48vh; margin: 0; padding: 12px; overflow: auto; white-space: pre; font: .72rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.preview-actions { display: flex; flex: none; gap: 4px; }
+.file-preview pre { max-height: 48vh; margin: 0; }
 .file-preview .muted { margin: 0; padding: 8px 11px; border-top: 1px solid var(--line); font-size: .68rem; }
-.git-diff { margin: 14px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--line); background: #050607; color: #d7dbd9; white-space: pre; font: .7rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.diff-actions { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 6px; margin: 8px 0; }
+.diff-actions button { min-height: 36px; padding: 5px 8px; }
+.git-diff { margin: 12px 0 0; border: 1px solid var(--line); background: #050607; color: #d7dbd9; }
+.review-code { overflow: auto; background: #050607; color: #d7dbd9; font: .72rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 4; }
+.review-code code { display: block; min-width: 100%; }
+.code-line { display: grid; grid-template-columns: 3.4rem minmax(max-content, 1fr); min-height: 1.55em; }
+.code-line-number { position: sticky; left: 0; z-index: 1; padding: 0 10px 0 6px; background: #08090a; color: #51565b; text-align: right; user-select: none; }
+.code-line-text { padding-right: 12px; white-space: pre; }
+.review-code.wrap .code-line { grid-template-columns: 3.4rem minmax(0, 1fr); }
+.review-code.wrap .code-line-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-line.focus-line, .code-line.search-hit { background: #252114; }
+.syntax-comment { color: #717b76; font-style: italic; }
+.syntax-string { color: #b7d49b; }
+.syntax-number { color: #d9ad79; }
+.syntax-keyword { color: #9ab8e8; font-weight: 600; }
+.syntax-type { color: #d1a7dc; }
+.syntax-diff-add { background: #102218; color: #9bd5ad; }
+.syntax-diff-remove { background: #281315; color: #e1a2a7; }
+.syntax-diff-hunk { color: #aebcf0; }
+.code-review { position: fixed; inset: 72px 18px 0; z-index: 80; display: grid; grid-template-rows: auto auto minmax(0, 1fr); border: 1px solid var(--line-strong); background: #050607; box-shadow: 0 24px 70px #000; }
+.code-review.hidden { display: none; }
+.code-review > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 62px; padding: 9px 13px; border-bottom: 1px solid var(--line); background: #090a0b; }
+.code-review > header h2 { max-width: 72vw; margin: 2px 0 0; overflow: hidden; font-size: .95rem; text-overflow: ellipsis; white-space: nowrap; }
+.code-review > header > div:last-child { display: flex; gap: 6px; }
+.code-review > header button { min-height: 38px; }
+.code-review-search { display: grid; grid-template-columns: minmax(0, 420px) auto 1fr; align-items: center; gap: 9px; padding: 8px 13px; border-bottom: 1px solid var(--line); background: #08090a; }
+.code-review > .review-code { min-height: 0; margin: 0; }
+body.review-open { overflow: hidden; }
 @media (min-width: 1180px) {
   body.context-open .conversation-toolbar, body.context-open .messages, body.context-open .composer-wrap,
   body.context-open .notice, body.context-open .approvals { margin-right: 390px; }
@@ -413,6 +448,14 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .context-panel { position: fixed; inset: 78px 0 0; width: 100%; border-left: 0; box-shadow: none; }
   .context-head { min-height: 58px; padding: 9px 12px; }
   .context-view { padding: 11px; }
+  .diff-actions { grid-template-columns: 1fr auto auto; }
+  .diff-actions input { grid-column: 1 / -1; grid-row: 2; }
+  .code-review { inset: 78px 0 0; border-inline: 0; }
+  .code-review > header { min-height: 54px; padding: 7px 9px; }
+  .code-review-search { grid-template-columns: minmax(0, 1fr) auto; padding: 7px 9px; }
+  .code-line { grid-template-columns: 2.7rem minmax(max-content, 1fr); }
+  .review-code.wrap .code-line { grid-template-columns: 2.7rem minmax(0, 1fr); }
+  .code-line-number { padding-right: 7px; }
   .approvals { margin: 6px 11px 0; }
   .approval-card { grid-template-columns: 1fr; }
   .command-menu { max-height: 35dvh; }

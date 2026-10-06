@@ -28,9 +28,11 @@ def main() -> int:
     parser.add_argument("--thinking-enabled", choices=("true", "false"), help="Native model thinking state for update-settings")
     parser.add_argument("--path", action="append", help="Project or repository relative path; repeat for Git operations")
     parser.add_argument("--revision", help="Expected repository revision from changes")
+    parser.add_argument("--query", help="Text to search for inside exposed project files")
+    parser.add_argument("--case-sensitive", action="store_true", help="Use case-sensitive project search")
     parser.add_argument("--context-path", action="append", help="Project relative file to attach to send; repeat as needed")
     parser.add_argument("--upload-file", action="append", help="Text or image file to upload with send; repeat as needed")
-    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "settings", "update-settings", "files", "file", "changes", "diff", "stage", "unstage", "send", "cancel", "status", "approvals", "respond"))
+    parser.add_argument("operation", choices=("info", "list", "create", "snapshot", "events", "watch", "commands", "settings", "update-settings", "files", "file", "search", "changes", "diff", "stage", "unstage", "send", "cancel", "status", "approvals", "respond"))
     parser.add_argument("thread_id", nargs="?")
     parser.add_argument("text", nargs="?")
     args = parser.parse_args()
@@ -39,7 +41,7 @@ def main() -> int:
         parser.error(f"{args.operation} does not accept a thread_id or text")
     if args.operation == "status" and (args.thread_id or args.text or not args.original_request_id):
         parser.error("status requires --original-request-id and no positional arguments")
-    if args.operation in ("snapshot", "events", "watch", "commands", "settings", "update-settings", "files", "file", "changes", "diff", "stage", "unstage", "approvals") and (not args.thread_id or args.text):
+    if args.operation in ("snapshot", "events", "watch", "commands", "settings", "update-settings", "files", "file", "search", "changes", "diff", "stage", "unstage", "approvals") and (not args.thread_id or args.text):
         parser.error(f"{args.operation} requires only a thread_id")
     if args.operation == "send" and (not args.thread_id or not args.text):
         parser.error("send requires a thread_id and text")
@@ -47,7 +49,7 @@ def main() -> int:
         parser.error("cancel requires only a thread_id and --turn-id")
     if args.operation == "respond" and (not args.thread_id or args.text or args.turn_id is None or not args.approval_id or not args.decision):
         parser.error("respond requires thread_id, --turn-id, --approval-id, and --decision")
-    identified = ("create", "send", "cancel", "status", "respond", "commands", "settings", "update-settings", "files", "file", "changes", "diff", "stage", "unstage")
+    identified = ("create", "send", "cancel", "status", "respond", "commands", "settings", "update-settings", "files", "file", "search", "changes", "diff", "stage", "unstage")
     if args.operation in identified and (not args.instance_id or not args.epoch):
         parser.error(f"{args.operation} requires --instance-id and --epoch from thread.list")
     if args.operation in ("create", "send", "cancel", "respond", "stage", "unstage") and not args.request_id:
@@ -72,12 +74,16 @@ def main() -> int:
         parser.error("update-settings requires --profile-id or --thinking-enabled")
     if args.operation == "file" and (not args.path or len(args.path) != 1):
         parser.error("file requires exactly one --path")
+    if args.operation == "search" and (not args.query or len(args.query.strip()) < 2):
+        parser.error("search requires --query with at least two characters")
     if args.operation in ("stage", "unstage") and (not args.path or not args.revision):
         parser.error(f"{args.operation} requires one or more --path values and --revision")
     if args.operation == "diff" and (not args.revision or args.path):
         parser.error("diff requires --revision and no --path")
     if args.operation not in ("file", "stage", "unstage") and args.path:
         parser.error("--path is only available for file, stage, or unstage")
+    if args.operation != "search" and (args.query or args.case_sensitive):
+        parser.error("--query and --case-sensitive are only available for search")
     if args.operation not in ("diff", "stage", "unstage") and args.revision:
         parser.error("--revision is only available for diff, stage, or unstage")
     if args.operation != "send" and args.context_path:
@@ -158,10 +164,12 @@ def main() -> int:
         params.update(instance_id=args.instance_id, epoch=args.epoch)
     if args.operation in ("settings", "update-settings"):
         params.update(instance_id=args.instance_id, epoch=args.epoch)
-    if args.operation in ("files", "file", "changes", "diff", "stage", "unstage"):
+    if args.operation in ("files", "file", "search", "changes", "diff", "stage", "unstage"):
         params.update(instance_id=args.instance_id, epoch=args.epoch)
     if args.operation == "file":
         params["path"] = args.path[0]
+    if args.operation == "search":
+        params.update(query=args.query, case_sensitive=args.case_sensitive)
     if args.operation == "diff":
         params["revision"] = args.revision
     if args.operation in ("stage", "unstage"):
@@ -194,7 +202,7 @@ def main() -> int:
     payload = call(
         {"info": "instance.info", "status": "request.status", "respond": "approval.respond",
          "settings": "thread.settings", "update-settings": "thread.settings.update",
-         "files": "project.files", "file": "project.file", "changes": "changes.snapshot",
+         "files": "project.files", "file": "project.file", "search": "project.search", "changes": "changes.snapshot",
          "diff": "changes.diff", "stage": "changes.stage", "unstage": "changes.unstage"}.get(
             args.operation, f"thread.{args.operation}"
         ),

@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.17";
+const UI_BUILD = "2026.10.05.18";
 const state = {
   gatewayId: null,
   token: null,
@@ -48,10 +48,17 @@ const state = {
   notificationConfig: null,
   projectFiles: [],
   projectFilesTruncated: false,
+  projectSearchMatches: [],
+  projectSearchTruncated: false,
   changes: null,
   contextPaths: [],
   uploads: [],
   previewPath: null,
+  previewContent: "",
+  previewFocusLine: null,
+  diffContent: "",
+  reviewSource: "",
+  reviewLanguage: "text",
   approvals: [],
 };
 const safeStore = {
@@ -1045,11 +1052,16 @@ async function selectThread(threadId) {
   renderAgentHealth();
   state.threadSettings = null;
   state.projectFiles = [];
+  state.projectSearchMatches = [];
+  state.projectSearchTruncated = false;
   state.changes = null;
   state.previewPath = null;
+  state.previewContent = "";
+  state.diffContent = "";
   state.contextPaths = [];
   state.uploads = [];
   renderAttachmentStrip();
+  closeCodeReview();
   closeContextPanel();
   updateComposerAction();
   renderThreadSettings();
@@ -1123,6 +1135,126 @@ function renderAttachmentStrip() {
   }
 }
 
+const LANGUAGE_KEYWORDS = {
+  rust: new Set("as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while".split(" ")),
+  javascript: new Set("async await break case catch class const continue debugger default delete do else export extends false finally for from function get if import in instanceof let new null of return set static super switch this throw true try typeof undefined var void while with yield".split(" ")),
+  typescript: new Set("abstract any as async await boolean break case catch class const constructor continue declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface keyof let namespace never new null number object of private protected public readonly return set static string super switch symbol this throw true try type typeof undefined unknown var void while with yield".split(" ")),
+  python: new Set("and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield".split(" ")),
+  shell: new Set("case do done elif else esac fi for function if in select then time until while".split(" ")),
+  swift: new Set("actor any as associatedtype async await break case catch class continue convenience default defer deinit do dynamic else enum extension fallthrough false fileprivate final for func get guard if import in indirect init inout internal is isolated let mutating nil nonisolated open operator override private protocol public repeat required rethrows return self Self set some static struct subscript super switch throw throws true try typealias var weak where while".split(" ")),
+  go: new Set("break case chan const continue default defer else fallthrough false for func go goto if import interface map nil package range return select struct switch true type var".split(" ")),
+  java: new Set("abstract assert boolean break byte case catch char class const continue default do double else enum extends false final finally float for goto if implements import instanceof int interface long native new null package private protected public return short static strictfp super switch synchronized this throw throws transient true try void volatile while".split(" ")),
+  c: new Set("auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while".split(" ")),
+};
+
+function languageFromPath(path) {
+  const name = String(path || "").toLocaleLowerCase();
+  if (name.endsWith(".diff") || name.endsWith(".patch")) return "diff";
+  const extension = name.includes(".") ? name.split(".").pop() : "";
+  return ({
+    rs: "rust", js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript", py: "python", sh: "shell", bash: "shell", zsh: "shell",
+    json: "json", toml: "toml", yaml: "yaml", yml: "yaml", html: "html", htm: "html",
+    xml: "html", css: "css", scss: "css", c: "c", h: "c", cc: "c", cpp: "c", hpp: "c",
+    java: "java", go: "go", swift: "swift", kt: "java", kts: "java", md: "markdown",
+  })[extension] || "text";
+}
+
+function appendSyntaxLine(target, line, language) {
+  if (language === "diff") {
+    target.textContent = line;
+    return;
+  }
+  const keywords = LANGUAGE_KEYWORDS[language] || new Set();
+  const tokenPattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*$|#.*$|\b(?:0x[\da-fA-F]+|\d+(?:\.\d+)?)\b|\b[A-Za-z_$][\w$]*\b)/g;
+  let offset = 0;
+  for (const match of line.matchAll(tokenPattern)) {
+    if (match.index > offset) target.append(document.createTextNode(line.slice(offset, match.index)));
+    const token = match[0];
+    const span = document.createElement("span");
+    if (token.startsWith("//") || token.startsWith("#")) span.className = "syntax-comment";
+    else if (/^["'`]/.test(token)) span.className = "syntax-string";
+    else if (/^(?:0x[\da-f]+|\d)/i.test(token)) span.className = "syntax-number";
+    else if (keywords.has(token)) span.className = "syntax-keyword";
+    else if (/^[A-Z][A-Za-z0-9_]*$/.test(token)) span.className = "syntax-type";
+    span.textContent = token;
+    target.append(span);
+    offset = match.index + token.length;
+  }
+  if (offset < line.length) target.append(document.createTextNode(line.slice(offset)));
+}
+
+function renderReviewCode(target, source, language = "text", focusLine = null, query = "") {
+  target.replaceChildren();
+  const normalizedQuery = query.toLocaleLowerCase();
+  let hits = 0;
+  let focused = null;
+  String(source).split("\n").forEach((line, index) => {
+    const row = document.createElement("span");
+    row.className = "code-line";
+    if (language === "diff") {
+      if (line.startsWith("+") && !line.startsWith("+++")) row.classList.add("syntax-diff-add");
+      else if (line.startsWith("-") && !line.startsWith("---")) row.classList.add("syntax-diff-remove");
+      else if (line.startsWith("@@") || line.startsWith("diff --git") || line.startsWith("index ")) row.classList.add("syntax-diff-hunk");
+    }
+    const lineNumber = document.createElement("span");
+    lineNumber.className = "code-line-number";
+    lineNumber.textContent = String(index + 1);
+    lineNumber.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.className = "code-line-text";
+    appendSyntaxLine(text, line, language);
+    if (focusLine === index + 1) {
+      row.classList.add("focus-line");
+      focused = row;
+    }
+    if (normalizedQuery) {
+      const haystack = line.toLocaleLowerCase();
+      let position = 0;
+      let lineHits = 0;
+      while ((position = haystack.indexOf(normalizedQuery, position)) !== -1) {
+        lineHits += 1;
+        position += Math.max(1, normalizedQuery.length);
+      }
+      if (lineHits) row.classList.add("search-hit");
+      hits += lineHits;
+    }
+    row.append(lineNumber, text);
+    target.append(row);
+  });
+  if (focused) requestAnimationFrame(() => focused.scrollIntoView({ block: "center" }));
+  return hits;
+}
+
+function setWrap(pre, button, wrapped) {
+  pre.classList.toggle("wrap", wrapped);
+  button.setAttribute("aria-pressed", String(wrapped));
+  button.textContent = wrapped ? "Unwrap" : "Wrap";
+}
+
+function openCodeReview(title, source, language, focusLine = null) {
+  state.reviewSource = source;
+  state.reviewLanguage = language;
+  state.previewFocusLine = focusLine;
+  $("code-review-title").textContent = title;
+  $("code-review-query").value = "";
+  $("code-review-count").textContent = "";
+  const panel = $("code-review");
+  panel.classList.remove("hidden");
+  document.body.classList.add("review-open");
+  setWrap(panel.querySelector(".review-code"), $("code-review-wrap"), true);
+  renderReviewCode($("code-review-content"), source, language, focusLine);
+  $("code-review-query").focus();
+}
+
+function closeCodeReview() {
+  $("code-review").classList.add("hidden");
+  document.body.classList.remove("review-open");
+  state.reviewSource = "";
+  $("code-review-query").value = "";
+  $("code-review-count").textContent = "";
+}
+
 async function loadProjectFiles() {
   if (!state.threadId || !state.capabilities.includes("project.files")) {
     state.projectFiles = [];
@@ -1176,17 +1308,97 @@ function renderProjectFiles() {
   }
 }
 
-async function previewProjectFile(path) {
+async function previewProjectFile(path, focusLine = null) {
   try {
     const result = await rpc("project.file", { ...baseThreadParams(), path });
     if (result.path !== path || typeof result.content !== "string") throw new Error("Zed returned an invalid file preview.");
     state.previewPath = path;
+    state.previewContent = result.content;
+    state.previewFocusLine = focusLine;
+    const language = languageFromPath(path);
     $("file-preview-name").textContent = path;
-    $("file-preview-content").textContent = result.content;
-    $("file-preview-note").textContent = result.truncated ? "Preview truncated at 256 KiB. Truncated files cannot be attached." : "Read-only preview from the exposed Zed project.";
+    renderReviewCode($("file-preview-content"), result.content, language, focusLine);
+    setWrap($("file-preview").querySelector(".review-code"), $("wrap-file"), true);
+    const lineCount = result.content.split("\n").length;
+    $("file-preview-note").textContent = result.truncated
+      ? `${language.toUpperCase()} · ${lineCount} lines · Preview truncated at 256 KiB. Truncated files cannot be attached.`
+      : `${language.toUpperCase()} · ${lineCount} lines · Read-only preview from the exposed Zed project.`;
     $("attach-preview").disabled = result.truncated === true || state.contextPaths.includes(path);
     $("file-preview").classList.remove("hidden");
   } catch (error) { notice(error.message); }
+}
+
+function renderProjectSearchResults() {
+  const list = $("project-search-results");
+  const status = $("project-search-status");
+  list.replaceChildren();
+  list.classList.toggle("hidden", state.projectSearchMatches.length === 0);
+  if (!state.projectSearchMatches.length) return;
+  for (const match of state.projectSearchMatches) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "search-result";
+    const path = document.createElement("strong");
+    path.textContent = match.path;
+    const location = document.createElement("small");
+    location.textContent = `${match.line}:${match.column}`;
+    const preview = document.createElement("span");
+    preview.textContent = match.preview;
+    row.append(path, location, preview);
+    row.addEventListener("click", () => previewProjectFile(match.path, match.line));
+    list.append(row);
+  }
+  status.classList.remove("hidden");
+  status.textContent = `${state.projectSearchMatches.length} match${state.projectSearchMatches.length === 1 ? "" : "es"}${state.projectSearchTruncated ? " · results limited" : ""}`;
+}
+
+async function searchProject(event) {
+  event.preventDefault();
+  const query = $("project-search").value.trim();
+  const status = $("project-search-status");
+  state.projectSearchMatches = [];
+  state.projectSearchTruncated = false;
+  $("project-search-results").replaceChildren();
+  $("project-search-results").classList.add("hidden");
+  if (query.length < 2) {
+    status.textContent = "Enter at least two characters.";
+    status.classList.remove("hidden");
+    return;
+  }
+  if (!state.capabilities.includes("project.search")) {
+    status.textContent = "Restart the updated patched Zed build to search inside project files.";
+    status.classList.remove("hidden");
+    return;
+  }
+  const threadId = state.threadId;
+  const button = $("project-search-form").querySelector("button");
+  button.disabled = true;
+  button.textContent = "Searching…";
+  status.textContent = "Searching the exposed project in desktop Zed…";
+  status.classList.remove("hidden");
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await rpc("project.search", { ...baseThreadParams(), query, case_sensitive: false });
+      if (state.threadId !== threadId) return;
+      if (result.outcome === "ready") {
+        if (!Array.isArray(result.matches)) throw new Error("Zed returned invalid search results.");
+        state.projectSearchMatches = result.matches.filter((match) =>
+          typeof match.path === "string" && Number.isInteger(match.line) && Number.isInteger(match.column) && typeof match.preview === "string");
+        state.projectSearchTruncated = result.truncated === true;
+        if (!state.projectSearchMatches.length) status.textContent = `No project text matches “${query}”.`;
+        renderProjectSearchResults();
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Project search timed out. Try again.");
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Search";
+  }
 }
 
 function attachPreview() {
@@ -1220,6 +1432,11 @@ function renderChanges() {
   const list = $("changes-list");
   list.replaceChildren();
   $("git-diff").classList.add("hidden");
+  $("diff-search").classList.add("hidden");
+  $("wrap-diff").classList.add("hidden");
+  $("expand-diff").classList.add("hidden");
+  $("diff-search-count").textContent = "";
+  state.diffContent = "";
   $("load-diff").disabled = true;
   if (!state.capabilities.includes("changes.snapshot")) {
     summary.textContent = "Restart the updated patched Zed build to inspect repository changes.";
@@ -1303,8 +1520,10 @@ async function loadGitDiff() {
       const result = await rpc("changes.diff", { ...baseThreadParams(), revision });
       if (result.revision !== revision) throw new Error("Zed returned a diff for another repository revision.");
       if (result.outcome === "ready") {
-        $("git-diff").querySelector("code").textContent = result.diff || "No textual diff.";
-        $("git-diff").classList.remove("hidden");
+        state.diffContent = result.diff || "No textual diff.";
+        renderReviewCode($("git-diff").querySelector("code"), state.diffContent, "diff", null, $("diff-search").value);
+        setWrap($("git-diff"), $("wrap-diff"), true);
+        for (const id of ["git-diff", "diff-search", "wrap-diff", "expand-diff"]) $(id).classList.remove("hidden");
         button.textContent = result.truncated ? "Diff truncated" : "Refresh unified diff";
         return;
       }
@@ -2317,8 +2536,43 @@ $("context-files-tab").addEventListener("click", () => switchContextTab("files")
 $("context-changes-tab").addEventListener("click", () => switchContextTab("changes"));
 $("context-activity-tab").addEventListener("click", () => switchContextTab("activity"));
 $("file-search").addEventListener("input", renderProjectFiles);
+$("project-search-form").addEventListener("submit", searchProject);
+$("project-search").addEventListener("input", () => {
+  if (!$("project-search").value) {
+    state.projectSearchMatches = [];
+    state.projectSearchTruncated = false;
+    $("project-search-results").replaceChildren();
+    $("project-search-results").classList.add("hidden");
+    $("project-search-status").classList.add("hidden");
+  }
+});
 $("attach-preview").addEventListener("click", attachPreview);
+$("wrap-file").addEventListener("click", () => {
+  const pre = $("file-preview").querySelector(".review-code");
+  setWrap(pre, $("wrap-file"), !pre.classList.contains("wrap"));
+});
+$("expand-file").addEventListener("click", () => {
+  if (state.previewPath) openCodeReview(state.previewPath, state.previewContent, languageFromPath(state.previewPath), state.previewFocusLine);
+});
 $("load-diff").addEventListener("click", loadGitDiff);
+$("diff-search").addEventListener("input", () => {
+  const hits = renderReviewCode($("git-diff").querySelector("code"), state.diffContent, "diff", null, $("diff-search").value);
+  $("diff-search-count").textContent = $("diff-search").value ? `${hits} match${hits === 1 ? "" : "es"}` : "";
+});
+$("wrap-diff").addEventListener("click", () => setWrap($("git-diff"), $("wrap-diff"), !$("git-diff").classList.contains("wrap")));
+$("expand-diff").addEventListener("click", () => {
+  if (state.diffContent) openCodeReview("Working tree diff", state.diffContent, "diff");
+});
+$("close-code-review").addEventListener("click", closeCodeReview);
+$("code-review-wrap").addEventListener("click", () => {
+  const pre = $("code-review").querySelector(".review-code");
+  setWrap(pre, $("code-review-wrap"), !pre.classList.contains("wrap"));
+});
+$("code-review-query").addEventListener("input", () => {
+  const query = $("code-review-query").value;
+  const hits = renderReviewCode($("code-review-content"), state.reviewSource, state.reviewLanguage, state.previewFocusLine, query);
+  $("code-review-count").textContent = query ? `${hits} match${hits === 1 ? "" : "es"}` : "";
+});
 $("prompt").addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     $("command-menu").classList.add("hidden");
@@ -2351,8 +2605,14 @@ async function signOut() {
   state.contextPaths = [];
   state.uploads = [];
   state.projectFiles = [];
+  state.projectSearchMatches = [];
+  state.projectSearchTruncated = false;
   state.changes = null;
+  state.previewPath = null;
+  state.previewContent = "";
+  state.diffContent = "";
   renderAttachmentStrip();
+  closeCodeReview();
   closeContextPanel();
   requireManualGatewayVerification();
   document.body.classList.remove("thread-open", "mobile-sessions", "mobile-connections", "mobile-settings");
@@ -2498,6 +2758,9 @@ showInstallHelp();
 window.addEventListener("resize", () => {
   updateSidebarToggle();
   renderConnectionHealth();
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("code-review").classList.contains("hidden")) closeCodeReview();
 });
 updateSidebarToggle();
 loadGateway();

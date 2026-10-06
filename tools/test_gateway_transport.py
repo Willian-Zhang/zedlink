@@ -157,6 +157,14 @@ class ProbeFixture:
                         error = {"code": "FILE_UNAVAILABLE"}
                     else:
                         result = {"path": params["path"], "content": files[params["path"]], "truncated": False}
+                elif method == "project.search":
+                    if params.get("query", "").casefold() == "println":
+                        result = {"outcome": "ready", "matches": [
+                            {"path": "src/main.rs", "line": 1, "column": 13,
+                             "preview": "fn main() { println!(\"ready\"); }"},
+                        ], "truncated": False}
+                    else:
+                        result = {"outcome": "ready", "matches": [], "truncated": False}
                 elif method == "changes.snapshot":
                     result = {"repository": {"branch": "main", "head": "fixture-head",
                                                "revision": "fixture-head:4"},
@@ -224,7 +232,7 @@ class ProbeFixture:
                                                "thread.commands", "thread.settings", "thread.settings.update",
                                                "thread.send", "thread.attachments", "thread.cancel",
                                                "thread.approvals", "approval.respond", "project.files",
-                                               "project.file", "changes.snapshot", "changes.diff",
+                                               "project.file", "project.search", "changes.snapshot", "changes.diff",
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
@@ -486,7 +494,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.17"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.18"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -540,6 +548,25 @@ def main():
                 browser.find_element(By.ID, "show-context").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "context-panel").is_displayed())
                 wait.until(lambda driver: "src/main.rs" in driver.find_element(By.ID, "file-list").text)
+                browser.find_element(By.ID, "project-search").send_keys("println")
+                browser.find_element(By.ID, "project-search-form").submit()
+                wait.until(lambda driver: "src/main.rs" in driver.find_element(By.ID, "project-search-results").text)
+                assert "1 match" in browser.find_element(By.ID, "project-search-status").text
+                browser.find_element(By.CSS_SELECTOR, "#project-search-results .search-result").click()
+                wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
+                assert browser.find_element(By.CSS_SELECTOR, "#file-preview .review-code").get_attribute("class").endswith("wrap")
+                assert browser.find_elements(By.CSS_SELECTOR, "#file-preview-content .syntax-keyword")
+                assert browser.find_elements(By.CSS_SELECTOR, "#file-preview-content .focus-line")
+                browser.find_element(By.ID, "expand-file").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "code-review").is_displayed())
+                assert browser.find_element(By.ID, "code-review-title").text == "src/main.rs"
+                assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .code-line-number")
+                assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .syntax-keyword")
+                browser.find_element(By.ID, "code-review-query").send_keys("ready")
+                assert browser.find_element(By.ID, "code-review-count").text == "1 match"
+                assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .search-hit")
+                browser.save_screenshot("/tmp/zedlink-browser-code-review.png")
+                browser.find_element(By.ID, "close-code-review").click()
                 file_rows = browser.find_elements(By.CSS_SELECTOR, "#file-list .context-row:not(.directory)")
                 next(row for row in file_rows if "src/main.rs" in row.text).click()
                 wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
@@ -551,6 +578,15 @@ def main():
                 assert "MODIFIED" in browser.find_element(By.ID, "changes-list").text
                 browser.find_element(By.ID, "load-diff").click()
                 wait.until(lambda driver: "diff --git" in driver.find_element(By.ID, "git-diff").text)
+                assert browser.find_elements(By.CSS_SELECTOR, "#git-diff .syntax-diff-add")
+                assert "wrap" in browser.find_element(By.ID, "git-diff").get_attribute("class")
+                browser.find_element(By.ID, "diff-search").send_keys("println")
+                assert browser.find_element(By.ID, "diff-search-count").text == "1 match"
+                browser.find_element(By.ID, "expand-diff").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "code-review").is_displayed())
+                assert browser.find_element(By.ID, "code-review-title").text == "Working tree diff"
+                assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .syntax-diff-add")
+                browser.find_element(By.ID, "close-code-review").click()
                 browser.find_element(By.CSS_SELECTOR, "#changes-list .change-action").click()
                 wait.until(lambda driver: len(probe.change_operations) == 1)
                 browser.find_element(By.ID, "close-context").click()
@@ -733,6 +769,14 @@ def main():
                 assert browser.find_element(By.ID, "send").is_displayed()
                 assert not browser.find_elements(By.ID, "toggle-compose")
                 assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
+                browser.execute_script("openCodeReview('src/main.rs', 'fn main() { println!(\\\"ready\\\"); }\\n', 'rust', 1)")
+                mobile_review = browser.execute_script("const panel=document.getElementById('code-review').getBoundingClientRect(); return {left:panel.left, right:panel.right, bottom:panel.bottom, width:innerWidth, height:innerHeight, pageWidth:document.documentElement.scrollWidth, wrapped:document.querySelector('#code-review .review-code').classList.contains('wrap')}")
+                assert mobile_review["left"] >= 0 and mobile_review["right"] <= mobile_review["width"] + 1
+                assert mobile_review["bottom"] >= mobile_review["height"] - 1
+                assert mobile_review["pageWidth"] <= mobile_review["width"] + 1 and mobile_review["wrapped"], mobile_review
+                assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .syntax-keyword")
+                browser.save_screenshot("/tmp/zedlink-browser-code-review-mobile.png")
+                browser.find_element(By.ID, "close-code-review").click()
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 assert browser.find_element(By.ID, "tab-sessions").is_displayed()
