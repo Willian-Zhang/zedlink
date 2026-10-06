@@ -97,7 +97,7 @@ For requirements, first build details, TLS setup, provider configuration, and re
 
 ## Native Zed settings
 
-Patched Zed includes a native **ZedLink** Settings page for bridge startup, project scope, remote permissions, connection profiles, provider-specific fields, TLS paths, activation, and connection checks.
+Patched Zed includes a native **ZedLink** Settings page for bridge startup, gateway status and lifecycle, pairing and selective device revocation, project scope, remote permissions, connection profiles, provider-specific fields, TLS paths, activation, and connection checks.
 
 <p align="center">
   <img src="assets/screenshots/zed-settings.png" width="760" alt="Native ZedLink connection provider settings in patched Zed">

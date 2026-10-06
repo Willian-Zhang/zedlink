@@ -95,6 +95,8 @@ The patched Zed build now has a native **ZedLink** Settings page. Open it with `
 - **Project Root** — the project whose Agent threads may be exposed.
 - **Start Gateway on Launch** — starts the saved private HTTPS gateway with patched Zed.
 - **ZedLink Manager** — the installer-managed path used to load connection and TLS profiles.
+- **Gateway Control** — shows status, starts, restarts, or stops the private gateway, and runs diagnostics without opening a task terminal.
+- **Paired Devices** — opens the private pairing page, lists authorized browsers and installed web apps, and revokes one selected device after confirmation.
 - **Remote Permissions** — separate controls for new sessions, attachments, project browsing, Git changes, approval decisions, and Agent settings.
 
 Open **Connection Providers** at the top of the ZedLink page to manage the private route used by browsers and apps. The subpage supports Tailscale, NetBird, WireGuard, ZeroTier, Twingate, Headscale, Cloudflare Tunnel + Access, SSH reverse tunnels, direct SSH forwarding, local LAN HTTPS, and custom private HTTPS.
@@ -118,7 +120,7 @@ The check runs from the Zed workstation. A passing result confirms the local pro
 
 Run **ZedLink: Diagnose setup** for one health report covering the patched binary, native settings, project and state paths, TLS profiles, local bridge, gateway, and paired-device count. Run **ZedLink: Repair setup** to restore native settings, global tasks, launchers, private directories, and gateway startup. Repair never changes Zed's model provider, model name, endpoint, or credentials.
 
-The task picker remains a bootstrap and maintenance surface for compiling the source patch, configuring TLS routes, and managing the separate gateway process. It is no longer required to inject bridge settings every time Zed starts.
+The task picker remains the bootstrap and maintenance surface for first-time setup, compiling the source patch, repairing files, installing launchers, and advanced interactive connection management. Normal gateway control, connection checks, pairing, and device revocation are available from ZedLink Settings.
 
 The downloaded Zed from `zed.dev` cannot show this page or `/remote-control`, because the stock extension API cannot add a settings page or control an existing native Agent thread. Open **ZedLink — Patched Zed** from the operating system application menu. Once Zed accepts the native patch upstream or ships an equivalent API, this separate build can be removed.
 

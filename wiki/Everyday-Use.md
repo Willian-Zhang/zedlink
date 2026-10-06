@@ -9,12 +9,21 @@ After first-time setup:
 1. Start patched Zed with **ZedLink: Start patched Zed**.
 2. Open the desired Agent conversation.
 3. Run `/remote-control` in that thread.
-4. Start the gateway with **ZedLink: Start gateway**.
+4. Open **Settings → ZedLink → Gateway Control** and choose **Start**. The task command remains available as a fallback.
 5. Open the saved ZedLink URL on any paired browser or app.
 
 You normally do not need to pair the same browser again.
 
-Use these tasks for management:
+Use **Settings → ZedLink** for routine work:
+
+| Settings page | Purpose |
+| --- | --- |
+| **Gateway Control** | Shows status; starts, restarts, or stops the gateway; and runs setup diagnostics |
+| **Paired Devices** | Opens pairing, lists authorized devices, and revokes one selected device after confirmation |
+| **Connection Providers** | Selects, detects, validates, saves, activates, and checks private connection profiles |
+| **Remote Permissions** | Controls session creation, attachments, project browsing, Git changes, approvals, and native Agent settings |
+
+The task picker remains available for setup and maintenance:
 
 | Task | Purpose |
 | --- | --- |
@@ -32,5 +41,7 @@ Use these tasks for management:
 | **ZedLink: Guided setup / update** | Runs the complete guided workflow again |
 
 **ZedLink: Pair a device** opens the private pairing page without focusing a task terminal. Its temporary task tab closes after success and remains visible only when pairing fails. The `/bin/sh -i -c 'python3'` line shown by older task definitions was Zed's task wrapper; a blank cursor after “finished successfully” did not mean Python was still running. Run **ZedLink: Guided setup / update** once to refresh an older global task definition.
+
+Build/install, launcher installation, full repair, and starting another patched Zed process intentionally remain tasks. They can compile for a long time, modify installation files, or create another application window, so they are poor fits for a Settings button. Runtime controls return promptly and are safe to use from Settings.
 
 Closing the gateway terminal stops remote browser access. Closing patched Zed makes the native thread unavailable. Neither action deletes the conversation or pairing records.

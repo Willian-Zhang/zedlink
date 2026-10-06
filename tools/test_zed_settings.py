@@ -142,12 +142,46 @@ def main() -> None:
             else:
                 raise AssertionError("gateway identity mismatch was accepted")
 
+        device_id = "1d517b0d-16ec-4f02-bb2a-a18cab841684"
+        device_response = {
+            "gateway_id": "gateway-fixture",
+            "devices": [{"id": device_id, "name": "Safari on iPhone"}],
+        }
+        with patch.object(manager, "admin", return_value=device_response) as request:
+            assert manager.paired_devices(Path(data["state_dir"])) == device_response
+        request.assert_called_once_with(Path(data["state_dir"]), "devices")
+
+        with patch.object(manager, "admin", return_value={"revoked": True}) as request:
+            manager.revoke_device(Path(data["state_dir"]), device_id)
+        request.assert_called_once_with(Path(data["state_dir"]), "revoke", device_id)
+        with patch.object(manager, "admin") as request:
+            try:
+                manager.revoke_device(Path(data["state_dir"]), "not-a-device-id")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid device ID was accepted")
+        request.assert_not_called()
+
+        with patch.object(manager.subprocess, "Popen") as launch:
+            manager.launch_gateway_detached("start-gateway")
+            manager.launch_gateway_detached("restart-gateway")
+        assert launch.call_count == 2
+        assert launch.call_args_list[0].args[0][-1] == "start-gateway"
+        assert launch.call_args_list[1].args[0][-1] == "restart-gateway"
+
+        settings_source = (manager.ROOT / "zed-source/crates/settings_ui/src/page_data.rs").read_text()
+        for control in ("Gateway Control", "Gateway Status", "Start Gateway", "Restart Gateway",
+                        "Stop Gateway", "Run Diagnostics", "Paired Devices", "Pair New Device",
+                        "View or Revoke Paired Devices"):
+            assert control in settings_source
+
         settings_path.write_text("{\n  // keep this comment\n}\n", encoding="utf-8")
         assert not manager.sync_zed_settings(data)
         assert not manager.has_native_zedlink_settings(data)
         assert "keep this comment" in settings_path.read_text(encoding="utf-8")
 
-    print("PASS: native Zed settings sync, idempotency, permissions, and JSONC preservation")
+    print("PASS: native Zed settings sync, runtime controls, device management, and JSONC preservation")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from urllib.parse import urlsplit
 
 
@@ -537,14 +538,20 @@ def select_connection_from_settings(data: dict, settings: dict) -> dict:
     return validate(updated)
 
 
-def restart_gateway_detached() -> None:
+def launch_gateway_detached(action: str) -> None:
+    if action not in ("start-gateway", "restart-gateway"):
+        raise ValueError(f"unsupported detached gateway action: {action}")
     subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "restart-gateway"],
+        [sys.executable, str(Path(__file__).resolve()), action],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def restart_gateway_detached() -> None:
+    launch_gateway_detached("restart-gateway")
 
 
 def ensure_tailscale_certificate(cert_path: Path, key_path: Path, hostname: str) -> None:
@@ -1062,6 +1069,20 @@ def admin(state: Path, action: str, identifier: str | None = None) -> dict:
     return json.loads(subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL))
 
 
+def paired_devices(state: Path) -> dict:
+    result = admin(state, "devices")
+    if not isinstance(result.get("gateway_id"), str) or not isinstance(result.get("devices"), list):
+        raise ValueError("gateway returned an invalid paired-device response")
+    return result
+
+
+def revoke_device(state: Path, identifier: str) -> None:
+    uuid.UUID(identifier)
+    result = admin(state, "revoke", identifier)
+    if result.get("revoked") is not True:
+        raise ValueError("device is no longer paired")
+
+
 def diagnose(data: dict) -> None:
     state = Path(data["state_dir"])
     failures = 0
@@ -1162,9 +1183,11 @@ def main() -> None:
     parser.add_argument("action", choices=("quick-setup", "configure", "manage-routes",
                                            "check-routes", "status", "start-zed",
                                            "start-gateway", "restart-gateway", "stop-gateway",
+                                           "start-gateway-detached", "restart-gateway-detached",
                                            "install-launcher", "remove-launcher",
                                            "install-cli", "remove-cli",
-                                           "pair", "devices", "revoke", "diagnose", "repair",
+                                           "pair", "pair-primary", "devices", "devices-json", "revoke",
+                                           "revoke-device", "diagnose", "repair",
                                            "save-connection", "select-connection",
                                            "detect-connection", "check-connection"))
     parser.add_argument("project_root", nargs="?")
@@ -1294,6 +1317,10 @@ def main() -> None:
             listener_file = write_listener_file(data)
             os.execv(str(GATEWAY), [str(GATEWAY), "serve-routes", str(listener_file),
                                     str(socket_path), str(state / "gateway")])
+        elif args.action in ("start-gateway-detached", "restart-gateway-detached"):
+            foreground_action = args.action.removesuffix("-detached")
+            launch_gateway_detached(foreground_action)
+            print(f"ZedLink gateway {foreground_action.removesuffix('-gateway')} requested.")
         elif args.action == "stop-gateway":
             if stop_gateway(state):
                 print("ZedLink gateway stopped.")
@@ -1303,13 +1330,24 @@ def main() -> None:
             route = choose_route(data)
             subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
                             str(state / "gateway")], check=True)
+        elif args.action == "pair-primary":
+            route = primary_route(data)
+            subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
+                            str(state / "gateway")], check=True)
         elif args.action == "devices":
-            result = admin(state, "devices")
+            result = paired_devices(state)
             print(f"Gateway {result['gateway_id']}")
             for device in result["devices"]:
                 print(f"{device['id']}  {device['name']}")
             if not result["devices"]:
                 print("No paired devices.")
+        elif args.action == "devices-json":
+            print(json.dumps(paired_devices(state), separators=(",", ":")))
+        elif args.action == "revoke-device":
+            if not args.project_root:
+                raise ValueError("revoke-device requires a device ID")
+            revoke_device(state, args.project_root)
+            print("Device revoked.")
         elif args.action == "revoke":
             devices = admin(state, "devices")["devices"]
             if not devices:
