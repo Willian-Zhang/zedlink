@@ -159,8 +159,13 @@ input[type=search] { appearance: none; }
 .empty-icon { display: block; margin: 0 auto 18px; color: var(--subtle); font-family: Georgia, serif; font-size: 1.6rem; }
 .empty h3 { margin: 0 0 8px; color: var(--ink); font-size: 1.5rem; font-weight: 500; letter-spacing: -.035em; }
 .empty p { font-size: .86rem; line-height: 1.55; }
-.message { width: min(100%, 1060px); padding: 22px 0; background: transparent; }
-.message.user { align-self: flex-end; width: min(86%, 720px); padding: 15px 17px; margin: 19px 0 13px; border: 1px solid var(--line-strong); background: #151719; }
+.message { width: min(100%, 1060px); padding: 15px 0; background: transparent; }
+.message.user { position: relative; align-self: flex-end; width: fit-content; max-width: min(76%, 760px); padding: 10px 39px 10px 14px; margin: 8px 0; border: 0; border-radius: 12px 12px 3px 12px; background: #181a1c; }
+.message.user .message-heading { position: absolute; top: 3px; right: 4px; margin: 0; }
+.message.user .message-copy { min-height: 32px; padding: 3px 7px; opacity: 0; transition: opacity .15s ease; }
+.message.user .message-copy-compact { width: 31px; padding: 0; font-size: .9rem; }
+.message.user:hover .message-copy, .message.user:focus-within .message-copy { opacity: .72; }
+.message.user .message-body { line-height: 1.5; }
 .message.assistant, .message.native { align-self: flex-start; }
 .message.tool { align-self: flex-start; width: min(100%, 1040px); padding: 15px 18px; margin: 12px 0; border: 1px solid var(--line); background: #101214; }
 .tool-title { margin: 2px 0 8px; overflow-wrap: anywhere; font-size: .94rem; font-weight: 620; line-height: 1.45; }
@@ -389,8 +394,8 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .agent-health { grid-template-columns: 1fr; gap: 7px; margin: 8px 0; padding: 9px 10px; }
   .agent-health p { font-size: .72rem; }
   .messages { padding: 7px 12px 12px; }
-  .message { padding: 14px 0; }
-  .message.user { width: min(92%, 540px); padding: 10px 12px; margin: 9px 0 6px; }
+  .message { padding: 12px 0; }
+  .message.user { max-width: 88%; padding: 9px 36px 9px 12px; margin: 6px 0; border-radius: 11px 11px 3px 11px; }
   .message.tool { padding: 10px 12px; }
   .message-copy { min-height: 32px; padding: 3px 6px; }
   .message-body { font-size: .95rem; line-height: 1.56; }
@@ -425,6 +430,9 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   body.mobile-connections #connection-panel { display: block !important; }
   body.mobile-settings #pair-panel, body.mobile-settings #sessions-panel, body.mobile-settings #connection-panel { display: none !important; }
   body.mobile-settings #settings-panel { display: block !important; }
+}
+@media (hover: none) {
+  .message.user .message-copy { opacity: .55; }
 }
 @media (prefers-reduced-motion: reduce) {
   .messages { scroll-behavior: auto; }

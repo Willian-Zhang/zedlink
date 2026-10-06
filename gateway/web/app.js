@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.05.16";
+const UI_BUILD = "2026.10.05.17";
 const state = {
   gatewayId: null,
   token: null,
@@ -1857,7 +1857,12 @@ function makeEntry(markdown, index) {
     try { await navigator.clipboard.writeText(presentation.body); copy.textContent = "Copied"; }
     catch { notice("Clipboard access is unavailable in this browser."); }
   });
-  heading.append(label, copy);
+  if (presentation.kind === "user") {
+    article.setAttribute("aria-label", "Your message");
+    copy.classList.add("message-copy-compact");
+    copy.textContent = "⧉";
+    heading.append(copy);
+  } else heading.append(label, copy);
   if (presentation.kind === "tool") {
     const title = document.createElement("div");
     title.className = "tool-title";

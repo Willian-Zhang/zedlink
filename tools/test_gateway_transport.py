@@ -486,7 +486,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.16"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.05.17"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -573,7 +573,17 @@ def main():
                 sent_payload = json.loads(list(probe.seen_sends.values())[-1])
                 assert sent_payload["context_paths"] == ["src/main.rs"]
                 assert sent_payload["uploads"][0]["name"] == "browser-note.txt"
-                assert browser.find_elements(By.CSS_SELECTOR, ".message.user .message-label")[-1].get_attribute("textContent") == "You"
+                user_message = browser.find_elements(By.CSS_SELECTOR, ".message.user")[-1]
+                assert user_message.get_attribute("aria-label") == "Your message"
+                assert not user_message.find_elements(By.CSS_SELECTOR, ".message-label")
+                assert user_message.find_element(By.CSS_SELECTOR, ".message-copy-compact").get_attribute("textContent") == "⧉"
+                user_style = browser.execute_script(
+                    "const style=getComputedStyle(arguments[0]); const box=arguments[0].getBoundingClientRect(); "
+                    "return {width: box.width, border: style.borderTopWidth, radius: style.borderTopLeftRadius};",
+                    user_message,
+                )
+                assert user_style["width"] < 400 and user_style["border"] == "0px"
+                assert user_style["radius"] == "12px"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant .message-label")[-1].get_attribute("textContent") == "Zed Agent"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant strong")
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant pre code")
