@@ -17,10 +17,18 @@ SKIP_PARTS = {".git", ".agents", ".aws", ".codex", "docs", "target", "zed-source
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".pyc", ".lock"}
 PATTERNS = {
     "private key": re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"),
-    "local user path": re.compile(r"/home/you(?:/|\b)"),
-    "private deployment hostname": re.compile(r"\bconops\.tail[0-9a-z.-]*\.ts\.net\b", re.I),
-    "private deployment address": re.compile(r"\b100\.113\.216\.5\b"),
-    "known gateway identity": re.compile(r"\b<gateway-id>\b", re.I),
+    "local user path": re.compile(r"/home/(?!you(?:/|\b))[A-Za-z0-9._-]+(?:/|\b)"),
+    "private tailnet hostname": re.compile(
+        r"\b(?!computer\.example-tailnet\.ts\.net\b)[a-z0-9-]+\.tail[0-9a-z.-]*\.ts\.net\b",
+        re.I,
+    ),
+    "private Tailscale address": re.compile(
+        r"\b100\.(?!64\.(?:10\.20|0\.0)\b)(?:6[4-9]|[789][0-9]|1[01][0-9]|12[0-7])\.\d{1,3}\.\d{1,3}\b"
+    ),
+    "persisted gateway identity": re.compile(
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+        re.I,
+    ),
 }
 
 
