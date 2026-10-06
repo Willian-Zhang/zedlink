@@ -71,7 +71,9 @@ The sections below explain every step, custom network routes, troubleshooting, s
 
 ## Why `zed-source/` is on the workstation but not GitHub
 
-`zed-source/` is a generated local checkout of the pinned upstream Zed revision. ZedLink applies [its reviewable patch](patches/zed-1.22.0-local-probe.patch) there and builds the patched `zed` executable under `zed-source/target/`. The directory is intentionally ignored by this repository and is never pushed to ZedLink's GitHub repository. The installer recreates it from upstream Zed when it is missing.
+`zed-source/` is a generated local checkout of the maintained [`tjnull/zed`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) fork on branch `zedlink/native-agent-remote-control`. That branch is based on the pinned official Zed revision and contains the native ZedLink integration. The installer builds the patched `zed` executable under `zed-source/target/`, keeps `tjnull/zed` as `origin`, and records `zed-industries/zed` as `upstream`.
+
+The directory is intentionally ignored by the ZedLink repository and is never copied into `tjnull/zedlink`. The reviewable [source patch](patches/zed-1.22.0-local-probe.patch) mirrors the fork changes for auditing and compatibility checks. If `zed-source/` is missing, the installer recreates it directly from the fork branch.
 
 Keep it while using or rebuilding patched Zed. It can be deleted to recover disk space only after closing Zed Dev and accepting that the next **ZedLink: Install / build** will clone and compile Zed again. Deleting it is not required before committing or pushing ZedLink changes.
 
@@ -747,7 +749,7 @@ The stock extension API at that revision cannot enumerate or control an existing
 
 ### Zed upstream fork and contribution path
 
-The nested Zed checkout also has a branch named [`zedlink/native-agent-remote-control`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) on the `tjnull/zed` fork, based on the exact pinned revision above. Its two commits separate the native cancellation guard from the opt-in local Agent bridge. The official `zed-industries/zed` repository remains the checkout's `origin`; the personal fork is the separate `fork` remote.
+The nested checkout follows [`tjnull/zed:zedlink/native-agent-remote-control`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control), based on the exact pinned revision above. Its commits separate cancellation correctness, the opt-in local Agent bridge, native failure reporting, project and Git context, search, and native ZedLink settings. The fork is the checkout's `origin`; the official [`zed-industries/zed`](https://github.com/zed-industries/zed) repository is retained as `upstream` for revision comparison and future rebases.
 
 Zed's contribution policy requires feature work of this size to start as a GitHub Discussion unless a staff-confirmed issue already exists. It also requires the human author to understand and review all AI-assisted code, manually test Zed, retain tests and evidence, sign the CLA, and write the maintainer communication. The checkout deliberately retains Zed's README review marker until that human review is complete. Do not remove it automatically.
 

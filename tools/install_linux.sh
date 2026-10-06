@@ -5,14 +5,17 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_root="$project_root/zed-source"
 patch="$project_root/patches/zed-1.22.0-local-probe.patch"
 pinned_revision="76659a55a8c10ed355a070f8764a0b1733e3c115"
+zed_fork="https://github.com/tjnull/zed.git"
+zed_branch="zedlink/native-agent-remote-control"
+zed_upstream="https://github.com/zed-industries/zed.git"
 
 if [[ ! -d "$source_root/.git" ]]; then
   if [[ -e "$source_root" ]]; then
     printf 'Refusing to replace existing non-Git path: %s\n' "$source_root" >&2
     exit 1
   fi
-  git clone https://github.com/zed-industries/zed.git "$source_root"
-  git -C "$source_root" checkout "$pinned_revision"
+  git clone --branch "$zed_branch" --single-branch "$zed_fork" "$source_root"
+  git -C "$source_root" remote add upstream "$zed_upstream"
 fi
 
 actual_revision="$(git -C "$source_root" rev-parse HEAD)"
