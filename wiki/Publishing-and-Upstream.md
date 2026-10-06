@@ -44,6 +44,8 @@ Creating a decorative or task-only extension would not make the product installa
 
 ## Correct upstream sequence
 
+A copy-ready starting point is available in [Draft Zed upstream proposal](Zed-Upstream-Proposal.md). Review and edit it before posting; it deliberately asks for architectural direction rather than presenting the prototype as a finished upstream design.
+
 1. Open a Zed GitHub Discussion or use a staff-confirmed issue for the proposed native capability.
 2. Present the user model and security boundary: explicit per-thread exposure, local-only bridge, authenticated external gateway, and no model credentials outside Zed.
 3. Reduce and rebase the fork into reviewable Zed core commits with focused tests.

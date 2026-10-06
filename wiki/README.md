@@ -15,6 +15,7 @@ This guide contains the detailed setup, operation, networking, security, develop
 - [Security](Security.md)
 - [Development and testing](Development-and-Testing.md)
 - [Publishing and upstream readiness](Publishing-and-Upstream.md)
+  - [Draft Zed upstream proposal](Zed-Upstream-Proposal.md)
 - [Roadmap and validation](Roadmap-and-Validation.md)
 
 ## Core design
