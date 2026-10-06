@@ -14,6 +14,7 @@ This guide contains the detailed setup, operation, networking, security, develop
 - [Troubleshooting](Troubleshooting.md)
 - [Security](Security.md)
 - [Development and testing](Development-and-Testing.md)
+- [Publishing and upstream readiness](Publishing-and-Upstream.md)
 - [Roadmap and validation](Roadmap-and-Validation.md)
 
 ## Core design

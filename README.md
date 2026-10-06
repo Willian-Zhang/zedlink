@@ -14,6 +14,18 @@
 > [!IMPORTANT]
 > ZedLink is working development software built against pinned Zed revision `76659a55a8c10ed355a070f8764a0b1733e3c115`. It currently requires the maintained [`tjnull/zed`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) fork and is not a Marketplace extension. A physical iPhone Safari client has completed a same-thread round trip over trusted Tailscale HTTPS.
 
+## Distribution status
+
+ZedLink cannot currently be published as a stock Zed Gallery extension. Zed's supported extension API does not expose existing native Agent threads, native Agent settings, approvals, or cancellation, and Zed's current publishing policy no longer accepts new slash-command or agent-server extensions. The native integration therefore lives as a focused Zed source branch while the gateway and clients live in this repository.
+
+The intended public path is:
+
+1. submit the native bridge and supported API surface to Zed through its normal core contribution process;
+2. keep the gateway and clients independently buildable and reviewable here;
+3. create a Gallery package only after Zed exposes an accepted extension capability that can preserve the same native thread.
+
+See [Publishing and upstream readiness](wiki/Publishing-and-Upstream.md) for the source-grounded audit, blockers, and release checklist. Do not install an `extension.toml` from an unofficial package claiming to provide the current native-thread integration.
+
 ## What it does
 
 ZedLink exposes only the root Agent threads you explicitly enable with `/remote-control`. Prompts from a paired client enter the selected thread's normal execution path and appear in the desktop Agent Panel. Responses, reasoning, tools, approvals, errors, cancellation, and filesystem state remain attached to that same conversation.
@@ -80,6 +92,7 @@ For requirements, first build details, TLS setup, provider configuration, and re
 | [Troubleshooting](wiki/Troubleshooting.md) | Missing commands, wrong Zed build, model and image errors, TLS, DNS, reconnects, and uncertain delivery |
 | [Security](wiki/Security.md) | Trust boundaries, explicit exposure, pairing, TLS, permissions, and credential handling |
 | [Development and testing](wiki/Development-and-Testing.md) | Builds, protocol tests, pinned source, fork layout, and contribution path |
+| [Publishing and upstream readiness](wiki/Publishing-and-Upstream.md) | Zed Gallery eligibility, upstream core path, licensing, and public-release checklist |
 | [Roadmap and validation](wiki/Roadmap-and-Validation.md) | Native parity gaps, completed evidence, and current limitations |
 
 ## Native Zed settings
@@ -132,6 +145,8 @@ Browser fixture results do not substitute for real native Zed testing. See [Road
 - Device secrets, model credentials, and routine transcript data are excluded from logs.
 
 Read the complete [security model](wiki/Security.md) before exposing a route beyond a private network.
+
+Security reports should use GitHub's private vulnerability reporting flow described in [SECURITY.md](SECURITY.md). Development contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [upstream readiness guide](wiki/Publishing-and-Upstream.md).
 
 ## Current status
 

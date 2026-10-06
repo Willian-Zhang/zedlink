@@ -40,7 +40,7 @@ Verified:
 
 Still incomplete:
 
-- release packaging as a stock Zed extension,
+- stock Zed Gallery packaging, which is blocked by the missing native-thread extension API and the current prohibition on new slash-command and agent-server submissions,
 - a real Codex or Claude Code prompt round trip through the newly built ACP exposure path (the browser fixture passes; a real external thread has not yet been exposed),
 - supervised background startup and certificate renewal,
 - physical Web Push delivery on an installed iPhone/Android web app and native APNs/FCM delivery,
