@@ -105,6 +105,12 @@ Patched Zed includes a native **ZedLink** Settings page for bridge startup, proj
 
 <p align="center"><sub>Native patched Zed Settings using generic example paths and a Tailscale profile.</sub></p>
 
+## Upstreaming to Zed
+
+The native integration is maintained on the public [`tjnull/zed:zedlink/native-agent-remote-control`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) branch. Zed asks larger features and Extension API changes to begin with maintainer discussion, so the repository includes a [source-grounded upstream proposal](wiki/Zed-Upstream-Proposal.md) and [publishing audit](wiki/Publishing-and-Upstream.md) for review before a core pull request.
+
+The proposal keeps the product boundary explicit: Zed owns the Agent runtime and native thread; the separately authenticated gateway owns remote transport and device pairing.
+
 ## Source layout
 
 - `gateway/` — authenticated HTTPS/WebSocket gateway and browser/PWA client.

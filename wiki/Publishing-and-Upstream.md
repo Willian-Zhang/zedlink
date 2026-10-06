@@ -61,15 +61,15 @@ The Zed fork currently contains seven separated commits after the pinned revisio
 Before changing the ZedLink repository from private to public:
 
 - [x] Select and commit an accepted open-source license: Apache License 2.0.
-- [ ] Review the complete Git history for credentials, certificates, pairing links, device tokens, private hostnames, IP addresses, and personal paths.
-- [ ] Run `python3 tools/check_public_release.py`.
+- [x] Review and sanitize the complete Git history for credentials, certificates, pairing links, device tokens, private hostnames, IP addresses, personal paths, and author email metadata.
+- [x] Run `python3 tools/check_public_release.py`.
 - [ ] Run `bash tools/check_linux.sh` and the authenticated browser transport fixture.
-- [ ] Confirm the pinned fork branch and patch contain the same native changes.
-- [ ] Keep `zed-source/`, build outputs, certificates, local state, and internal validation documents ignored.
-- [ ] Add a security reporting policy and maintainer contact before accepting outside users.
-- [ ] Confirm screenshots contain no private projects, hostnames, addresses, prompts, or credentials.
-- [ ] State clearly that the current installer builds a patched Zed and is not a Gallery install.
-- [ ] Record which Linux distributions and browser/device routes were actually tested.
+- [x] Confirm the pinned fork branch and patch contain the same native changes.
+- [x] Keep `zed-source/`, build outputs, certificates, local state, and internal validation documents ignored.
+- [x] Add a private security reporting policy before accepting outside users.
+- [x] Confirm screenshots contain no private projects, hostnames, addresses, prompts, or credentials.
+- [x] State clearly that the current installer builds a patched Zed and is not a Gallery install.
+- [x] Record which Linux distributions and browser/device routes were actually tested.
 
 The release checker examines the current working tree. A separate history review is still required because deleting a secret from the latest commit does not remove it from earlier commits.
 
