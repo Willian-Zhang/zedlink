@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <code>Linux host</code> · <code>Private HTTPS</code> · <code>Installable PWA</code> · <code>SwiftUI source</code> · <code>Android source</code>
+  <code>Linux host</code> · <code>Private HTTPS</code> · <code>Installable PWA</code> · <code>SwiftUI source</code> · <code>Android source</code> · <code>Apache-2.0</code>
 </p>
 
 ![ZedLink desktop conversation showing live Agent activity and parallel agents](assets/screenshots/desktop-conversation.png)
@@ -153,3 +153,7 @@ Security reports should use GitHub's private vulnerability reporting flow descri
 The browser/PWA and Linux-hosted patched Zed path are the most complete implementation. The SwiftUI and Android sources are present, while signed native distribution, broader physical-device coverage, supervised background startup, and several desktop Agent parity controls remain ongoing work.
 
 See [Roadmap and validation](wiki/Roadmap-and-Validation.md) for exact passed, unavailable, and incomplete tests.
+
+## License
+
+ZedLink is licensed under the [Apache License 2.0](LICENSE). The separately maintained Zed fork retains Zed's upstream licensing and contribution requirements.

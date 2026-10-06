@@ -37,7 +37,7 @@ The native entities and execution paths ZedLink must reuse are in `agent`, `acp_
 | Extension sandbox | Current bridge must access native Agent entities and a private local socket, which a stock extension cannot do |
 | Manual test at submitted commit | Required after a supported package exists |
 | Public repository and branch-reachable commit | Required before a Gallery pull request |
-| Accepted license | Blocked until the project owner selects and commits a license |
+| Accepted license | Pass; the project uses Apache License 2.0 |
 | One-extension Gallery pull request | Required only after the native capability is supported |
 
 Creating a decorative or task-only extension would not make the product installable: `/remote-control`, existing-thread access, streaming, approvals, and cancellation would still be absent. Zed's publishing prerequisites also prohibit using the extension API to work around its limits.
@@ -58,7 +58,7 @@ The Zed fork currently contains seven separated commits after the pinned revisio
 
 Before changing the ZedLink repository from private to public:
 
-- [ ] Select and commit an accepted open-source license.
+- [x] Select and commit an accepted open-source license: Apache License 2.0.
 - [ ] Review the complete Git history for credentials, certificates, pairing links, device tokens, private hostnames, IP addresses, and personal paths.
 - [ ] Run `python3 tools/check_public_release.py`.
 - [ ] Run `bash tools/check_linux.sh` and the authenticated browser transport fixture.
