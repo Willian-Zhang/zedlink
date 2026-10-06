@@ -94,7 +94,7 @@ struct GatewayClient {
         }
         guard let http = response as? HTTPURLResponse else { throw GatewayFailure.invalidResponse }
         if (300..<400).contains(http.statusCode) { throw GatewayFailure.redirected }
-        guard data.count <= 1_048_576,
+        guard data.count <= 4_194_304,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw GatewayFailure.invalidResponse
         }

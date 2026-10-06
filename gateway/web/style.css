@@ -158,6 +158,8 @@ input[type=search] { appearance: none; }
 
 .messages { display: flex; flex: 1; flex-direction: column; gap: 0; min-height: 0; overflow: auto; padding: 22px max(24px, calc((100% - 1180px) / 2)) 26px; scroll-behavior: smooth; overscroll-behavior: contain; }
 .transcript-entries { display: contents; }
+.load-history { align-self: center; margin: 2px 0 18px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--muted); padding: 7px 2px; }
+.load-history:hover, .load-history:focus-visible { color: var(--ink); border-color: var(--ink); }
 .empty { width: min(100%, 620px); margin: auto; color: var(--muted); text-align: center; }
 .empty-icon { display: grid; place-items: center; width: 48px; height: 48px; margin: 15px auto 22px; border: 1px solid var(--line-strong); color: var(--ink); font-family: Georgia, serif; font-size: 1.45rem; font-style: italic; }
 .empty h3 { margin: 0 0 9px; color: var(--ink); font-size: clamp(1.55rem, 3vw, 2.1rem); font-weight: 500; letter-spacing: -.04em; }

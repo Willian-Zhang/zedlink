@@ -142,12 +142,28 @@ import Combine
 
     private func loadSnapshot(_ id: String) async throws {
         guard let client else { return }
-        let result = try await client.rpc("thread.snapshot", params: ["thread_id": id])
+        var params: [String: Any] = ["thread_id": id]
+        if snapshot?.threadID == id { params["tail_entry_count"] = 16 }
+        let result = try await client.rpc("thread.snapshot", params: params)
         try checkIdentity(result)
         guard result["thread_id"] as? String == id,
               let entries = result["entries_markdown"] as? [String],
               let sequence = result["last_sequence"] as? Int else { throw GatewayFailure.invalidResponse }
         guard selectedThreadID == id else { return }
+        let pageStart = result["entry_start_index"] as? Int ?? 0
+        let pageEnd = result["entry_end_index"] as? Int ?? pageStart + entries.count
+        let totalEntries = result["total_entries"] as? Int ?? pageEnd
+        guard pageStart >= 0, pageEnd == pageStart + entries.count, totalEntries >= pageEnd else {
+            throw GatewayFailure.invalidResponse
+        }
+        var mergedEntries = entries
+        var mergedStart = pageStart
+        if let old = snapshot, old.threadID == id,
+           pageStart >= old.entryStartIndex,
+           pageStart <= old.entryStartIndex + old.entries.count {
+            mergedEntries = Array(old.entries.prefix(pageStart - old.entryStartIndex)) + entries
+            mergedStart = old.entryStartIndex
+        }
         let approvals = (result["pending_approvals"] as? [[String: Any]] ?? []).compactMap { row -> NativeApproval? in
             guard let approvalID = row["approval_id"] as? String else { return nil }
             return NativeApproval(id: approvalID,
@@ -164,11 +180,46 @@ import Combine
                                   status: result["status"] as? String ?? "Unknown",
                                   currentTurnID: result["current_turn_id"] as? Int,
                                   instanceID: instanceID ?? "", epoch: epoch ?? "",
-                                  lastSequence: sequence, entries: entries,
+                                  lastSequence: sequence, entries: mergedEntries,
+                                  entryStartIndex: mergedStart, totalEntries: totalEntries,
+                                  hasOlderEntries: mergedStart > 0,
                                   activityEntries: result["activity_entries_markdown"] as? [String] ?? entries,
                                   truncated: result["truncated"] as? Bool ?? false,
                                   activityTruncated: result["activity_truncated"] as? Bool ?? false,
                                   pendingApprovals: approvals)
+    }
+
+    func loadEarlierHistory() async {
+        guard capabilities.contains("thread.history"), let client, let old = snapshot,
+              old.threadID == selectedThreadID, old.entryStartIndex > 0 else { return }
+        do {
+            let result = try await client.rpc("thread.history", params: [
+                "thread_id": old.threadID, "before_entry_index": old.entryStartIndex
+            ])
+            try checkIdentity(result)
+            guard selectedThreadID == old.threadID, let current = snapshot,
+                  current.threadID == old.threadID,
+                  current.entryStartIndex == old.entryStartIndex,
+                  result["thread_id"] as? String == old.threadID,
+                  result["entry_end_index"] as? Int == old.entryStartIndex,
+                  let start = result["entry_start_index"] as? Int,
+                  let entries = result["entries_markdown"] as? [String] else {
+                throw GatewayFailure.invalidResponse
+            }
+            snapshot = ThreadSnapshot(threadID: current.threadID, title: current.title, status: current.status,
+                                      currentTurnID: current.currentTurnID,
+                                      instanceID: current.instanceID, epoch: current.epoch,
+                                      lastSequence: current.lastSequence,
+                                      entries: entries + current.entries,
+                                      entryStartIndex: start,
+                                      totalEntries: max(current.totalEntries, result["total_entries"] as? Int ?? 0),
+                                      hasOlderEntries: start > 0,
+                                      activityEntries: current.activityEntries,
+                                      truncated: start > 0, activityTruncated: current.activityTruncated,
+                                      pendingApprovals: current.pendingApprovals)
+        } catch {
+            issue = error.localizedDescription
+        }
     }
 
     private func loadCommands(_ id: String) async throws {
@@ -201,7 +252,10 @@ import Combine
                     ])
                     try checkIdentity(result)
                     guard result["thread_id"] as? String == id else { throw GatewayFailure.invalidResponse }
-                    if let events = result["events"] as? [Any], !events.isEmpty {
+                    if let events = result["events"] as? [[String: Any]], !events.isEmpty {
+                        if events.contains(where: { $0["kind"] as? String == "entry.removed" }) {
+                            snapshot = nil
+                        }
                         try await loadSnapshot(id)
                     } else if snapshot?.isBusy == true {
                         try await loadSnapshot(id)
@@ -211,6 +265,9 @@ import Combine
                                              currentTurnID: old.currentTurnID,
                                              instanceID: old.instanceID, epoch: old.epoch,
                                              lastSequence: sequence, entries: old.entries,
+                                             entryStartIndex: old.entryStartIndex,
+                                             totalEntries: old.totalEntries,
+                                             hasOlderEntries: old.hasOlderEntries,
                                              activityEntries: old.activityEntries,
                                              truncated: old.truncated, activityTruncated: old.activityTruncated,
                                              pendingApprovals: old.pendingApprovals)
@@ -226,6 +283,7 @@ import Combine
                 }
             } catch {
                 if case GatewayFailure.native("RESYNC_REQUIRED") = error, let id = selectedThreadID {
+                    snapshot = nil
                     do { try await loadSnapshot(id); state = .live }
                     catch { state = .stale; issue = error.localizedDescription }
                 } else if case GatewayFailure.native("THREAD_NOT_EXPOSED") = error {

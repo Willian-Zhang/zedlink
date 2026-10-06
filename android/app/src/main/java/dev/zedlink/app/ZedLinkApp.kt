@@ -172,7 +172,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         }
         if (state.issue.isNotBlank()) Notice(state.issue)
         if (snapshot == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Ink) }
-        else Messages(snapshot, Modifier.weight(1f))
+        else Messages(snapshot, model, Modifier.weight(1f))
         if (showCommands) CommandList(state.commands) { model.insertCommand(it); showCommands = false }
         if (state.delivery.isNotBlank()) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(8.dp))
@@ -181,15 +181,18 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
 }
 
 @Composable
-private fun Messages(snapshot: ThreadSnapshot, modifier: Modifier = Modifier) {
+private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier: Modifier = Modifier) {
     val list = rememberLazyListState()
-    LaunchedEffect(snapshot.entries.size, snapshot.lastSequence) { if (snapshot.entries.isNotEmpty()) list.animateScrollToItem(snapshot.entries.lastIndex + 2) }
+    LaunchedEffect(snapshot.lastSequence) { if (snapshot.entries.isNotEmpty()) list.animateScrollToItem(snapshot.entries.lastIndex + 1) }
     LazyColumn(modifier.fillMaxWidth(), state = list, contentPadding = PaddingValues(bottom = 10.dp)) {
-        if (snapshot.isBusy || snapshot.activityEntries.any { it.contains("<thinking>") || it.startsWith("**Tool Call:") }) {
-            item { ActivityPanel(snapshot) }
+        if (snapshot.hasOlderEntries) item {
+            TextButton(onClick = model::loadEarlierHistory, shape = androidx.compose.ui.graphics.RectangleShape) {
+                Text("LOAD EARLIER CONVERSATION · ${snapshot.entryStartIndex} REMAINING", color = Muted)
+            }
         }
-        if (snapshot.truncated) item { Notice("Older native history is available in desktop Zed.") }
-        itemsIndexed(snapshot.entries) { _, markdown -> Message(NativeEntry.parse(markdown)) }
+        itemsIndexed(snapshot.entries, key = { index, _ -> snapshot.entryStartIndex + index }) { index, markdown ->
+            Message(NativeEntry.parse(markdown), snapshot.isBusy && index == snapshot.entries.lastIndex)
+        }
         items(snapshot.approvals, key = { it.id }) { ApprovalCard(it) }
     }
 }
@@ -199,7 +202,7 @@ private fun ActivityPanel(snapshot: ThreadSnapshot) {
     var expanded by remember { mutableStateOf(true) }
     val activity = snapshot.activityEntries.map(NativeEntry::parse).flatMap { entry ->
         entry.reasoning.map { "Reasoning" to it } + if (entry.kind == EntryKind.TOOL || entry.kind == EntryKind.PLAN) listOf(entry.label to entry.body) else emptyList()
-    }.takeLast(10)
+    }
     Column(Modifier.fillMaxWidth().padding(12.dp).border(1.dp, Line).background(Surface)) {
         Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(if (snapshot.isBusy) "●" else "○", color = if (snapshot.isBusy) Green else Subtle)
@@ -219,13 +222,21 @@ private fun ActivityPanel(snapshot: ThreadSnapshot) {
 }
 
 @Composable
-private fun Message(entry: NativeEntry) {
-    if (entry.body.isBlank() && entry.reasoning.isNotEmpty()) return
+private fun Message(entry: NativeEntry, thinkingLive: Boolean = false) {
+    var reasoningExpanded by remember(entry.reasoning, thinkingLive) { mutableStateOf(thinkingLive) }
     when (entry.kind) {
         EntryKind.TOOL -> ToolCard(entry)
         else -> Column(Modifier.fillMaxWidth().then(if (entry.kind == EntryKind.USER) Modifier.background(Raised) else Modifier).padding(16.dp)) {
             Text(entry.label.uppercase(), color = if (entry.kind == EntryKind.ASSISTANT) Color(0xFFB8C5D1) else Subtle,
                 fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+            if (entry.reasoning.isNotEmpty()) {
+                TextButton(onClick = { reasoningExpanded = !reasoningExpanded }, shape = androidx.compose.ui.graphics.RectangleShape) {
+                    Text(if (reasoningExpanded) "HIDE THINKING" else "SHOW THINKING", color = Muted)
+                }
+                if (reasoningExpanded) entry.reasoning.forEach { thought ->
+                    SelectionContainer { MarkdownLikeText(thought, Modifier.padding(vertical = 6.dp)) }
+                }
+            }
             SelectionContainer { MarkdownLikeText(entry.body) }
         }
     }

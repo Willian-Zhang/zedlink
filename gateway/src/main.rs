@@ -41,7 +41,7 @@ use web_push::{
 };
 
 const MAX_RPC: usize = 2 * 1024 * 1024;
-const MAX_PROBE_RESPONSE: u64 = 1024 * 1024;
+const MAX_PROBE_RESPONSE: u64 = 4 * 1024 * 1024;
 const PAIR_TTL: Duration = Duration::from_secs(300);
 const MAX_DEVICES: usize = 32;
 const NOTIFICATION_POLL: Duration = Duration::from_secs(2);
@@ -1077,6 +1077,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.list"
             | "thread.create"
             | "thread.snapshot"
+            | "thread.history"
             | "thread.events"
             | "thread.commands"
             | "thread.settings"

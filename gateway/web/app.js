@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.06.26";
+const UI_BUILD = "2026.10.06.27";
 const state = {
   gatewayId: null,
   token: null,
@@ -22,6 +22,9 @@ const state = {
   activityBusy: false,
   renderedEntries: [],
   renderedThreadId: null,
+  renderedEntryStart: 0,
+  totalEntries: 0,
+  historyLoading: false,
   creatingThread: false,
   eventSocket: null,
   eventThreadId: null,
@@ -733,6 +736,12 @@ function startEventStream() {
       state.lastLiveEventAt = Date.now();
       connection("Zed connected · live updates", "online");
       if (Number.isInteger(result.last_sequence)) state.sequence = Math.max(state.sequence, result.last_sequence);
+      if (result.events.some((item) => item?.kind === "entry.removed")) {
+        state.renderedEntries = [];
+        state.renderedEntryStart = 0;
+        state.totalEntries = 0;
+        $("transcript-entries").replaceChildren();
+      }
       if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle")) {
         refreshSnapshot().catch((error) => notice(error.message));
       }
@@ -956,6 +965,8 @@ async function loadThreads() {
     state.sequence = 0;
     state.renderedEntries = [];
     state.renderedThreadId = null;
+    state.renderedEntryStart = 0;
+    state.totalEntries = 0;
     state.activitySignature = null;
     state.activityBusy = false;
     state.subagents = [];
@@ -1183,6 +1194,8 @@ async function selectThread(threadId) {
   state.sequence = 0;
   state.renderedEntries = [];
   state.renderedThreadId = null;
+  state.renderedEntryStart = 0;
+  state.totalEntries = 0;
   state.activitySignature = null;
   state.activityCollapsed = true;
   state.activityBusy = false;
@@ -2458,10 +2471,72 @@ async function refreshSnapshot() {
   }
 }
 
+function renderTranscript() {
+  const container = $("transcript-entries");
+  for (const [offset, markdown] of state.renderedEntries.entries()) {
+    const absoluteIndex = state.renderedEntryStart + offset;
+    const previous = container.children[offset];
+    if (previous?.dataset.entryIndex === String(absoluteIndex)
+        && previous._zedlinkMarkdown === markdown) continue;
+    const article = makeEntry(markdown, absoluteIndex);
+    article._zedlinkMarkdown = markdown;
+    if (previous) {
+      const oldDetails = previous.querySelector("details");
+      const newDetails = article.querySelector("details");
+      if (oldDetails && newDetails && oldDetails.dataset.userToggled === "true") {
+        newDetails.open = oldDetails.open;
+        newDetails.dataset.userToggled = "true";
+      }
+      previous.replaceWith(article);
+    } else container.append(article);
+  }
+  while (container.children.length > state.renderedEntries.length) container.lastElementChild.remove();
+  const canLoad = state.renderedEntryStart > 0 && state.capabilities.includes("thread.history");
+  $("load-history").classList.toggle("hidden", !canLoad);
+  $("load-history").disabled = state.historyLoading;
+  $("load-history").textContent = state.historyLoading
+    ? "Loading earlier conversation…"
+    : `Load earlier conversation · ${state.renderedEntryStart} remaining`;
+}
+
+async function loadEarlierConversation() {
+  if (!state.threadId || state.renderedEntryStart <= 0 || state.historyLoading
+      || !state.capabilities.includes("thread.history")) return;
+  const threadId = state.threadId;
+  const before = state.renderedEntryStart;
+  const scroller = $("messages");
+  const priorHeight = scroller.scrollHeight;
+  state.historyLoading = true;
+  renderTranscript();
+  try {
+    const result = await rpc("thread.history", { thread_id: threadId, before_entry_index: before });
+    if (state.threadId !== threadId || state.renderedEntryStart !== before) return;
+    identity(result);
+    if (result.thread_id !== threadId || result.entry_end_index !== before
+        || !Number.isInteger(result.entry_start_index)
+        || !Array.isArray(result.entries_markdown)
+        || !result.entries_markdown.every((entry) => typeof entry === "string")) {
+      throw new Error("Conversation history changed. Refresh the session and try again.");
+    }
+    state.renderedEntries = [...result.entries_markdown, ...state.renderedEntries];
+    state.renderedEntryStart = result.entry_start_index;
+    state.totalEntries = Math.max(state.totalEntries, Number(result.total_entries) || 0);
+    renderTranscript();
+    scroller.scrollTop += scroller.scrollHeight - priorHeight;
+  } catch (error) {
+    notice(error.message);
+  } finally {
+    state.historyLoading = false;
+    renderTranscript();
+  }
+}
+
 async function snapshot() {
   if (!state.threadId) return;
   const threadId = state.threadId;
-  const result = await rpc("thread.snapshot", { thread_id: threadId });
+  const params = { thread_id: threadId };
+  if (state.renderedThreadId === threadId && state.renderedEntries.length) params.tail_entry_count = 16;
+  const result = await rpc("thread.snapshot", params);
   if (state.threadId !== threadId) return;
   identity(result);
   if (result.thread_id !== state.threadId || !Array.isArray(result.entries_markdown)
@@ -2473,28 +2548,31 @@ async function snapshot() {
   const scroller = $("messages");
   const container = $("transcript-entries");
   const follow = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+  const pageStart = Number.isInteger(result.entry_start_index) ? result.entry_start_index : 0;
+  const pageEnd = Number.isInteger(result.entry_end_index)
+    ? result.entry_end_index : pageStart + result.entries_markdown.length;
+  const totalEntries = Number.isInteger(result.total_entries) ? result.total_entries : pageEnd;
+  if (pageEnd !== pageStart + result.entries_markdown.length || totalEntries < pageEnd) {
+    throw new Error("Invalid transcript page from desktop Zed.");
+  }
   if (state.renderedThreadId !== result.thread_id) {
     container.replaceChildren();
     state.renderedEntries = [];
     state.renderedThreadId = result.thread_id;
+    state.renderedEntryStart = pageStart;
   }
-  for (const [index, markdown] of result.entries_markdown.entries()) {
-    if (state.renderedEntries[index] === markdown) continue;
-    const article = makeEntry(markdown, index);
-    const previous = container.children[index];
-    if (previous) {
-      const oldDetails = previous.querySelector("details");
-      const newDetails = article.querySelector("details");
-      if (oldDetails && newDetails && oldDetails.dataset.userToggled === "true") {
-        newDetails.open = oldDetails.open;
-        newDetails.dataset.userToggled = "true";
-      }
-      previous.replaceWith(article);
-    } else container.append(article);
-    state.renderedEntries[index] = markdown;
+  const loadedEnd = state.renderedEntryStart + state.renderedEntries.length;
+  if (pageStart >= state.renderedEntryStart && pageStart <= loadedEnd) {
+    state.renderedEntries = [
+      ...state.renderedEntries.slice(0, pageStart - state.renderedEntryStart),
+      ...result.entries_markdown,
+    ];
+  } else {
+    state.renderedEntryStart = pageStart;
+    state.renderedEntries = [...result.entries_markdown];
   }
-  while (container.children.length > result.entries_markdown.length) container.lastElementChild.remove();
-  state.renderedEntries.length = result.entries_markdown.length;
+  state.totalEntries = totalEntries;
+  renderTranscript();
   const busy = result.status !== "Idle";
   state.threadStatus = result.status;
   const summary = state.threads.find((thread) => thread.thread_id === result.thread_id);
@@ -2510,14 +2588,16 @@ async function snapshot() {
     assistants[assistants.length - 1]?.querySelectorAll("details.thinking-block").forEach((details) => { details.open = true; });
   }
   $("thread-title").textContent = result.title || "Untitled Agent thread";
-  $("thread-meta").textContent = result.truncated ? "Older conversation omitted here · Full history remains in Zed" : `Thread ${result.thread_id.slice(0, 12)}…`;
+  $("thread-meta").textContent = state.renderedEntryStart > 0
+    ? `Showing ${state.renderedEntries.length} of ${state.totalEntries} entries · Earlier history available`
+    : `${state.totalEntries} conversation entries · Thread ${result.thread_id.slice(0, 12)}…`;
   const failed = !busy && !state.retryStatus && (result.had_error === true || !!state.threadError);
   $("thread-state").textContent = state.retryStatus ? "Retrying" : failed ? "Request failed" : result.status;
   $("thread-state").className = `state-pill ${result.status === "Idle" && !failed ? "online" : ""} ${failed ? "offline" : ""}`;
-  const activityEntries = Array.isArray(result.activity_entries_markdown)
-    && result.activity_entries_markdown.every((entry) => typeof entry === "string")
-    ? result.activity_entries_markdown : result.entries_markdown;
-  renderActivity(activityEntries, result.status, result.activity_truncated === true);
+  // Thinking and tool output are rendered in their exact transcript positions.
+  // Keep the former aggregate activity surface hidden to avoid duplicate or reordered content.
+  $("activity").classList.add("hidden");
+  state.activitySignature = null;
   renderSubagents(result.subagents);
   const childApprovals = state.subagents.flatMap((agent) => Array.isArray(agent.pending_approvals) ? agent.pending_approvals : []);
   renderApprovals([...(Array.isArray(result.pending_approvals) ? result.pending_approvals : []), ...childApprovals]);
@@ -2525,7 +2605,7 @@ async function snapshot() {
   if (follow) {
     scroller.scrollTop = scroller.scrollHeight;
     $("jump-latest").classList.add("hidden");
-  } else if (result.entries_markdown.length) {
+  } else if (state.renderedEntries.length) {
     $("jump-latest").classList.remove("hidden");
   }
   state.turnId = Number.isInteger(result.current_turn_id) ? result.current_turn_id : null;
@@ -2626,6 +2706,10 @@ async function poll() {
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Zed connected · live updates" : "Zed connected · polling", "online");
   } catch (error) {
     if (error.code === "RESYNC_REQUIRED") {
+      state.renderedEntries = [];
+      state.renderedEntryStart = 0;
+      state.totalEntries = 0;
+      $("transcript-entries").replaceChildren();
       try { await refreshSnapshot(); return; } catch (snapshotError) { notice(snapshotError.message); }
     } else if (error.code === "THREAD_NOT_EXPOSED" || error.code === "IDENTITY_CHANGED") {
       await connect();
@@ -2777,6 +2861,7 @@ $("jump-latest").addEventListener("click", () => {
   container.scrollTop = container.scrollHeight;
   $("jump-latest").classList.add("hidden");
 });
+$("load-history").addEventListener("click", loadEarlierConversation);
 $("send").addEventListener("click", () => {
   if (canStopTurn()) cancelCurrentTurn();
   else $("composer-form").requestSubmit();

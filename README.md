@@ -37,7 +37,7 @@ Zed keeps the configured model, provider credentials, tools, MCP servers, permis
 | Existing native Agent threads | Expose, list, resume, stream, and stop |
 | ACP agents | Existing Codex, Claude Code, OpenCode, Copilot, Cursor, and other Zed-hosted ACP threads |
 | New sessions | Create in the configured project from a paired browser |
-| Live activity | Responses, thinking, tool calls, terminal output, failures, retries, approvals, and parallel agents |
+| Live activity | Indexed long-history paging plus real-time responses, inline thinking, tool calls, terminal output, failures, retries, approvals, and parallel agents |
 | Project context | Browse and search files, attach context, review syntax-highlighted code and diffs |
 | Private access | Device pairing over Tailscale, routed VPNs, or trusted HTTPS profiles |
 | Clients | Responsive browser/PWA, SwiftUI source, and Jetpack Compose source |
@@ -67,7 +67,7 @@ Zed must remain open while a remote conversation is active. Model credentials ne
   </tr>
 </table>
 
-The responsive browser client can be installed as a home-screen app. It includes session controls, reconnect diagnostics, expandable reasoning, tool output, code and diff review, file context, approvals, and cancellation.
+The responsive browser client can be installed as a home-screen app. It includes session controls, reconnect diagnostics, paginated long conversations, inline expandable reasoning, tool output, code and diff review, file context, approvals, and cancellation.
 
 ## Quick start
 

@@ -64,6 +64,9 @@ struct ThreadSnapshot {
     let epoch: String
     let lastSequence: Int
     let entries: [String]
+    let entryStartIndex: Int
+    let totalEntries: Int
+    let hasOlderEntries: Bool
     let activityEntries: [String]
     let truncated: Bool
     let activityTruncated: Bool

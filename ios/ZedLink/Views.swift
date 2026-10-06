@@ -150,7 +150,6 @@ struct ConversationView: View {
     let threadID: String
     @State private var showingClearConfirmation = false
     @State private var showingCommands = false
-    @State private var activityExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -183,20 +182,25 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     threadMeta(snapshot)
-                    if snapshot.isBusy || hasActivity(snapshot) {
-                        ActivityPanel(snapshot: snapshot, expanded: $activityExpanded)
-                            .padding(.horizontal, 12).padding(.vertical, 10)
+                    if snapshot.hasOlderEntries {
+                        Button("Load earlier conversation · \(snapshot.entryStartIndex) remaining") {
+                            Task { await session.loadEarlierHistory() }
+                        }
+                        .font(.footnote).foregroundStyle(ZLTheme.muted)
+                        .padding(.horizontal, 16).padding(.vertical, 12)
                     }
-                    ForEach(Array(snapshot.entries.enumerated()), id: \.offset) { index, markdown in
-                        NativeMessageView(message: NativeEntryPresentation(markdown, index: index))
-                            .id(index)
+                    ForEach(Array(snapshot.entries.enumerated()).map {
+                        IndexedTranscriptEntry(id: snapshot.entryStartIndex + $0.offset, markdown: $0.element)
+                    }) { entry in
+                        NativeMessageView(message: NativeEntryPresentation(entry.markdown, index: entry.id))
+                            .id(entry.id)
                         Hairline().padding(.horizontal, 14)
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
                 }
             }
             .defaultScrollAnchor(.bottom)
-            .onChange(of: snapshot.entries) { _, _ in
+            .onChange(of: snapshot.lastSequence) { _, _ in
                 withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
             }
         }
@@ -208,18 +212,13 @@ struct ConversationView: View {
             Text(snapshot.isBusy ? "ZED IS WORKING" : "NATIVE THREAD READY")
                 .font(.caption2.monospaced().weight(.semibold)).tracking(0.8)
             Spacer()
-            if snapshot.truncated {
-                Text("OLDER HISTORY IN ZED").font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
-            }
+            Text("\(snapshot.entries.count) / \(snapshot.totalEntries)")
+                .font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
         }
         .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.healthy)
         .padding(.horizontal, 16).padding(.vertical, 9)
         .background(ZLTheme.surface)
         .overlay(alignment: .bottom) { Hairline() }
-    }
-
-    private func hasActivity(_ snapshot: ThreadSnapshot) -> Bool {
-        snapshot.activityEntries.contains { $0.contains("<thinking>") || $0.hasPrefix("**Tool Call:") }
     }
 
     private func approvalStack(_ approvals: [NativeApproval]) -> some View {
@@ -292,6 +291,11 @@ struct ConversationView: View {
     }
 }
 
+private struct IndexedTranscriptEntry: Identifiable {
+    let id: Int
+    let markdown: String
+}
+
 private struct ActivityPanel: View {
     let snapshot: ThreadSnapshot
     @Binding var expanded: Bool
@@ -324,13 +328,13 @@ private struct ActivityPanel: View {
                         Text("Waiting for reasoning or tool activity shared by native Zed…")
                             .font(.footnote).foregroundStyle(ZLTheme.muted)
                     }
-                    ForEach(Array(reasoning.suffix(4).enumerated()), id: \.offset) { _, value in
+                    ForEach(Array(reasoning.enumerated()), id: \.offset) { _, value in
                         VStack(alignment: .leading, spacing: 5) {
                             SectionLabel("Reasoning shared by Zed")
                             NativeMarkdownView(markdown: value)
                         }
                     }
-                    ForEach(tools.suffix(4)) { tool in
+                    ForEach(tools) { tool in
                         HStack {
                             Image(systemName: "wrench.and.screwdriver")
                             Text(tool.toolName ?? "Zed tool").lineLimit(1)

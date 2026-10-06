@@ -158,6 +158,34 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
     }
 
+    fun loadEarlierHistory() = viewModelScope.launch {
+        val old = state.snapshot ?: return@launch
+        val activeClient = client ?: return@launch
+        if (old.entryStartIndex <= 0 || "thread.history" !in state.capabilities) return@launch
+        try {
+            val result = activeClient.rpc("thread.history", JSONObject()
+                .put("thread_id", old.threadId).put("before_entry_index", old.entryStartIndex))
+            checkIdentity(result)
+            val current = state.snapshot
+            if (state.selectedThreadId != old.threadId || current == null
+                || current.threadId != old.threadId || current.entryStartIndex != old.entryStartIndex
+                || result.optString("thread_id") != old.threadId
+                || result.optInt("entry_end_index", -1) != old.entryStartIndex) return@launch
+            val start = result.optInt("entry_start_index", -1)
+            val entries = result.optJSONArray("entries_markdown").strings()
+            if (start < 0 || start + entries.size != old.entryStartIndex) return@launch
+            state = state.copy(snapshot = current.copy(
+                entries = entries + current.entries,
+                entryStartIndex = start,
+                totalEntries = maxOf(current.totalEntries, result.optInt("total_entries")),
+                hasOlderEntries = start > 0,
+                truncated = start > 0,
+            ))
+        } catch (error: Exception) {
+            state = state.copy(issue = error.message.orEmpty())
+        }
+    }
+
     fun forget() {
         pollJob?.cancel(); client = null; TokenVault.clear(getApplication())
         preferences.edit().clear().apply()
@@ -172,13 +200,20 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     val events = client!!.rpc("thread.events", JSONObject().put("thread_id", selected)
                         .put("after_sequence", state.snapshot?.lastSequence ?: 0))
                     checkIdentity(events)
-                    if ((events.optJSONArray("events")?.length() ?: 0) > 0 || state.snapshot?.isBusy == true) loadSnapshot(selected)
+                    val eventRows = events.optJSONArray("events").objects()
+                    if (eventRows.any { it.optString("kind") == "entry.removed" }) {
+                        state = state.copy(snapshot = null)
+                    }
+                    if (eventRows.isNotEmpty() || state.snapshot?.isBusy == true) loadSnapshot(selected)
                 }
                 state = state.copy(live = true, status = "Connected to Zed", issue = "")
             } catch (error: Exception) {
                 if (error.message?.contains("no longer exposed") == true) {
                     state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList(), issue = error.message.orEmpty())
                     runCatching { loadThreads() }
+                } else if (error.message?.contains("event history changed") == true && state.selectedThreadId != null) {
+                    state = state.copy(snapshot = null)
+                    runCatching { loadSnapshot(state.selectedThreadId!!) }
                 } else state = state.copy(live = false, status = "Reconnecting", issue = error.message.orEmpty())
             }
             delay(if (state.live) 1_000 else 3_000)
@@ -197,8 +232,22 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun loadSnapshot(id: String) {
-        val result = client!!.rpc("thread.snapshot", JSONObject().put("thread_id", id)); checkIdentity(result)
+        val params = JSONObject().put("thread_id", id)
+        if (state.snapshot?.threadId == id) params.put("tail_entry_count", 16)
+        val result = client!!.rpc("thread.snapshot", params); checkIdentity(result)
         if (state.selectedThreadId != id) return
+        val pageEntries = result.optJSONArray("entries_markdown").strings()
+        val pageStart = result.optInt("entry_start_index", 0)
+        val pageEnd = result.optInt("entry_end_index", pageStart + pageEntries.size)
+        val totalEntries = result.optInt("total_entries", pageEnd)
+        if (pageStart < 0 || pageEnd != pageStart + pageEntries.size || totalEntries < pageEnd) {
+            throw GatewayException("Invalid transcript page from desktop Zed.")
+        }
+        val old = state.snapshot
+        val canMerge = old?.threadId == id && pageStart >= old.entryStartIndex
+            && pageStart <= old.entryStartIndex + old.entries.size
+        val mergedStart = if (canMerge) old!!.entryStartIndex else pageStart
+        val mergedEntries = if (canMerge) old!!.entries.take(pageStart - old.entryStartIndex) + pageEntries else pageEntries
         val approvals = result.optJSONArray("pending_approvals").objects().mapNotNull { row ->
             val approvalId = row.optString("approval_id"); if (approvalId.isBlank()) null else NativeApproval(
                 approvalId, row.optIntOrNull("turn_id"), row.optString("tool_name", "Zed tool"),
@@ -208,7 +257,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         state = state.copy(snapshot = ThreadSnapshot(
             id, result.optString("title", "Untitled Agent thread"), result.optString("status", "Unknown"),
             result.optIntOrNull("current_turn_id"), state.instanceId.orEmpty(), state.epoch.orEmpty(),
-            result.optInt("last_sequence"), result.optJSONArray("entries_markdown").strings(),
+            result.optInt("last_sequence"), mergedEntries,
+            mergedStart, totalEntries, mergedStart > 0,
             result.optJSONArray("activity_entries_markdown").strings(), result.optBoolean("truncated"),
             result.optBoolean("activity_truncated"), approvals))
     }
