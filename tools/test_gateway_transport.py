@@ -590,7 +590,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.28"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.29"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -628,6 +628,12 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 wait.until(lambda driver: "Zed connected · live updates" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
+                browser.find_element(By.ID, "show-actions").click()
+                browser.find_element(By.ID, "action-delegate").click()
+                prompt = browser.find_element(By.ID, "prompt")
+                assert "native spawn_agent tool" in prompt.get_attribute("value")
+                assert "Task:" in prompt.get_attribute("value")
+                prompt.send_keys(Keys.CONTROL, "a", Keys.DELETE)
                 wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, "#subagents .subagent")) == 2)
                 assert "2 total" in browser.find_element(By.CSS_SELECTOR, ".subagents-head").text
                 assert "Checking concurrent gateway behavior" in browser.find_element(By.ID, "subagents").get_attribute("textContent")

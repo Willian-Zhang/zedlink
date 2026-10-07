@@ -1,7 +1,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.06.28";
+const UI_BUILD = "2026.10.06.29";
+const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
   token: null,
@@ -2926,6 +2927,15 @@ $("action-commands").addEventListener("click", () => {
   $("prompt").value = "/";
   $("prompt").focus();
   renderCommands();
+});
+$("action-delegate").addEventListener("click", () => {
+  if (!state.threadId) return;
+  $("action-menu").classList.add("hidden");
+  $("show-actions").setAttribute("aria-expanded", "false");
+  $("prompt").value = DELEGATE_TASK_TEMPLATE;
+  $("prompt").dispatchEvent(new Event("input", { bubbles: true }));
+  $("prompt").focus();
+  $("prompt").setSelectionRange($("prompt").value.length, $("prompt").value.length);
 });
 $("action-file").addEventListener("click", () => {
   $("action-menu").classList.add("hidden");

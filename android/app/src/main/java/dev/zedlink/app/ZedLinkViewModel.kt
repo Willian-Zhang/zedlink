@@ -107,6 +107,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun insertCommand(command: NativeCommand) = setDraft("/${command.name}${if (command.requiresArgument) " " else ""}")
 
+    fun prepareSubagentTask() = setDraft("Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ")
+
     fun send() = viewModelScope.launch {
         val text = state.draft.trim()
         val threadId = state.selectedThreadId ?: return@launch

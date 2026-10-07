@@ -390,6 +390,10 @@ import Combine
         draft = "/\(command.name)\(command.requiresArgument ? " " : "")"
     }
 
+    func prepareSubagentTask() {
+        draft = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: "
+    }
+
     private func settlePending() {
         pending = nil
         if let profile { UserDefaults.standard.removeObject(forKey: pendingKey(profile)) }

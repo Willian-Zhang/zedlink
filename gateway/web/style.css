@@ -309,7 +309,7 @@ body.no-session .messages { padding-bottom: 40px; }
 .command-trigger { display: grid; place-items: center; flex: none; width: 40px; height: 40px; min-height: 40px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.25rem; transition: background .12s ease, color .12s ease, transform .12s ease; }
 .command-trigger:hover:not(:disabled), .command-trigger[aria-expanded="true"] { background: #24272a; color: var(--ink); }
 .command-trigger:active:not(:disabled) { transform: scale(.96); }
-.action-menu { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 7px; border: 1px solid var(--line-strong); background: #101214; }
+.action-menu { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 7px; border: 1px solid var(--line-strong); background: #101214; }
 .action-menu button { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; }
 .action-menu button:last-child { border-right: 0; }
 .action-menu button:hover:not(:disabled) { background: #1a1c1f; }

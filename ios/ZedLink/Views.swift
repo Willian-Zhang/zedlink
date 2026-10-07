@@ -265,9 +265,8 @@ struct ConversationView: View {
                 Button { showingCommands = true } label: {
                     Image(systemName: "slash.circle").font(.title3).frame(width: 42, height: 42)
                 }
-                .foregroundStyle(session.commands.isEmpty ? ZLTheme.muted : .primary)
-                .disabled(session.commands.isEmpty)
-                .accessibilityLabel("Zed Agent commands")
+                .foregroundStyle(.primary)
+                .accessibilityLabel("Zed Agent actions and commands")
 
                 TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
                     .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
@@ -556,22 +555,38 @@ private struct CommandPicker: View {
 
     var body: some View {
         NavigationStack {
-            List(commands) { command in
-                Button {
-                    session.insertCommand(command)
-                    dismiss()
-                } label: {
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("/\(command.name)").font(.body.monospaced().weight(.semibold))
-                            Spacer()
-                            Text(command.category.uppercased()).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
-                        }
-                        Text(command.description).font(.footnote).foregroundStyle(.secondary)
+            List {
+                Section("Agent actions") {
+                    Button {
+                        session.prepareSubagentTask()
+                        dismiss()
+                    } label: {
+                        Label("Delegate a parallel task", systemImage: "arrow.triangle.branch")
                     }
-                    .padding(.vertical, 4)
+                    .accessibilityIdentifier("delegate-subagent-task")
                 }
-                .buttonStyle(.plain)
+                Section("Slash commands") {
+                    if commands.isEmpty {
+                        Text("No slash commands are advertised by this thread.").foregroundStyle(.secondary)
+                    }
+                    ForEach(commands) { command in
+                        Button {
+                            session.insertCommand(command)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text("/\(command.name)").font(.body.monospaced().weight(.semibold))
+                                    Spacer()
+                                    Text(command.category.uppercased()).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+                                }
+                                Text(command.description).font(.footnote).foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
             .scrollContentBackground(.hidden).background(ZLTheme.background)
             .searchable(text: $search, prompt: "Search Zed commands")

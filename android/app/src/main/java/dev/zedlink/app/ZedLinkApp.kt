@@ -180,7 +180,9 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         if (state.issue.isNotBlank()) Notice(state.issue)
         if (snapshot == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Ink) }
         else Messages(snapshot, model, Modifier.weight(1f))
-        if (showCommands) CommandList(state.commands) { model.insertCommand(it); showCommands = false }
+        if (showCommands) CommandList(state.commands, {
+            model.prepareSubagentTask(); showCommands = false
+        }) { model.insertCommand(it); showCommands = false }
         if (state.delivery.isNotBlank()) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(8.dp))
         if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
@@ -318,8 +320,16 @@ private fun ApprovalCard(approval: NativeApproval) {
 }
 
 @Composable
-private fun CommandList(commands: List<NativeCommand>, choose: (NativeCommand) -> Unit) {
+private fun CommandList(commands: List<NativeCommand>, delegate: () -> Unit, choose: (NativeCommand) -> Unit) {
     Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).border(1.dp, Line).background(Raised).verticalScroll(rememberScrollState())) {
+        Row(Modifier.fillMaxWidth().clickable(onClick = delegate).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.AccountTree, null, tint = Blue, modifier = Modifier.size(19.dp))
+            Column(Modifier.padding(start = 11.dp)) {
+                Text("Delegate a parallel task", fontWeight = FontWeight.SemiBold)
+                Text("Ask native Zed to use spawn_agent", color = Muted, fontSize = 12.sp)
+            }
+        }
+        Rule()
         if (commands.isEmpty()) Text("No commands are advertised by this native thread.", color = Muted, modifier = Modifier.padding(14.dp))
         commands.forEach { command ->
             Row(Modifier.fillMaxWidth().clickable { choose(command) }.padding(12.dp)) {
