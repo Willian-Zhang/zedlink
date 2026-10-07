@@ -11,9 +11,13 @@ final class OnboardingUITests: XCTestCase {
         search.typeText("agent")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
 
+        let searchKey = app.keyboards.buttons["Search"]
+        XCTAssertTrue(searchKey.waitForExistence(timeout: 3))
+        searchKey.tap()
+        XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
+
         app.tabBars.buttons["Connections"].tap()
         XCTAssertTrue(app.staticTexts["No connections"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
     }
 
     func testFirstUseReachesPairingControls() {

@@ -26,6 +26,7 @@ struct SessionsView: View {
                             .textInputAutocapitalization(.never)
                             .submitLabel(.search)
                             .focused($searchFocused)
+                            .onSubmit { searchFocused = false }
                             .accessibilityIdentifier("session-search")
                     }
                     .padding(.horizontal, 12).frame(minHeight: 44)
