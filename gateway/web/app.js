@@ -1,11 +1,13 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.06.29";
+const UI_BUILD = "2026.10.06.30";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
   token: null,
+  targets: [],
+  targetId: null,
   instanceId: null,
   epoch: null,
   capabilities: [],
@@ -27,6 +29,7 @@ const state = {
   totalEntries: 0,
   historyLoading: false,
   creatingThread: false,
+  createOptions: null,
   eventSocket: null,
   eventThreadId: null,
   eventReconnectTimer: null,
@@ -215,9 +218,11 @@ function delivery(message, uncertain = false) {
   $("clear-pending").classList.toggle("hidden", !uncertain);
   updateComposerAction();
 }
-function pendingKey() { return `zedlink.pending.${state.gatewayId}`; }
+function targetKey() { return `zedlink.target.${state.gatewayId}`; }
+function targetScope() { return `${state.gatewayId}.${state.targetId || "default"}`; }
+function pendingKey() { return `zedlink.pending.${targetScope()}`; }
 function tokenKey() { return `zedlink.token.${state.gatewayId}`; }
-function selectedThreadKey() { return `zedlink.selectedThread.${state.gatewayId}`; }
+function selectedThreadKey() { return `zedlink.selectedThread.${targetScope()}`; }
 
 function normalizeAgent(agent) {
   if (!agent || typeof agent !== "object") return { id: "zed-agent", name: "Zed Agent", kind: "zed" };
@@ -235,12 +240,47 @@ function selectedAgent() {
 
 function renderSelectedAgent() {
   const agent = selectedAgent();
+  const selected = state.threads.find((item) => item.thread_id === state.threadId);
   const external = agent.kind === "external_acp";
+  const canManageSession = !!state.threadId
+    && (state.capabilities.includes("thread.rename") || state.capabilities.includes("thread.unexpose"));
+  $("session-management").classList.toggle("hidden", !canManageSession);
+  if (selected && document.activeElement !== $("session-title-input")) {
+    $("session-title-input").value = selected.title || "";
+  }
+  $("rename-session").disabled = !state.capabilities.includes("thread.rename") || !state.threadId;
+  $("unexpose-session").disabled = !state.capabilities.includes("thread.unexpose") || !state.threadId;
   $("thread-agent-kind").textContent = external ? "EXTERNAL ACP AGENT" : "NATIVE ZED AGENT";
   $("settings-agent-kind").textContent = external ? "EXTERNAL ACP AGENT" : "NATIVE ZED AGENT";
   $("prompt").placeholder = `Message ${agent.name}…`;
   $("prompt-label").textContent = `Message ${agent.name}`;
   return agent;
+}
+
+async function renameSelectedSession() {
+  const title = $("session-title-input").value.trim();
+  if (!state.threadId || !title || !state.capabilities.includes("thread.rename")) return;
+  const result = await rpc("thread.rename", { ...baseThreadParams(), title });
+  if (result.outcome !== "requested") throw new Error("Zed did not accept the title change.");
+  await loadThreads();
+  $("thread-title").textContent = title;
+  renderThreadSettings();
+  notice("Session renamed in desktop Zed.");
+}
+
+async function unexposeSelectedSession() {
+  if (!state.threadId || !state.capabilities.includes("thread.unexpose")) return;
+  const selected = state.threads.find((thread) => thread.thread_id === state.threadId);
+  if (!confirm(`Stop exposing “${selected?.title || "this session"}” to ZedLink?\n\nThe Agent thread stays open in desktop Zed.`)) return;
+  const result = await rpc("thread.unexpose", baseThreadParams());
+  if (result.outcome !== "unexposed") throw new Error("Zed did not stop exposure.");
+  const retainedTarget = state.targetId;
+  closeEventStream();
+  safeStore.remove(selectedThreadKey());
+  resetTargetSession();
+  state.targetId = retainedTarget;
+  await connect();
+  notice("Remote exposure stopped. The Agent thread remains in desktop Zed.");
 }
 
 function pushSupported() {
@@ -651,7 +691,8 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     response = await fetch("/v1/rpc", {
       method: "POST", cache: "no-store", redirect: "error", signal: controller.signal,
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.token}` },
-      body: JSON.stringify({ version: 1, request_id: requestId, method, params }),
+      body: JSON.stringify({ version: 1, request_id: requestId, method, params,
+        ...(method !== "instance.list" && state.targetId ? { target_id: state.targetId } : {}) }),
     });
     state.gatewayReachable = true;
     renderConnectionHealth();
@@ -725,10 +766,12 @@ function startEventStream() {
       && state.eventSocket.readyState <= WebSocket.OPEN) return;
   closeEventStream("connecting");
   const threadId = state.threadId;
+  const targetId = state.targetId;
   const url = new URL("/v1/events", location.href);
   url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("thread_id", threadId);
   url.searchParams.set("after_sequence", String(state.sequence));
+  if (targetId) url.searchParams.set("target_id", targetId);
   const socket = new WebSocket(url, ["zedlink-v1", `zedlink-token-${state.token}`]);
   state.streamState = state.streamReconnectAttempt ? "reconnecting" : "connecting";
   document.body.dataset.liveTransport = "connecting";
@@ -754,7 +797,7 @@ function startEventStream() {
     }
   });
   socket.addEventListener("message", (event) => {
-    if (state.eventSocket !== socket || state.threadId !== threadId) return;
+    if (state.eventSocket !== socket || state.threadId !== threadId || state.targetId !== targetId) return;
     try {
       const data = JSON.parse(event.data);
       if (data.error) throw Object.assign(new Error(apiError(data.error.code)), { code: data.error.code });
@@ -894,6 +937,59 @@ async function pairBrowser(code, deviceName) {
   await connect();
 }
 
+function renderTargets() {
+  const select = $("target-select");
+  select.replaceChildren();
+  for (const target of state.targets) {
+    const option = document.createElement("option");
+    option.value = target.target_id;
+    option.textContent = `${target.label}${target.available ? "" : " · unavailable"}`;
+    option.disabled = !target.available;
+    select.append(option);
+  }
+  select.value = state.targetId || "";
+  $("target-field").classList.toggle("hidden", state.targets.length < 2);
+  const selected = state.targets.find((target) => target.target_id === state.targetId);
+  $("target-help").textContent = selected?.available
+    ? "Sessions and sends are routed only to this Zed instance."
+    : "This Zed instance is currently unavailable.";
+  $("connection-target").textContent = selected?.label || "Not selected";
+}
+
+function resetTargetSession() {
+  closeEventStream();
+  state.instanceId = null;
+  state.epoch = null;
+  state.capabilities = [];
+  state.commands = [];
+  state.threads = [];
+  state.threadId = null;
+  state.turnId = null;
+  state.threadStatus = null;
+  state.threadError = null;
+  state.retryStatus = null;
+  state.threadSettings = null;
+  state.createOptions = null;
+  state.pending = null;
+  state.sequence = 0;
+  state.renderedEntries = [];
+  state.renderedThreadId = null;
+  state.renderedEntryStart = 0;
+  state.totalEntries = 0;
+  state.subagents = [];
+  state.approvals = [];
+  $("transcript-entries").replaceChildren();
+  renderThreads();
+  renderCommands();
+  renderSubagents([]);
+  renderApprovals([]);
+  renderAgentHealth();
+  renderThreadSettings();
+  renderEmptyWorkspace();
+  updateComposerAction();
+  document.body.classList.remove("thread-open", "mobile-sessions");
+}
+
 async function connect() {
   if (!state.token) return;
   connection("Connecting…");
@@ -902,6 +998,21 @@ async function connect() {
   $("sessions-panel").classList.remove("hidden");
   refreshNotifications().catch(() => renderNotificationState("unavailable"));
   try {
+    const registry = await rpc("instance.list");
+    if (!Array.isArray(registry.targets) || !registry.targets.length) {
+      throw new Error("This gateway has no configured Zed targets.");
+    }
+    state.targets = registry.targets.filter((target) => typeof target.target_id === "string" && typeof target.label === "string");
+    const requestedTarget = new URLSearchParams(location.search).get("target");
+    const savedTarget = safeStore.read(targetKey());
+    const preferred = requestedTarget || state.targetId || savedTarget || registry.default_target_id;
+    const selected = state.targets.find((target) => target.target_id === preferred)
+      || state.targets.find((target) => target.available)
+      || state.targets[0];
+    if (state.targetId && state.targetId !== selected.target_id) resetTargetSession();
+    state.targetId = selected.target_id;
+    safeStore.write(targetKey(), state.targetId);
+    renderTargets();
     const info = await rpc("instance.info");
     if (typeof info.instance_id !== "string" || typeof info.epoch !== "string") {
       throw new Error("Invalid Zed instance identity.");
@@ -1023,6 +1134,7 @@ async function createSession(event) {
   if (state.creatingThread || !state.capabilities.includes("thread.create")) return;
   const requestId = crypto.randomUUID();
   const title = $("new-session-title").value.trim();
+  const agentId = $("new-session-agent").value || null;
   state.creatingThread = true;
   $("create-session").disabled = true;
   showCreateAvailability();
@@ -1033,6 +1145,7 @@ async function createSession(event) {
         instance_id: state.instanceId,
         epoch: state.epoch,
         title: title || null,
+        agent_id: agentId,
       }, requestId);
       if (result.outcome === "ready" && typeof result.thread_id === "string") {
         $("new-session-title").value = "";
@@ -1053,6 +1166,31 @@ async function createSession(event) {
     $("create-session").disabled = false;
     showCreateAvailability();
   }
+}
+
+async function loadCreateOptions() {
+  const row = $("new-session-agent-row");
+  const select = $("new-session-agent");
+  state.createOptions = null;
+  select.replaceChildren();
+  row.classList.add("hidden");
+  if (!state.capabilities.includes("thread.create.options")) return;
+  const result = await rpc("thread.create.options", {
+    instance_id: state.instanceId,
+    epoch: state.epoch,
+  });
+  identity(result);
+  if (!Array.isArray(result.agents) || !result.agents.length) return;
+  state.createOptions = result;
+  for (const agent of result.agents) {
+    if (typeof agent.id !== "string" || typeof agent.name !== "string") continue;
+    const option = document.createElement("option");
+    option.value = agent.id;
+    option.textContent = `${agent.name}${agent.kind === "external_acp" ? " · ACP" : ""}`;
+    select.append(option);
+  }
+  row.classList.toggle("hidden", select.options.length < 2);
+  $("new-session-help").textContent = `Project ${result.project || "approved in Zed"} · configuration remains in the selected agent.`;
 }
 
 function validAgentError(error) {
@@ -1919,6 +2057,18 @@ function renderSubagents(subagents) {
       note.textContent = "Earlier child activity remains available in desktop Zed.";
       body.prepend(note);
     }
+    const followUp = document.createElement("button");
+    followUp.type = "button";
+    followUp.className = "quiet subagent-follow-up";
+    followUp.textContent = "Continue this agent";
+    followUp.addEventListener("click", (event) => {
+      event.preventDefault();
+      $("prompt").value = `Use the native spawn_agent tool with session_id "${agent.session_id}" to continue this existing child agent. Return its result in this conversation:\n\nTask: `;
+      $("prompt").dispatchEvent(new Event("input", { bubbles: true }));
+      $("prompt").focus();
+      $("prompt").setSelectionRange($("prompt").value.length, $("prompt").value.length);
+    });
+    body.prepend(followUp);
     if (active && Number.isInteger(agent.current_turn_id) && state.capabilities.includes("subagent.cancel")) {
       const stop = document.createElement("button");
       stop.type = "button";
@@ -2865,17 +3015,30 @@ $("verify-gateway").addEventListener("change", () => {
   $("pair-button").disabled = !state.gatewayVerified;
 });
 $("refresh").addEventListener("click", () => connect());
+$("target-select").addEventListener("change", () => {
+  const targetId = $("target-select").value;
+  if (!targetId || targetId === state.targetId) return;
+  resetTargetSession();
+  state.targetId = targetId;
+  safeStore.write(targetKey(), targetId);
+  renderTargets();
+  connect();
+});
 $("empty-refresh").addEventListener("click", () => connect());
 $("empty-create").addEventListener("click", () => {
   if ($("new-session").disabled) return;
   if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
   $("new-session-form").classList.remove("hidden");
+  loadCreateOptions().catch((error) => notice(error.message));
   $("new-session-title").focus();
 });
 $("new-session").addEventListener("click", () => {
   const form = $("new-session-form");
   form.classList.toggle("hidden");
-  if (!form.classList.contains("hidden")) $("new-session-title").focus();
+  if (!form.classList.contains("hidden")) {
+    loadCreateOptions().catch((error) => notice(error.message));
+    $("new-session-title").focus();
+  }
 });
 $("new-session-form").addEventListener("submit", createSession);
 $("session-search").addEventListener("input", renderThreads);
@@ -3057,6 +3220,8 @@ $("sign-out").addEventListener("click", signOut);
 $("enable-notifications").addEventListener("click", enableNotifications);
 $("test-notifications").addEventListener("click", testNotifications);
 $("native-settings-form").addEventListener("submit", saveThreadSettings);
+$("rename-session").addEventListener("click", () => renameSelectedSession().catch((error) => notice(error.message)));
+$("unexpose-session").addEventListener("click", () => unexposeSelectedSession().catch((error) => notice(error.message)));
 $("open-settings").addEventListener("click", () => {
   if (matchMedia("(max-width: 760px)").matches) showMobileView("settings");
   else {

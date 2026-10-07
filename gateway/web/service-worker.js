@@ -1,6 +1,6 @@
 "use strict";
 
-const SHELL_CACHE = "zedlink-shell-v30";
+const SHELL_CACHE = "zedlink-shell-v31";
 const SHELL = [
   "/",
   "/style.css",
@@ -40,7 +40,11 @@ self.addEventListener("push", (event) => {
   const title = typeof data.title === "string" ? data.title : "ZedLink";
   const body = typeof data.body === "string" ? data.body : "A Zed Agent session changed.";
   const thread = typeof data.thread_id === "string" ? data.thread_id : null;
-  const url = thread ? `/?thread=${encodeURIComponent(thread)}` : "/";
+  const target = typeof data.target_id === "string" ? data.target_id : null;
+  const parameters = new URLSearchParams();
+  if (target) parameters.set("target", target);
+  if (thread) parameters.set("thread", thread);
+  const url = parameters.size ? `/?${parameters}` : "/";
   event.waitUntil(Promise.all([
     self.registration.showNotification(title, {
       body,

@@ -3,6 +3,8 @@ import Combine
 
 @MainActor final class SessionManager: ObservableObject {
     @Published private(set) var profile: ConnectionProfile?
+    @Published private(set) var targets: [ZedTarget] = []
+    @Published private(set) var targetID: String?
     @Published private(set) var state: LinkState = .offline
     @Published private(set) var threads: [NativeThread] = []
     @Published private(set) var snapshot: ThreadSnapshot?
@@ -10,6 +12,8 @@ import Combine
     @Published private(set) var epoch: String?
     @Published private(set) var capabilities: Set<String> = []
     @Published private(set) var commands: [NativeCommand] = []
+    @Published private(set) var createAgents: [AgentOption] = []
+    @Published private(set) var creatingThread = false
     @Published private(set) var selectedThreadID: String?
     @Published private(set) var delivery = ""
     @Published private(set) var issue = ""
@@ -17,7 +21,7 @@ import Combine
     @Published var draft = "" {
         didSet {
             guard let profile, let selectedThreadID else { return }
-            let key = draftKey(profileID: profile.id, threadID: selectedThreadID)
+            let key = draftKey(profileID: profile.id, targetID: targetID, threadID: selectedThreadID)
             if draft.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
             else { UserDefaults.standard.set(draft, forKey: key) }
         }
@@ -40,6 +44,8 @@ import Combine
         pollTask = nil
         client = nil
         profile = nil
+        targets = []
+        targetID = nil
         state = .offline
         threads = []
         snapshot = nil
@@ -48,15 +54,18 @@ import Combine
         epoch = nil
         capabilities = []
         commands = []
+        createAgents = []
+        creatingThread = false
         pending = nil
         delivery = ""
         issue = ""
     }
 
-    func connect(_ nextProfile: ConnectionProfile) async {
+    func connect(_ nextProfile: ConnectionProfile, target requestedTargetID: String? = nil) async {
         let sameProfile = profile?.id == nextProfile.id
         let previousThread = sameProfile ? selectedThreadID : nil
         let previousPending = sameProfile ? pending : nil
+        let previousTarget = sameProfile ? targetID : nil
         disconnect()
         if !sameProfile { draft = "" }
         let current = generation
@@ -66,8 +75,26 @@ import Combine
             guard let token = await CredentialVault.shared.read(nextProfile.id) else {
                 throw GatewayFailure.native("Pair this device first.")
             }
-            let nextClient = GatewayClient(profile: nextProfile, token: token)
-            try await nextClient.verifyIdentity()
+            let discoveryClient = GatewayClient(profile: nextProfile, token: token)
+            try await discoveryClient.verifyIdentity()
+            let registry = try await discoveryClient.rpc("instance.list")
+            guard let rows = registry["targets"] as? [[String: Any]], !rows.isEmpty else {
+                throw GatewayFailure.native("This gateway has no configured Zed targets.")
+            }
+            targets = rows.compactMap { row in
+                guard let id = row["target_id"] as? String, let label = row["label"] as? String else { return nil }
+                return ZedTarget(id: id, label: label, available: row["available"] as? Bool ?? false)
+            }
+            let savedTarget = UserDefaults.standard.string(forKey: targetKey(nextProfile))
+            let preferredTarget = requestedTargetID ?? previousTarget ?? savedTarget
+                ?? registry["default_target_id"] as? String
+            guard let selectedTarget = targets.first(where: { $0.id == preferredTarget })
+                    ?? targets.first(where: { $0.available }) ?? targets.first else {
+                throw GatewayFailure.native("This gateway has no configured Zed targets.")
+            }
+            targetID = selectedTarget.id
+            UserDefaults.standard.set(selectedTarget.id, forKey: targetKey(nextProfile))
+            let nextClient = GatewayClient(profile: nextProfile, token: token, targetID: selectedTarget.id)
             let info = try await nextClient.rpc("instance.info")
             guard current == generation,
                   let instance = info["instance_id"] as? String,
@@ -105,6 +132,61 @@ import Combine
         await connect(profile)
     }
 
+    func selectTarget(_ id: String) async {
+        guard let profile, targets.contains(where: { $0.id == id && $0.available }) else { return }
+        await connect(profile, target: id)
+    }
+
+    func loadCreateOptions() async {
+        guard capabilities.contains("thread.create.options"), let client, let instanceID, let epoch else {
+            createAgents = [AgentOption(id: "zed-agent", name: "Zed Agent", kind: "zed")]
+            return
+        }
+        do {
+            let result = try await client.rpc("thread.create.options", params: [
+                "instance_id": instanceID,
+                "epoch": epoch,
+            ])
+            try checkIdentity(result)
+            createAgents = (result["agents"] as? [[String: Any]] ?? []).compactMap { row in
+                guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
+                return AgentOption(id: id, name: name, kind: row["kind"] as? String ?? "external_acp")
+            }
+        } catch { issue = error.localizedDescription }
+    }
+
+    func createThread(title: String, agentID: String) async -> Bool {
+        guard capabilities.contains("thread.create"), let client, let instanceID, let epoch,
+              !creatingThread else { return false }
+        creatingThread = true
+        defer { creatingThread = false }
+        let requestID = UUID().uuidString
+        do {
+            for _ in 0..<40 {
+                let result = try await client.rpc("thread.create", params: [
+                    "instance_id": instanceID,
+                    "epoch": epoch,
+                    "title": title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? NSNull() : title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "agent_id": agentID,
+                ], requestID: requestID)
+                if result["outcome"] as? String == "ready", let id = result["thread_id"] as? String {
+                    try await loadThreads()
+                    await select(id)
+                    return true
+                }
+                guard result["outcome"] as? String == "creating" else {
+                    throw GatewayFailure.invalidResponse
+                }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            throw GatewayFailure.native("Zed is still creating the session. Refresh to check its status.")
+        } catch {
+            issue = error.localizedDescription
+            return false
+        }
+    }
+
     private func loadThreads() async throws {
         guard let client else { return }
         let result = try await client.rpc("thread.list")
@@ -130,7 +212,7 @@ import Combine
         snapshot = nil
         commands = []
         if let profile {
-            draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, threadID: id)) ?? ""
+            draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, targetID: targetID, threadID: id)) ?? ""
         }
         do {
             try await loadSnapshot(id)
@@ -138,6 +220,46 @@ import Combine
             issue = ""
         }
         catch { issue = error.localizedDescription; state = .stale }
+    }
+
+    func renameSelectedThread(to proposedTitle: String) async -> Bool {
+        let title = proposedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard capabilities.contains("thread.rename"), !title.isEmpty,
+              let client, let instanceID, let epoch, let threadID = selectedThreadID else { return false }
+        do {
+            let result = try await client.rpc("thread.rename", params: [
+                "instance_id": instanceID, "epoch": epoch,
+                "thread_id": threadID, "title": title,
+            ])
+            guard result["outcome"] as? String == "requested" else { throw GatewayFailure.invalidResponse }
+            try await loadThreads()
+            delivery = "Session renamed in desktop Zed."
+            return true
+        } catch {
+            issue = error.localizedDescription
+            return false
+        }
+    }
+
+    func unexposeSelectedThread() async -> Bool {
+        guard capabilities.contains("thread.unexpose"), let client, let instanceID, let epoch,
+              let threadID = selectedThreadID else { return false }
+        do {
+            let result = try await client.rpc("thread.unexpose", params: [
+                "instance_id": instanceID, "epoch": epoch, "thread_id": threadID,
+            ])
+            guard result["outcome"] as? String == "unexposed" else { throw GatewayFailure.invalidResponse }
+            selectedThreadID = nil
+            snapshot = nil
+            commands = []
+            try await loadThreads()
+            delivery = "Remote exposure stopped. The Agent thread remains open in desktop Zed."
+            issue = ""
+            return true
+        } catch {
+            issue = error.localizedDescription
+            return false
+        }
     }
 
     private func loadSnapshot(_ id: String) async throws {
@@ -409,10 +531,14 @@ import Combine
         return String(data: data, encoding: .utf8)
     }
 
-    private func pendingKey(_ profile: ConnectionProfile) -> String { "zedlink.pending.\(profile.id)" }
+    private func targetKey(_ profile: ConnectionProfile) -> String { "zedlink.target.\(profile.id)" }
 
-    private func draftKey(profileID: UUID, threadID: String) -> String {
-        "zedlink.draft.\(profileID.uuidString).\(threadID)"
+    private func pendingKey(_ profile: ConnectionProfile) -> String {
+        "zedlink.pending.\(profile.id).\(targetID ?? "default")"
+    }
+
+    private func draftKey(profileID: UUID, targetID: String?, threadID: String) -> String {
+        "zedlink.draft.\(profileID.uuidString).\(targetID ?? "default").\(threadID)"
     }
 
     private func persistPending(for profile: ConnectionProfile) {

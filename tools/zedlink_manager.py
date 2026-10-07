@@ -365,6 +365,20 @@ def validate_route(route: dict) -> dict:
     }
 
 
+def validate_target(target: dict, state: Path, project: Path) -> dict:
+    identifier = str(target.get("id", "")).strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", identifier):
+        raise ValueError("target id must use lowercase letters, numbers, dashes, or underscores")
+    label = str(target.get("label", "")).strip()
+    if not label or len(label) > 80:
+        raise ValueError("target label must contain 1 to 80 characters")
+    probe_value = target.get("probe") or state / "probe/zedlink.sock"
+    probe = Path(probe_value).expanduser().resolve()
+    if not probe.is_absolute():
+        raise ValueError("target probe path must be absolute")
+    return {"id": identifier, "label": label, "probe": str(probe)}
+
+
 def legacy_route(data: dict) -> dict:
     return {
         "id": "primary",
@@ -410,8 +424,19 @@ def validate(data: dict) -> dict:
         profile = str(Path(profile).expanduser().resolve(strict=True))
         if not Path(profile).is_dir():
             raise ValueError("Zed user data directory must exist")
+    raw_targets = data.get("targets") or [{
+        "id": "default", "label": project.name or "This Zed",
+        "probe": str(state / "probe/zedlink.sock"),
+    }]
+    if not isinstance(raw_targets, list) or not 1 <= len(raw_targets) <= 16:
+        raise ValueError("configure between 1 and 16 Zed targets")
+    targets = [validate_target(target, state, project) for target in raw_targets]
+    target_ids = [target["id"] for target in targets]
+    if len(target_ids) != len(set(target_ids)):
+        raise ValueError("Zed target ids must be unique")
     return dict(version=2, project_root=str(project), state_dir=str(state),
-                primary_route_id=primary_id, routes=routes, zed_user_data_dir=profile)
+                primary_route_id=primary_id, routes=routes, targets=targets,
+                zed_user_data_dir=profile)
 
 
 def primary_route(data: dict) -> dict:
@@ -969,6 +994,55 @@ def write_listener_file(data: dict) -> Path:
     return path
 
 
+def write_target_file(data: dict) -> Path:
+    state = Path(data["state_dir"])
+    directory = state / "gateway"
+    private_directory(directory)
+    path = directory / "targets.json"
+    payload = {"version": 1, "targets": data["targets"]}
+    descriptor, name = tempfile.mkstemp(prefix="targets-", dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return path
+
+
+def manage_targets(data: dict) -> None:
+    print("\nConfigured patched Zed targets")
+    for index, target in enumerate(data["targets"], 1):
+        print(f"{index}. {target['label']} [{target['id']}] -> {target['probe']}")
+    print("\na. Add target\nr. Remove target\nEnter. Exit")
+    action = input("Action: ").strip().lower()
+    if not action:
+        return
+    updated = dict(data)
+    updated["targets"] = [dict(target) for target in data["targets"]]
+    if action == "a":
+        identifier = prompt_value("Target id (lowercase)")
+        label = prompt_value("Target label")
+        probe = prompt_value("Absolute private probe socket path")
+        updated["targets"].append({"id": identifier, "label": label, "probe": probe})
+    elif action == "r":
+        if len(updated["targets"]) == 1:
+            raise ValueError("cannot remove the only Zed target")
+        choice = prompt_value("Target number")
+        if not choice.isdigit() or not 1 <= int(choice) <= len(updated["targets"]):
+            raise ValueError("invalid target number")
+        updated["targets"].pop(int(choice) - 1)
+    else:
+        raise ValueError("invalid target action")
+    updated = validate(updated)
+    save_config(updated)
+    print("Zed target configuration updated. Restart the gateway to apply it.")
+
+
 def choose_route(data: dict) -> dict:
     enabled = [route for route in data["routes"] if route["enabled"]]
     if len(enabled) == 1:
@@ -1180,7 +1254,7 @@ def repair(data: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("quick-setup", "configure", "manage-routes",
+    parser.add_argument("action", choices=("quick-setup", "configure", "manage-routes", "manage-targets",
                                            "check-routes", "status", "start-zed",
                                            "start-gateway", "restart-gateway", "stop-gateway",
                                            "start-gateway-detached", "restart-gateway-detached",
@@ -1214,6 +1288,8 @@ def main() -> None:
         socket_path = state / "probe/zedlink.sock"
         if args.action == "manage-routes":
             manage_routes(data)
+        elif args.action == "manage-targets":
+            manage_targets(data)
         elif args.action == "detect-connection":
             settings = prepare_connection_settings(data, read_zed_settings(data))
             write_zed_settings(data, settings)
@@ -1242,6 +1318,9 @@ def main() -> None:
             check_routes(data)
         elif args.action == "status":
             print(f"Project: {data['project_root']}")
+            print("Zed targets:")
+            for target in data["targets"]:
+                print(f"  {target['label']}: {target['probe']}")
             print("Gateway routes:")
             for route in data["routes"]:
                 state_label = "enabled" if route["enabled"] else "disabled"
@@ -1315,8 +1394,9 @@ def main() -> None:
             except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
                 pass
             listener_file = write_listener_file(data)
-            os.execv(str(GATEWAY), [str(GATEWAY), "serve-routes", str(listener_file),
-                                    str(socket_path), str(state / "gateway")])
+            target_file = write_target_file(data)
+            os.execv(str(GATEWAY), [str(GATEWAY), "serve-targets", str(listener_file),
+                                    str(target_file), str(state / "gateway")])
         elif args.action in ("start-gateway-detached", "restart-gateway-detached"):
             foreground_action = args.action.removesuffix("-detached")
             launch_gateway_detached(foreground_action)

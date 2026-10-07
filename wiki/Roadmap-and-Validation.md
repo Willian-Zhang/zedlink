@@ -11,8 +11,8 @@ ZedLink intentionally exposes a smaller remote surface than desktop Zed. The fol
 | Model selection, mode, fast mode, and thinking effort | Current model is visible; profile and basic thinking can be changed | Add capability-gated native selectors with authoritative snapshots |
 | Queued messages and steering | Native queue behavior is preserved but the queue is not manageable remotely | List, reorder, remove, and steer queued prompts without duplicating turns |
 | Edit, regenerate, rewind, and checkpoints | Image-error rewind exists; general history controls do not | Expose native checkpoint IDs and guarded restore actions |
-| Thread history and management | Exposed threads can be listed; sessions can be created in the configured project | Add rename, archive, delete, pagination, and project/worktree selection |
-| External ACP agents | Existing root ACP threads can be exposed, identified, streamed, prompted, stopped, and approved | Add capability-tested external-agent creation when Zed exposes a stable agent-selection API |
+| Thread history and management | Indexed history is paged; sessions can be created, renamed, and removed from remote exposure without closing native Zed | Add archive, delete, broader pagination, and project/worktree selection |
+| External ACP agents | Existing root ACP threads can be controlled, and configured ACP agents can be selected when creating a session in the allowed project | Complete a real Codex/Claude Code creation and prompt round trip |
 | Rich tool interaction | Thinking, tools, terminal output, approvals, and child agents render inline | Add structured elicitation forms, interactive terminal input, and richer tool result views |
 | Diff review | Files, search, unified diffs, stage, and unstage are available | Add native hunk accept/reject and checkpoint-aware review |
 | Context accounting | `/compact` uses the native command path | Show token usage, context limits, compaction state, and supported settings |
@@ -37,11 +37,14 @@ Verified:
 - source-compiled root ACP exposure plus authenticated browser coverage for agent identity, external configuration ownership, commands, streaming, send, cancel, and approvals,
 - global Zed task discovery and Status execution in an already-open Zed window,
 - authenticated Web Push registration, private-endpoint rejection, persisted VAPID identity, subscription removal on revocation, and service-worker notification/open-session handling in deterministic tests.
+- one paired gateway routing explicitly among named online/offline Zed targets without cross-target failover or shared pending-send state,
+- browser creation with a fixture-advertised ACP agent plus native session rename and stop-exposure controls.
 
 Still incomplete:
 
 - stock Zed Gallery packaging, which is blocked by the missing native-thread extension API and the current prohibition on new slash-command and agent-server submissions,
 - a real Codex or Claude Code prompt round trip through the newly built ACP exposure path (the browser fixture passes; a real external thread has not yet been exposed),
+- a physical-device test that switches between two simultaneously running patched Zed instances,
 - supervised background startup and certificate renewal,
 - physical Web Push delivery on an installed iPhone/Android web app and native APNs/FCM delivery,
 - paged, structured transcript/tool output and native image output,

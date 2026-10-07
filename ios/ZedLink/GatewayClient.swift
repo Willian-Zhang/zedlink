@@ -38,6 +38,7 @@ struct GatewayClient {
     private static let session = URLSession(configuration: .ephemeral, delegate: redirectDelegate, delegateQueue: nil)
     let profile: ConnectionProfile
     let token: String?
+    var targetID: String? = nil
 
     private var base: URL {
         get throws {
@@ -130,7 +131,8 @@ struct GatewayClient {
     func rpc(_ method: String, params: [String: Any] = [:], requestID: String = UUID().uuidString) async throws -> [String: Any] {
         // Recheck before every authenticated call. A changed endpoint never receives the token.
         try await verifyIdentity()
-        let envelope: [String: Any] = ["version": 1, "request_id": requestID, "method": method, "params": params]
+        var envelope: [String: Any] = ["version": 1, "request_id": requestID, "method": method, "params": params]
+        if method != "instance.list", let targetID { envelope["target_id"] = targetID }
         let object = try await call("/v1/rpc", payload: envelope, authorized: true)
         guard object["version"] as? Int == 1, object["request_id"] as? String == requestID else {
             throw GatewayFailure.invalidResponse

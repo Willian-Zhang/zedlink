@@ -6,6 +6,9 @@ data class ConnectionProfile(
     val gatewayId: String,
 )
 
+data class ZedTarget(val id: String, val label: String, val available: Boolean)
+data class AgentOption(val id: String, val name: String, val kind: String)
+
 data class NativeThread(
     val id: String,
     val title: String,

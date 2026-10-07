@@ -7,6 +7,7 @@ struct SessionsView: View {
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var session: SessionManager
     @State private var search = ""
+    @State private var showingNewSession = false
     @FocusState private var searchFocused: Bool
 
     private var visibleThreads: [NativeThread] {
@@ -61,12 +62,18 @@ struct SessionsView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingNewSession = true } label: { Image(systemName: "plus") }
+                        .disabled(!session.capabilities.contains("thread.create"))
+                        .accessibilityLabel("Create Agent session")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { Task { await session.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                         .disabled(session.profile == nil)
                         .accessibilityLabel("Refresh sessions")
                         .accessibilityIdentifier("reconnect")
                 }
             }
+            .sheet(isPresented: $showingNewSession) { NewSessionView() }
             .navigationDestination(for: String.self) { ConversationView(threadID: $0) }
             .refreshable { await session.refresh() }
             .toolbar {
@@ -91,7 +98,20 @@ struct SessionsView: View {
                     }
                     Text(profile.endpoint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
                         .lineLimit(1).truncationMode(.middle)
-                    Text("\(profile.route.rawValue) · Native Zed Agent")
+                    if session.targets.count > 1 {
+                        Picker("Zed target", selection: Binding(
+                            get: { session.targetID ?? "" },
+                            set: { target in Task { await session.selectTarget(target) } }
+                        )) {
+                            ForEach(session.targets) { target in
+                                Text("\(target.label)\(target.available ? "" : " · unavailable")")
+                                    .tag(target.id).disabled(!target.available)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityIdentifier("zed-target-picker")
+                    }
+                    Text("\(profile.route.rawValue) · \(session.targets.first(where: { $0.id == session.targetID })?.label ?? "Native Zed Agent")")
                         .font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
                 }
             }
@@ -133,6 +153,47 @@ struct SessionsView: View {
     }
 }
 
+private struct NewSessionView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var session: SessionManager
+    @State private var title = ""
+    @State private var agentID = "zed-agent"
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Session") {
+                    TextField("Optional title", text: $title)
+                    Picker("Agent", selection: $agentID) {
+                        ForEach(session.createAgents) { agent in
+                            Text("\(agent.name)\(agent.kind == "external_acp" ? " · ACP" : "")").tag(agent.id)
+                        }
+                    }
+                }
+                Section {
+                    Text("The selected agent, model, tools, permissions, and project remain configured in desktop Zed.")
+                        .font(.footnote).foregroundStyle(ZLTheme.muted)
+                }
+            }
+            .navigationTitle("New Agent session")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(session.creatingThread ? "Creating…" : "Create") {
+                        Task { if await session.createThread(title: title, agentID: agentID) { dismiss() } }
+                    }.disabled(session.creatingThread || session.createAgents.isEmpty)
+                }
+            }
+            .task {
+                await session.loadCreateOptions()
+                if !session.createAgents.contains(where: { $0.id == agentID }) {
+                    agentID = session.createAgents.first?.id ?? "zed-agent"
+                }
+            }
+        }
+    }
+}
+
 private struct SessionRow: View {
     let thread: NativeThread
     private var busy: Bool { thread.status != "Idle" }
@@ -159,10 +220,14 @@ private struct SessionRow: View {
 }
 
 struct ConversationView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
     let threadID: String
     @State private var showingClearConfirmation = false
     @State private var showingCommands = false
+    @State private var showingRename = false
+    @State private var showingUnexposeConfirmation = false
+    @State private var proposedTitle = ""
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -181,6 +246,20 @@ struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { ConnectionStatusView(state: session.state) }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Rename session", systemImage: "pencil") {
+                        proposedTitle = session.snapshot?.title ?? ""
+                        showingRename = true
+                    }
+                    .disabled(!session.capabilities.contains("thread.rename"))
+                    Button("Stop exposing", systemImage: "eye.slash", role: .destructive) {
+                        showingUnexposeConfirmation = true
+                    }
+                    .disabled(!session.capabilities.contains("thread.unexpose"))
+                } label: { Image(systemName: "ellipsis.circle") }
+                .accessibilityLabel("Session actions")
+            }
         }
         .task(id: threadID) { await session.select(threadID) }
         .onDisappear { composerFocused = false }
@@ -190,6 +269,17 @@ struct ConversationView: View {
         } message: {
             Text("Inspect the desktop transcript first. Clearing this record does not cancel a native turn.")
         }
+        .alert("Rename session", isPresented: $showingRename) {
+            TextField("Session title", text: $proposedTitle)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") { Task { _ = await session.renameSelectedThread(to: proposedTitle) } }
+                .disabled(proposedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: { Text("The title also changes in desktop Zed.") }
+        .confirmationDialog("Stop exposing this session?", isPresented: $showingUnexposeConfirmation) {
+            Button("Stop exposing", role: .destructive) {
+                Task { if await session.unexposeSelectedThread() { dismiss() } }
+            }
+        } message: { Text("The Agent keeps running in desktop Zed. Remote access to this session stops.") }
     }
 
     private func conversation(_ snapshot: ThreadSnapshot) -> some View {

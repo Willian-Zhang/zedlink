@@ -112,6 +112,7 @@ def zedlink_tasks() -> list:
         ("Restart gateway", "restart-gateway"),
         ("Stop gateway", "stop-gateway"),
         ("Manage connections", "manage-routes"),
+        ("Manage Zed targets", "manage-targets"),
         ("Check connections", "check-routes"),
         ("Pair a device", "pair"),
         ("Status", "status"),

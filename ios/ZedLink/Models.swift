@@ -28,6 +28,18 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     var gatewayID: String
 }
 
+struct ZedTarget: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let available: Bool
+}
+
+struct AgentOption: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let kind: String
+}
+
 struct NativeThread: Identifiable, Equatable {
     let id: String
     let title: String

@@ -98,10 +98,16 @@ input[type=search] { appearance: none; }
 #new-session { width: 40px; min-height: 40px; padding: 0; white-space: nowrap; font-size: 1.25rem; }
 #new-session b { display: none; }
 #new-session:disabled { opacity: .48; cursor: not-allowed; }
+.target-field { display: grid; gap: 7px; margin-top: 22px; }
+.target-field label { color: var(--muted); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
+.target-field select { min-height: 44px; border: 1px solid var(--line-strong); border-radius: 0; background: var(--panel); color: var(--ink); }
+.target-field small { color: var(--subtle); font-size: .68rem; line-height: 1.4; }
 #refresh, #open-settings { display: grid; place-items: center; flex: none; width: 40px; min-height: 40px; padding: 0; font-size: 1.15rem; }
 .new-session-form { margin: 23px 0 0; padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .new-session-form label { margin-top: 0; color: var(--ink); }
 .new-session-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.new-session-form > .new-session-agent-row { display: block; margin-bottom: 8px; }
+.new-session-agent-row select { width: 100%; min-height: 42px; border-radius: 0; }
 .new-session-form .primary { width: auto; margin: 0; }
 .new-session-form p { margin: 9px 0 0; color: var(--subtle); font-size: .69rem; line-height: 1.4; }
 #session-search { margin-top: 32px; border-color: var(--line); background: var(--panel); }
@@ -428,6 +434,10 @@ body.review-open { overflow: hidden; }
 .settings-switch strong { font-size: .78rem; }
 .settings-switch input { width: 20px; height: 20px; margin: 0; accent-color: var(--online); }
 #save-zed-settings { margin-top: 13px; }
+.session-management { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.session-management-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.session-management-actions button { min-height: 42px; }
+.danger { border-color: #704143; background: #1a0d0e; color: #e7a3a5; }
 .notification-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 14px; }
 .notification-actions .primary, .notification-actions .quiet { width: auto !important; min-height: 42px; margin: 0 !important; }
 #notification-state.enabled { color: var(--online); }

@@ -16,12 +16,17 @@ import java.util.UUID
 
 data class AppState(
     val profile: ConnectionProfile? = null,
+    val profiles: List<ConnectionProfile> = emptyList(),
+    val targets: List<ZedTarget> = emptyList(),
+    val targetId: String? = null,
     val status: String = "Offline",
     val live: Boolean = false,
     val threads: List<NativeThread> = emptyList(),
     val selectedThreadId: String? = null,
     val snapshot: ThreadSnapshot? = null,
     val commands: List<NativeCommand> = emptyList(),
+    val createAgents: List<AgentOption> = emptyList(),
+    val creatingThread: Boolean = false,
     val capabilities: Set<String> = emptySet(),
     val instanceId: String? = null,
     val epoch: String? = null,
@@ -41,9 +46,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private val preferences = application.getSharedPreferences("zedlink-profile", 0)
 
     init {
-        loadProfile()?.let { profile ->
-            state = state.copy(profile = profile)
-            if (TokenVault.read(application) != null) connect()
+        val saved = loadProfiles()
+        val preferred = loadProfile(saved)
+        state = state.copy(profile = preferred, profiles = saved)
+        preferred?.let { profile ->
+            if (TokenVault.read(application, profile.gatewayId) != null) connect()
         }
     }
 
@@ -54,9 +61,9 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         try {
             val pairingClient = GatewayClient(profile, null)
             val (_, token) = pairingClient.pair(code.trim(), deviceName.trim().ifBlank { "Android" })
-            TokenVault.write(getApplication(), token)
+            TokenVault.write(getApplication(), profile.gatewayId, token)
             saveProfile(profile)
-            state = state.copy(profile = profile)
+            state = state.copy(profile = profile, profiles = loadProfiles())
             connect()
         } catch (error: Exception) {
             state = state.copy(status = "Offline", issue = error.message ?: "Pairing failed.")
@@ -65,18 +72,32 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun connect() {
         val profile = state.profile ?: return
-        val token = TokenVault.read(getApplication()) ?: run {
+        val token = TokenVault.read(getApplication(), profile.gatewayId) ?: run {
             state = state.copy(status = "Pair this device", live = false); return
         }
         pollJob?.cancel()
         viewModelScope.launch {
             state = state.copy(status = "Connecting…", live = false, issue = "")
             try {
-                val next = GatewayClient(profile, token)
+                val discovery = GatewayClient(profile, token)
+                val registry = discovery.rpc("instance.list")
+                val targets = registry.optJSONArray("targets").objects().mapNotNull { row ->
+                    val id = row.optString("target_id")
+                    val label = row.optString("label")
+                    if (id.isBlank() || label.isBlank()) null else ZedTarget(id, label, row.optBoolean("available"))
+                }
+                if (targets.isEmpty()) throw GatewayException("This gateway has no configured Zed targets.")
+                val savedTarget = preferences.getString("target.${profile.gatewayId}", null)
+                val preferredTarget = state.targetId ?: savedTarget ?: registry.optString("default_target_id")
+                val selectedTarget = targets.firstOrNull { it.id == preferredTarget }
+                    ?: targets.firstOrNull { it.available } ?: targets.first()
+                preferences.edit().putString("target.${profile.gatewayId}", selectedTarget.id).apply()
+                val next = GatewayClient(profile, token, selectedTarget.id)
                 val info = next.rpc("instance.info")
                 client = next
                 state = state.copy(
                     status = "Connected to Zed", live = true,
+                    targets = targets, targetId = selectedTarget.id,
                     instanceId = info.getString("instance_id"), epoch = info.getString("epoch"),
                     capabilities = info.optJSONArray("capabilities").strings().toSet(), issue = "",
                 )
@@ -90,6 +111,67 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun refresh() = connect()
 
+    fun loadCreateOptions() = viewModelScope.launch {
+        if ("thread.create.options" !in state.capabilities) {
+            state = state.copy(createAgents = listOf(AgentOption("zed-agent", "Zed Agent", "zed")))
+            return@launch
+        }
+        try {
+            val result = client!!.rpc("thread.create.options", JSONObject()
+                .put("instance_id", state.instanceId).put("epoch", state.epoch))
+            checkIdentity(result)
+            val agents = result.optJSONArray("agents").objects().mapNotNull { row ->
+                val id = row.optString("id"); val name = row.optString("name")
+                if (id.isBlank() || name.isBlank()) null else AgentOption(id, name, row.optString("kind", "external_acp"))
+            }
+            state = state.copy(createAgents = agents)
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun createThread(title: String, agentId: String) = viewModelScope.launch {
+        val activeClient = client ?: return@launch
+        val instance = state.instanceId ?: return@launch
+        val epoch = state.epoch ?: return@launch
+        if (state.creatingThread || "thread.create" !in state.capabilities) return@launch
+        val requestId = UUID.randomUUID().toString()
+        state = state.copy(creatingThread = true, issue = "")
+        try {
+            repeat(40) {
+                val params = JSONObject().put("instance_id", instance).put("epoch", epoch)
+                    .put("title", title.trim().ifEmpty { JSONObject.NULL }).put("agent_id", agentId)
+                val result = activeClient.rpc("thread.create", params, requestId)
+                if (result.optString("outcome") == "ready" && result.optString("thread_id").isNotBlank()) {
+                    loadThreads(); selectThread(result.getString("thread_id")); return@launch
+                }
+                if (result.optString("outcome") != "creating") throw GatewayException("Zed returned an invalid creation state.")
+                delay(250)
+            }
+            throw GatewayException("Zed is still creating the session. Refresh to check its status.")
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+        finally { state = state.copy(creatingThread = false) }
+    }
+
+    fun selectTarget(id: String) {
+        val target = state.targets.firstOrNull { it.id == id && it.available } ?: return
+        val profile = state.profile ?: return
+        pollJob?.cancel(); client = null; pendingId = null; pendingText = null
+        preferences.edit().putString("target.${profile.gatewayId}", target.id).apply()
+        state = state.copy(targetId = target.id, threads = emptyList(), selectedThreadId = null,
+            snapshot = null, commands = emptyList(), instanceId = null, epoch = null, live = false)
+        connect()
+    }
+
+    fun connect(profile: ConnectionProfile) {
+        if (state.profile?.gatewayId != profile.gatewayId) {
+            pollJob?.cancel(); client = null; pendingId = null; pendingText = null
+            state = state.copy(profile = profile, threads = emptyList(), selectedThreadId = null,
+                snapshot = null, commands = emptyList(), capabilities = emptySet(), targets = emptyList(), targetId = null,
+                instanceId = null, epoch = null, issue = "", delivery = "")
+        }
+        preferences.edit().putString("active_gateway", profile.gatewayId).apply()
+        connect()
+    }
+
     fun selectThread(id: String) = viewModelScope.launch {
         if (state.threads.none { it.id == id }) return@launch
         val draft = preferences.getString("draft.$id", "").orEmpty()
@@ -99,6 +181,39 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun closeThread() { state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
+
+    fun renameSelectedThread(proposedTitle: String) = viewModelScope.launch {
+        val title = proposedTitle.trim()
+        val activeClient = client ?: return@launch
+        val threadId = state.selectedThreadId ?: return@launch
+        val instance = state.instanceId ?: return@launch
+        val epoch = state.epoch ?: return@launch
+        if (title.isEmpty() || "thread.rename" !in state.capabilities) return@launch
+        try {
+            val result = activeClient.rpc("thread.rename", JSONObject()
+                .put("instance_id", instance).put("epoch", epoch)
+                .put("thread_id", threadId).put("title", title))
+            if (result.optString("outcome") != "requested") throw GatewayException("Zed did not accept the title change.")
+            loadThreads()
+            state = state.copy(delivery = "Session renamed in desktop Zed.", issue = "")
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun unexposeSelectedThread() = viewModelScope.launch {
+        val activeClient = client ?: return@launch
+        val threadId = state.selectedThreadId ?: return@launch
+        val instance = state.instanceId ?: return@launch
+        val epoch = state.epoch ?: return@launch
+        if ("thread.unexpose" !in state.capabilities) return@launch
+        try {
+            val result = activeClient.rpc("thread.unexpose", JSONObject()
+                .put("instance_id", instance).put("epoch", epoch).put("thread_id", threadId))
+            if (result.optString("outcome") != "unexposed") throw GatewayException("Zed did not stop exposure.")
+            state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList(),
+                delivery = "Remote exposure stopped. The Agent thread remains open in desktop Zed.", issue = "")
+            loadThreads()
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
 
     fun setDraft(value: String) {
         state = state.copy(draft = value)
@@ -188,10 +303,16 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun forget() {
-        pollJob?.cancel(); client = null; TokenVault.clear(getApplication())
-        preferences.edit().clear().apply()
-        state = AppState(status = "Pair this device")
+    fun forget() { state.profile?.let(::forget) }
+
+    fun forget(profile: ConnectionProfile) {
+        if (state.profile?.gatewayId == profile.gatewayId) { pollJob?.cancel(); client = null }
+        TokenVault.clear(getApplication(), profile.gatewayId)
+        val remaining = loadProfiles().filterNot { it.gatewayId == profile.gatewayId }
+        persistProfiles(remaining)
+        val next = if (state.profile?.gatewayId == profile.gatewayId) remaining.firstOrNull() else state.profile
+        preferences.edit().putString("active_gateway", next?.gatewayId).apply()
+        state = AppState(profile = next, profiles = remaining, status = if (next == null) "Pair this device" else "Offline")
     }
 
     private suspend fun poll() {
@@ -284,14 +405,38 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun saveProfile(profile: ConnectionProfile) {
-        preferences.edit().putString("name", profile.name).putString("endpoint", profile.endpoint)
-            .putString("gateway", profile.gatewayId).apply()
+        val profiles = loadProfiles().filterNot { it.gatewayId == profile.gatewayId } + profile
+        persistProfiles(profiles)
+        preferences.edit().putString("active_gateway", profile.gatewayId).apply()
     }
 
-    private fun loadProfile(): ConnectionProfile? {
-        val endpoint = preferences.getString("endpoint", null) ?: return null
-        val gateway = preferences.getString("gateway", null) ?: return null
-        return ConnectionProfile(preferences.getString("name", "My Zed")!!, endpoint, gateway)
+    private fun loadProfiles(): List<ConnectionProfile> {
+        val saved = runCatching {
+            preferences.getString("profiles", null)?.let(::JSONArray)?.objects()?.mapNotNull { row ->
+                val endpoint = row.optString("endpoint")
+                val gateway = row.optString("gateway_id")
+                if (endpoint.isBlank() || gateway.isBlank()) null else ConnectionProfile(
+                    row.optString("name", "My Zed"), endpoint, gateway)
+            }
+        }.getOrNull().orEmpty()
+        if (saved.isNotEmpty()) return saved
+        val endpoint = preferences.getString("endpoint", null) ?: return emptyList()
+        val gateway = preferences.getString("gateway", null) ?: return emptyList()
+        val migrated = listOf(ConnectionProfile(preferences.getString("name", "My Zed")!!, endpoint, gateway))
+        persistProfiles(migrated)
+        return migrated
+    }
+
+    private fun persistProfiles(profiles: List<ConnectionProfile>) {
+        val rows = JSONArray()
+        profiles.forEach { profile -> rows.put(JSONObject().put("name", profile.name)
+            .put("endpoint", profile.endpoint).put("gateway_id", profile.gatewayId)) }
+        preferences.edit().putString("profiles", rows.toString()).apply()
+    }
+
+    private fun loadProfile(profiles: List<ConnectionProfile>): ConnectionProfile? {
+        val active = preferences.getString("active_gateway", null)
+        return profiles.firstOrNull { it.gatewayId == active } ?: profiles.firstOrNull()
     }
 }
 

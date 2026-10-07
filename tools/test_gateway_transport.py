@@ -42,6 +42,8 @@ class ProbeFixture:
         self.extra_thread = False
         self.no_threads = False
         self.created_thread = False
+        self.exposed_primary = True
+        self.renamed_title = None
         self.truncated = False
         self.activity_truncated = False
         self.transcript_page_size = None
@@ -104,13 +106,13 @@ class ProbeFixture:
                 result = {}
                 error = None
                 if method == "thread.list":
-                    threads = [{"thread_id": "fixture-thread", "title": "Synthetic test thread",
+                    threads = ([{"thread_id": "fixture-thread", "title": self.renamed_title or "Synthetic test thread",
                                 "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"},
                                 "status": "Generating" if self.active_turn_id is not None else "Idle",
                                 "current_turn_id": self.active_turn_id,
                                 "had_error": self.agent_error is not None,
                                 "agent_error": self.agent_error,
-                                "retry_status": self.retry_status}]
+                                "retry_status": self.retry_status}] if self.exposed_primary else [])
                     if self.extra_thread:
                         threads.append({"thread_id": "fixture-second", "title": "Second synthetic thread",
                                         "agent": {"id": "codex-acp", "name": "Codex", "kind": "external_acp"},
@@ -125,13 +127,32 @@ class ProbeFixture:
                               "threads": threads}
                 elif method == "thread.create":
                     key = request["request_id"]
-                    title = params.get("title")
-                    if key in self.created_requests and self.created_requests[key] != title:
+                    creation = {"title": params.get("title"), "agent_id": params.get("agent_id")}
+                    if key in self.created_requests and self.created_requests[key] != creation:
                         error = {"code": "REQUEST_CONFLICT"}
                     else:
-                        self.created_requests[key] = title
+                        self.created_requests[key] = creation
                         self.created_thread = True
                         result = {"outcome": "ready", "thread_id": "fixture-created"}
+                elif method == "thread.create.options":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                              "project": "fixture-project", "agents": [
+                                  {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"},
+                                  {"id": "codex-acp", "name": "Codex", "kind": "external_acp"},
+                              ]}
+                elif method == "thread.rename":
+                    if params.get("thread_id") != "fixture-thread" or not params.get("title", "").strip():
+                        error = {"code": "INVALID_REQUEST"}
+                    else:
+                        self.renamed_title = params["title"].strip()
+                        result = {"thread_id": "fixture-thread", "title": self.renamed_title,
+                                  "outcome": "requested"}
+                elif method == "thread.unexpose":
+                    if params.get("thread_id") != "fixture-thread" or not self.exposed_primary:
+                        error = {"code": "THREAD_NOT_EXPOSED"}
+                    else:
+                        self.exposed_primary = False
+                        result = {"thread_id": "fixture-thread", "outcome": "unexposed"}
                 elif method == "thread.snapshot":
                     page_size = self.transcript_page_size or params.get("tail_entry_count") or len(self.entries)
                     page_start = max(0, len(self.entries) - page_size)
@@ -322,7 +343,8 @@ class ProbeFixture:
                         result = {"outcome": "succeeded", "provisional": False}
                 elif method == "instance.info":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
-                              "capabilities": ["thread.list", "thread.create", "thread.snapshot", "thread.history", "thread.events",
+                              "project": "fixture-project",
+                              "capabilities": ["thread.list", "thread.create", "thread.create.options", "thread.rename", "thread.unexpose", "thread.snapshot", "thread.history", "thread.events",
                                                "thread.commands", "thread.settings", "thread.settings.update",
                                                "thread.send", "thread.attachments", "thread.cancel",
                                                "thread.subagents", "subagent.cancel",
@@ -389,8 +411,20 @@ def main():
                                     capture_output=True, text=True, timeout=5)
         assert unsafe_key.returncode != 0 and "TLS private key" in unsafe_key.stderr
         os.chmod(key, 0o600)
-        server = subprocess.Popen([str(BINARY), "serve", f"127.0.0.1:{port}", str(cert), str(key),
-                                   str(probe.path), str(state)],
+        offline_probe_dir = root / "offline-probe"
+        offline_probe_dir.mkdir(mode=0o700)
+        listeners = root / "listeners.json"
+        targets = root / "targets.json"
+        listeners.write_text(json.dumps({"version": 1, "listeners": [{
+            "id": "fixture", "bind": f"127.0.0.1:{port}", "cert": str(cert), "key": str(key),
+        }]}))
+        targets.write_text(json.dumps({"version": 1, "targets": [
+            {"id": "primary", "label": "Fixture Zed", "probe": str(probe.path)},
+            {"id": "offline", "label": "Offline Zed", "probe": str(offline_probe_dir / "zedlink.sock")},
+        ]}))
+        os.chmod(listeners, 0o600)
+        os.chmod(targets, 0o600)
+        server = subprocess.Popen([str(BINARY), "serve-targets", str(listeners), str(targets), str(state)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         try:
             for _ in range(100):
@@ -453,6 +487,18 @@ def main():
                              {"code": code1, "device_name": "reused"})
             assert status == 403
             token1 = device1["token"]
+            instance_request = {"version": 1, "request_id": "instances", "method": "instance.list", "params": {}}
+            status, instances = http(base, context, "/v1/rpc", "POST", instance_request, token1)
+            assert status == 200
+            assert [(item["target_id"], item["available"]) for item in instances["result"]["targets"]] == [
+                ("primary", True), ("offline", False)]
+            targeted = {"version": 1, "request_id": "targeted", "method": "thread.list",
+                        "target_id": "primary", "params": {}}
+            status, targeted_result = http(base, context, "/v1/rpc", "POST", targeted, token1)
+            assert status == 200 and targeted_result["result"]["threads"][0]["thread_id"] == "fixture-thread"
+            unknown = dict(targeted, request_id="unknown-target", target_id="missing")
+            status, unknown_result = http(base, context, "/v1/rpc", "POST", unknown, token1)
+            assert status == 503 and unknown_result["error"] == "INSTANCE_UNAVAILABLE"
             status, notification_config = http(base, context, "/v1/notifications/config", token=token1)
             assert status == 200 and notification_config["supported"]
             assert not notification_config["enabled"] and notification_config["application_server_key"]
@@ -531,8 +577,7 @@ def main():
             probe.approval_decisions = 0
             server.terminate()
             server.communicate(timeout=3)
-            server = subprocess.Popen([str(BINARY), "serve", f"127.0.0.1:{port}", str(cert), str(key),
-                                       str(probe.path), str(state)],
+            server = subprocess.Popen([str(BINARY), "serve-targets", str(listeners), str(targets), str(state)],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             for _ in range(100):
                 try:
@@ -587,10 +632,26 @@ def main():
                 browser.execute_script("document.getElementById('expected-id').value=arguments[0]", info["gateway_id"])
                 browser.find_element(By.ID, "pair-button").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
-                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
+                try:
+                    wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
+                except TimeoutException:
+                    print("initial browser state:", browser.execute_script(
+                        "return {title:document.getElementById('thread-title').textContent,"
+                        "notice:document.getElementById('notice').textContent,"
+                        "connection:document.getElementById('connection').textContent,"
+                        "threads:document.getElementById('thread-list').textContent,"
+                        "target:document.getElementById('target-select').value}"
+                    ))
+                    raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.29"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.30"
+                selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
+                if selected_target != "primary":
+                    options = [(option.get_attribute("value"), option.text, option.is_enabled())
+                               for option in Select(browser.find_element(By.ID, "target-select")).options]
+                    raise AssertionError(f"target selector value {selected_target!r}; options {options!r}")
+                assert "Fixture Zed" in browser.find_element(By.ID, "connection-target").get_attribute("textContent")
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -613,11 +674,14 @@ def main():
                     "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
                 ) == "Edge on Windows"
                 browser.find_element(By.ID, "new-session").click()
+                wait.until(lambda driver: len(Select(driver.find_element(By.ID, "new-session-agent")).options) == 2)
+                Select(browser.find_element(By.ID, "new-session-agent")).select_by_value("codex-acp")
                 browser.find_element(By.ID, "new-session-title").send_keys("Created from browser")
                 browser.find_element(By.ID, "create-session").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Created from browser")
                 assert browser.find_element(By.ID, "thread-count").text == "2"
                 assert len(probe.created_requests) == 1
+                assert next(iter(probe.created_requests.values()))["agent_id"] == "codex-acp"
                 search = browser.find_element(By.ID, "session-search")
                 search.send_keys("no such session")
                 assert not browser.find_elements(By.CSS_SELECTOR, ".thread-item")
@@ -655,6 +719,17 @@ def main():
                 wait.until(lambda driver: probe.settings_updates == 1)
                 assert probe.profile_id == "ask" and probe.thinking_enabled is False
                 assert "updated" in browser.find_element(By.ID, "notice").text
+                title_input = browser.find_element(By.ID, "session-title-input")
+                title_input.send_keys(Keys.CONTROL, "a", Keys.DELETE)
+                title_input.send_keys("Renamed from browser")
+                browser.find_element(By.ID, "rename-session").click()
+                wait.until(lambda driver: probe.renamed_title == "Renamed from browser")
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Renamed from browser")
+                title_input = browser.find_element(By.ID, "session-title-input")
+                title_input.send_keys(Keys.CONTROL, "a", Keys.DELETE)
+                title_input.send_keys("Synthetic test thread")
+                browser.find_element(By.ID, "rename-session").click()
+                wait.until(lambda driver: probe.renamed_title == "Synthetic test thread")
                 browser.save_screenshot("/tmp/zedlink-browser-settings.png")
                 browser.find_element(By.ID, "settings-back").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
@@ -1007,6 +1082,18 @@ def main():
                     "const done=arguments[0]; loadThreads().then(() => selectThread('fixture-second')).then(() => done('ok'), error => done(String(error)))"
                 ) == "ok"
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
+                assert browser.execute_async_script(
+                    "const done=arguments[0]; selectThread('fixture-thread').then(() => done('ok'), error => done(String(error)))"
+                ) == "ok"
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
+                browser.find_element(By.ID, "open-settings").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "settings-panel").is_displayed())
+                browser.find_element(By.ID, "unexpose-session").click()
+                browser.switch_to.alert.accept()
+                wait.until(lambda driver: not probe.exposed_primary)
+                wait.until(lambda driver: driver.find_element(By.ID, "thread-count").text == "2")
+                assert "Synthetic test thread" not in browser.find_element(By.ID, "thread-list").text
+                assert "Second synthetic thread" in browser.find_element(By.ID, "thread-list").text
                 probe.close()
                 wait.until(lambda driver: "Zed unavailable" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 assert browser.find_element(By.ID, "zed-connection-state").get_attribute("textContent") == "Unavailable"

@@ -14,24 +14,28 @@ object TokenVault {
     private const val Alias = "zedlink-device-token"
     private const val Preferences = "zedlink-secure"
 
-    fun write(context: Context, token: String) {
+    fun write(context: Context, gatewayId: String, token: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
         val value = Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
-        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().putString("token", value).apply()
+        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().putString("token.$gatewayId", value).apply()
     }
 
-    fun read(context: Context): String? = runCatching {
-        val value = context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).getString("token", null) ?: return null
+    fun read(context: Context, gatewayId: String): String? = runCatching {
+        val preferences = context.getSharedPreferences(Preferences, Context.MODE_PRIVATE)
+        val value = preferences.getString("token.$gatewayId", null)
+            ?: preferences.getString("token", null)?.also {
+                preferences.edit().putString("token.$gatewayId", it).remove("token").apply()
+            } ?: return null
         val bytes = Base64.decode(value, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
         String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
     }.getOrNull()
 
-    fun clear(context: Context) {
-        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().remove("token").apply()
+    fun clear(context: Context, gatewayId: String) {
+        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().remove("token.$gatewayId").apply()
     }
 
     private fun key(): SecretKey {

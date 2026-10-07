@@ -100,19 +100,25 @@ private fun BottomTabs(selected: Tab, inThread: Boolean, onSelect: (Tab) -> Unit
 @Composable
 private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnections: () -> Unit) {
     var query by remember { mutableStateOf("") }
+    var showingNew by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val threads = state.threads.filter { it.title.contains(query, true) || it.id.contains(query, true) }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Header("ZedLink", if (state.live) state.status else "Private native Agent access") {
-                IconButton(onClick = model::refresh, enabled = state.profile != null) { Icon(Icons.Default.Refresh, "Refresh", tint = Ink) }
+                Row {
+                    IconButton(onClick = { showingNew = true }, enabled = "thread.create" in state.capabilities) {
+                        Icon(Icons.Default.Add, "Create Agent session", tint = Ink)
+                    }
+                    IconButton(onClick = model::refresh, enabled = state.profile != null) { Icon(Icons.Default.Refresh, "Refresh", tint = Ink) }
+                }
             }
             if (state.profile == null) {
                 Column(Modifier.fillMaxWidth().background(Surface).clickable(onClick = showConnections).padding(20.dp)) {
                     Text("Choose a connection", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
                     Text("Pair a private ZedLink gateway from Connections.", color = Muted, modifier = Modifier.padding(top = 8.dp))
                 }
-            } else ConnectionStrip(state)
+            } else ConnectionStrip(state, model)
             if (state.issue.isNotBlank()) Notice(state.issue)
             FlatInput(query, { query = it }, "Search exposed sessions", Modifier.padding(16.dp))
             SectionHeading("EXPOSED ZED THREADS", state.threads.size.toString())
@@ -129,11 +135,52 @@ private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnect
             model.selectThread(thread.id)
         } }
     }
+    if (showingNew) NewSessionDialog(state, model, { showingNew = false })
 }
 
 @Composable
-private fun ConnectionStrip(state: AppState) {
-    Row(Modifier.fillMaxWidth().background(Surface).padding(16.dp), verticalAlignment = Alignment.Top) {
+private fun NewSessionDialog(state: AppState, model: ZedLinkViewModel, dismiss: () -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var agentId by remember { mutableStateOf("zed-agent") }
+    var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { model.loadCreateOptions() }
+    LaunchedEffect(state.createAgents) {
+        if (state.createAgents.none { it.id == agentId }) agentId = state.createAgents.firstOrNull()?.id ?: "zed-agent"
+    }
+    AlertDialog(
+        onDismissRequest = dismiss,
+        title = { Text("New Agent session") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(title, { title = it }, label = { Text("Optional title") }, singleLine = true)
+                Box {
+                    OutlinedButton(onClick = { expanded = true }, Modifier.fillMaxWidth()) {
+                        Text(state.createAgents.firstOrNull { it.id == agentId }?.name ?: "Choose agent")
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        state.createAgents.forEach { agent ->
+                            DropdownMenuItem(text = { Text("${agent.name}${if (agent.kind == "external_acp") " · ACP" else ""}") },
+                                onClick = { agentId = agent.id; expanded = false })
+                        }
+                    }
+                }
+                Text("The agent, model, tools, permissions, and project remain configured in desktop Zed.", color = Muted, fontSize = 12.sp)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = state.createAgents.isNotEmpty() && !state.creatingThread, onClick = {
+                model.createThread(title, agentId); dismiss()
+            }) { Text("CREATE") }
+        },
+        dismissButton = { TextButton(onClick = dismiss) { Text("CANCEL") } },
+        containerColor = Surface,
+    )
+}
+
+@Composable
+private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
+    Column(Modifier.fillMaxWidth().background(Surface).padding(16.dp)) {
+      Row(verticalAlignment = Alignment.Top) {
         Icon(Icons.Default.Bolt, null, tint = if (state.live) Green else Warning)
         Column(Modifier.padding(start = 12.dp).weight(1f)) {
             Text(state.profile?.name.orEmpty(), fontWeight = FontWeight.SemiBold)
@@ -142,6 +189,22 @@ private fun ConnectionStrip(state: AppState) {
             Text("Private HTTPS · Native Zed Agent", color = Subtle, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
         }
         Text(state.status.uppercase(), color = if (state.live) Green else Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+      }
+      if (state.targets.size > 1) {
+        var expanded by remember { mutableStateOf(false) }
+        Box(Modifier.padding(top = 12.dp)) {
+            TextButton(onClick = { expanded = true }) {
+                val label = state.targets.firstOrNull { it.id == state.targetId }?.label ?: "Choose Zed target"
+                Text("$label  ▾")
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                state.targets.forEach { target ->
+                    DropdownMenuItem(text = { Text("${target.label}${if (target.available) "" else " · unavailable"}") },
+                        enabled = target.available, onClick = { expanded = false; model.selectTarget(target.id) })
+                }
+            }
+        }
+      }
     }
     Rule()
 }
@@ -168,6 +231,10 @@ private fun ThreadRow(thread: NativeThread, open: () -> Unit) {
 private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     val snapshot = state.snapshot
     var showCommands by remember { mutableStateOf(false) }
+    var showActions by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+    var showUnexpose by remember { mutableStateOf(false) }
+    var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).border(1.dp, Line).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = model::closeThread) { Icon(Icons.Default.ArrowBack, "Sessions", tint = Ink) }
@@ -175,6 +242,17 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
                 Text(snapshot?.title ?: "Loading native thread", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (snapshot?.isBusy == true) "ZED IS WORKING" else "NATIVE THREAD READY", color = if (snapshot?.isBusy == true) Blue else Green,
                     fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+            }
+            Box {
+                IconButton(onClick = { showActions = true }) { Icon(Icons.Default.MoreVert, "Session actions", tint = Ink) }
+                DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                    DropdownMenuItem(text = { Text("Rename session") }, leadingIcon = { Icon(Icons.Default.Edit, null) },
+                        enabled = "thread.rename" in state.capabilities,
+                        onClick = { proposedTitle = snapshot?.title.orEmpty(); showActions = false; showRename = true })
+                    DropdownMenuItem(text = { Text("Stop exposing") }, leadingIcon = { Icon(Icons.Default.VisibilityOff, null) },
+                        enabled = "thread.unexpose" in state.capabilities,
+                        onClick = { showActions = false; showUnexpose = true })
+                }
             }
         }
         if (state.issue.isNotBlank()) Notice(state.issue)
@@ -188,6 +266,24 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
         Composer(state, model, { showCommands = !showCommands })
     }
+    if (showRename) AlertDialog(
+        onDismissRequest = { showRename = false },
+        title = { Text("Rename session") },
+        text = { OutlinedTextField(proposedTitle, { proposedTitle = it }, label = { Text("Session title") }, singleLine = true) },
+        confirmButton = { TextButton(enabled = proposedTitle.isNotBlank(), onClick = {
+            model.renameSelectedThread(proposedTitle); showRename = false
+        }) { Text("RENAME") } },
+        dismissButton = { TextButton(onClick = { showRename = false }) { Text("CANCEL") } },
+        containerColor = Surface,
+    )
+    if (showUnexpose) AlertDialog(
+        onDismissRequest = { showUnexpose = false },
+        title = { Text("Stop exposing this session?") },
+        text = { Text("The Agent keeps running in desktop Zed. Remote access to this session stops.") },
+        confirmButton = { TextButton(onClick = { model.unexposeSelectedThread(); showUnexpose = false }) { Text("STOP EXPOSING") } },
+        dismissButton = { TextButton(onClick = { showUnexpose = false }) { Text("CANCEL") } },
+        containerColor = Surface,
+    )
 }
 
 @Composable
@@ -398,6 +494,25 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Header("Connections", "Private HTTPS profiles")
+        if (state.profiles.isNotEmpty()) {
+            SectionHeading("SAVED ZED HOSTS", "${state.profiles.size}")
+            state.profiles.forEach { profile ->
+                Column(Modifier.fillMaxWidth().background(if (state.profile?.gatewayId == profile.gatewayId) Raised else Surface)
+                    .border(1.dp, Line).padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(profile.name, fontWeight = FontWeight.SemiBold)
+                            Text(profile.endpoint, color = Muted, fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        TextButton(onClick = { model.connect(profile) }) {
+                            Text(if (state.profile?.gatewayId == profile.gatewayId && state.live) "RECONNECT" else "CONNECT")
+                        }
+                        TextButton(onClick = { model.forget(profile) }) { Text("FORGET", color = Color(0xFFE6A0A0)) }
+                    }
+                }
+            }
+        }
         Text("QUICK PAIR", style = monoLabel(), modifier = Modifier.padding(16.dp, 24.dp, 16.dp, 8.dp))
         Text("Scan the workstation QR, or copy its trusted HTTPS link and paste it here.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp))
         FlatButton("SCAN PAIRING QR", Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {

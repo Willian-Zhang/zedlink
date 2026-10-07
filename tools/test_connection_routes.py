@@ -71,9 +71,20 @@ def main() -> None:
         assert listener_file.stat().st_mode & 0o077 == 0
         listeners = json.loads(listener_file.read_text())
         assert [entry["id"] for entry in listeners["listeners"]] == ["primary", "loopback-two"]
+        offline_dir = root / "offline-probe"
+        offline_dir.mkdir(mode=0o700)
+        configured["targets"][0]["probe"] = str(probe.path)
+        configured["targets"].append({
+            "id": "offline", "label": "Offline Zed",
+            "probe": str(offline_dir / "zedlink.sock"),
+        })
+        configured = manager.validate(configured)
+        target_file = manager.write_target_file(configured)
+        assert target_file.stat().st_mode & 0o077 == 0
+        assert [entry["id"] for entry in json.loads(target_file.read_text())["targets"]] == ["default", "offline"]
 
         server = subprocess.Popen(
-            [str(BINARY), "serve-routes", str(listener_file), str(probe.path),
+            [str(BINARY), "serve-targets", str(listener_file), str(target_file),
              str(state / "gateway")], stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True)
         try:
@@ -92,7 +103,7 @@ def main() -> None:
             second_identity = request_identity(cert, second)
             assert first_identity == second_identity
             duplicate = subprocess.run(
-                [str(BINARY), "serve-routes", str(listener_file), str(probe.path),
+                [str(BINARY), "serve-targets", str(listener_file), str(target_file),
                  str(state / "gateway")], capture_output=True, text=True, timeout=5)
             assert duplicate.returncode != 0
             assert "already owns this state directory" in duplicate.stderr
@@ -128,7 +139,7 @@ def main() -> None:
         else:
             raise AssertionError("public frontend origin accepted a non-loopback bind")
 
-    print("PASS: migration, two listeners, duplicate guard, graceful stop, and safe frontend templates")
+    print("PASS: migration, two listeners, multi-target manifest, duplicate guard, graceful stop, and safe frontend templates")
 
 
 if __name__ == "__main__":

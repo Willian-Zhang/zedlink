@@ -51,7 +51,7 @@ const PUSH_TIMEOUT: Duration = Duration::from_secs(12);
 struct Gateway(Arc<Inner>);
 struct Inner {
     directory: PathBuf,
-    probe: PathBuf,
+    targets: Vec<ProbeTarget>,
     persisted: Mutex<Persisted>,
     pairing: Mutex<Option<Pairing>>,
     probe_limit: Arc<Semaphore>,
@@ -98,6 +98,7 @@ struct PairRequest {
 struct EventQuery {
     thread_id: String,
     after_sequence: Option<u64>,
+    target_id: Option<String>,
 }
 #[derive(Deserialize)]
 struct UnsubscribeRequest {
@@ -148,6 +149,19 @@ struct TlsListenerConfig {
 struct ListenerFile {
     version: u8,
     listeners: Vec<TlsListenerConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+struct ProbeTarget {
+    id: String,
+    label: String,
+    probe: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct TargetFile {
+    version: u8,
+    targets: Vec<ProbeTarget>,
 }
 
 fn application(state: Gateway) -> Router {
@@ -202,14 +216,14 @@ fn validate_listener(listener: &TlsListenerConfig) -> Result<()> {
 
 async fn run_gateway(
     listeners: Vec<TlsListenerConfig>,
-    probe: PathBuf,
+    targets: Vec<ProbeTarget>,
     directory: PathBuf,
 ) -> Result<()> {
     if listeners.is_empty() || listeners.len() > 16 {
         bail!("configure between 1 and 16 TLS listeners");
     }
-    if !probe.is_absolute() || !directory.is_absolute() {
-        bail!("socket and state paths must be absolute");
+    if !directory.is_absolute() {
+        bail!("state path must be absolute");
     }
     let admin_socket = directory.join("admin.sock");
     if admin_socket.exists() && StdUnixStream::connect(&admin_socket).is_ok() {
@@ -223,7 +237,7 @@ async fn run_gateway(
         }
     }
 
-    let state = Gateway::load(directory, probe)?;
+    let state = Gateway::load(directory, targets)?;
     let admin = state.clone();
     tokio::spawn(async move {
         if let Err(error) = admin.admin_server().await {
@@ -275,7 +289,11 @@ async fn main() -> Result<()> {
                     cert: PathBuf::from(&args[2]),
                     key: PathBuf::from(&args[3]),
                 }],
-                probe,
+                vec![ProbeTarget {
+                    id: "default".into(),
+                    label: "This Zed".into(),
+                    probe,
+                }],
                 directory,
             )
             .await
@@ -295,7 +313,36 @@ async fn main() -> Result<()> {
             }
             run_gateway(
                 config.listeners,
-                PathBuf::from(&args[2]),
+                vec![ProbeTarget {
+                    id: "default".into(),
+                    label: "This Zed".into(),
+                    probe: PathBuf::from(&args[2]),
+                }],
+                PathBuf::from(&args[3]),
+            )
+            .await
+        }
+        Some("serve-targets") if args.len() == 4 => {
+            let listeners_path = PathBuf::from(&args[1]);
+            let targets_path = PathBuf::from(&args[2]);
+            for path in [&listeners_path, &targets_path] {
+                if !path.is_absolute() {
+                    bail!("configuration paths must be absolute");
+                }
+                if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
+                    bail!("configuration files must be mode 0600 or stricter");
+                }
+            }
+            let listeners: ListenerFile = serde_json::from_slice(&fs::read(listeners_path)?)
+                .context("invalid listener configuration")?;
+            let targets: TargetFile = serde_json::from_slice(&fs::read(targets_path)?)
+                .context("invalid target configuration")?;
+            if listeners.version != 1 || targets.version != 1 {
+                bail!("unsupported configuration version");
+            }
+            run_gateway(
+                listeners.listeners,
+                targets.targets,
                 PathBuf::from(&args[3]),
             )
             .await
@@ -322,7 +369,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | serve-routes LISTENERS_JSON PROBE_SOCKET STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|shutdown|revoke DEVICE_ID"
+            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | serve-routes LISTENERS_JSON PROBE_SOCKET STATE_DIR | serve-targets LISTENERS_JSON TARGETS_JSON STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|shutdown|revoke DEVICE_ID"
         ),
     }
 }
@@ -463,15 +510,35 @@ fn save(directory: &Path, state: &Persisted) -> Result<()> {
     Ok(())
 }
 impl Gateway {
-    fn load(directory: PathBuf, probe: PathBuf) -> Result<Self> {
-        let probe_metadata = fs::metadata(&probe).context("native probe socket unavailable")?;
-        let probe_parent = fs::metadata(probe.parent().context("probe parent missing")?)?;
-        if !probe_metadata.file_type().is_socket()
-            || probe_metadata.permissions().mode() & 0o077 != 0
-            || !probe_parent.is_dir()
-            || probe_parent.permissions().mode() & 0o077 != 0
-        {
-            bail!("native probe must be in a private directory with private socket permissions");
+    fn load(directory: PathBuf, targets: Vec<ProbeTarget>) -> Result<Self> {
+        if targets.is_empty() || targets.len() > 16 {
+            bail!("configure between 1 and 16 Zed targets");
+        }
+        let mut target_ids = HashSet::new();
+        for target in &targets {
+            if target.id.is_empty()
+                || target.id.len() > 64
+                || !target
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                || target.label.trim().is_empty()
+                || target.label.len() > 80
+                || !target_ids.insert(target.id.clone())
+                || !target.probe.is_absolute()
+            {
+                bail!("invalid or duplicate Zed target");
+            }
+            let probe_parent =
+                fs::metadata(target.probe.parent().context("probe parent missing")?)?;
+            if !probe_parent.is_dir() || probe_parent.permissions().mode() & 0o077 != 0 {
+                bail!(
+                    "native probes must be in private directories with private socket permissions"
+                );
+            }
+            if target.probe.exists() {
+                validate_probe_socket(&target.probe)?;
+            }
         }
         if !directory.exists() {
             let mut builder = DirBuilder::new();
@@ -507,7 +574,7 @@ impl Gateway {
             .context("invalid saved Web Push key")?;
         Ok(Self(Arc::new(Inner {
             directory,
-            probe,
+            targets,
             persisted: Mutex::new(persisted),
             pairing: Mutex::new(None),
             probe_limit: Arc::new(Semaphore::new(16)),
@@ -540,7 +607,19 @@ impl Gateway {
                 (stored.len() == 32 && bool::from(stored.ct_eq(&hash))).then_some(device.id)
             })
     }
-    async fn probe(&self, request: &Value) -> Result<Value> {
+    fn target(&self, target_id: Option<&str>) -> Result<&ProbeTarget> {
+        match target_id {
+            Some(id) => self
+                .0
+                .targets
+                .iter()
+                .find(|target| target.id == id)
+                .context("unknown Zed target"),
+            None => self.0.targets.first().context("no Zed target configured"),
+        }
+    }
+
+    async fn probe(&self, target_id: Option<&str>, request: &Value) -> Result<Value> {
         let _permit = self
             .0
             .probe_limit
@@ -551,9 +630,10 @@ impl Gateway {
         if encoded.len() > MAX_RPC {
             bail!("oversized probe request");
         }
+        let probe = self.target(target_id)?.probe.clone();
+        validate_probe_socket(&probe)?;
         let mut stream =
-            tokio::time::timeout(Duration::from_secs(3), UnixStream::connect(&self.0.probe))
-                .await??;
+            tokio::time::timeout(Duration::from_secs(3), UnixStream::connect(probe)).await??;
         stream.write_all(&encoded).await?;
         stream.write_all(b"\n").await?;
         let mut response = Vec::new();
@@ -575,6 +655,38 @@ impl Gateway {
             bail!("invalid probe response envelope");
         }
         Ok(response)
+    }
+
+    async fn instance_list(&self) -> Value {
+        let mut targets = Vec::with_capacity(self.0.targets.len());
+        for target in &self.0.targets {
+            let request = json!({
+                "version": 1,
+                "request_id": Uuid::new_v4().to_string(),
+                "method": "instance.info",
+                "params": {},
+            });
+            let mut item = json!({
+                "target_id": target.id,
+                "label": target.label,
+                "available": false,
+            });
+            if let Ok(response) = self.probe(Some(&target.id), &request).await
+                && let Some(result) = response.get("result")
+            {
+                item["available"] = json!(true);
+                for field in ["instance_id", "epoch", "capabilities", "project"] {
+                    if let Some(value) = result.get(field) {
+                        item[field] = value.clone();
+                    }
+                }
+            }
+            targets.push(item);
+        }
+        json!({
+            "targets": targets,
+            "default_target_id": self.0.targets.first().map(|target| target.id.as_str()),
+        })
     }
     async fn admin_server(&self) -> Result<()> {
         let path = self.0.directory.join("admin.sock");
@@ -674,6 +786,7 @@ impl Gateway {
         record: &PushSubscription,
         body: &str,
         thread_id: Option<&str>,
+        target_id: Option<&str>,
     ) -> PushOutcome {
         let private_key = self.0.persisted.lock().await.vapid_private_key.clone();
         let signature = match VapidSignatureBuilder::from_base64(&private_key, &record.subscription)
@@ -687,6 +800,7 @@ impl Gateway {
             "body": body,
             "tag": thread_id.map_or_else(|| "zedlink-test".to_owned(), |id| format!("zedlink-thread-{id}")),
             "thread_id": thread_id,
+            "target_id": target_id,
         });
         let encoded = match serde_json::to_vec(&payload) {
             Ok(encoded) => encoded,
@@ -710,12 +824,13 @@ impl Gateway {
         }
     }
 
-    async fn notify_all(&self, body: &'static str, thread_id: &str) {
+    async fn notify_all(&self, body: &'static str, target_id: &str, thread_id: &str) {
         let subscriptions = self.0.persisted.lock().await.push_subscriptions.clone();
         let mut stale = HashSet::new();
         for record in subscriptions {
             if matches!(
-                self.send_push(&record, body, Some(thread_id)).await,
+                self.send_push(&record, body, Some(thread_id), Some(target_id))
+                    .await,
                 PushOutcome::Stale
             ) {
                 stale.insert(record.subscription.endpoint);
@@ -741,56 +856,72 @@ impl Gateway {
                 prior.clear();
                 continue;
             }
-            let request = json!({
-                "version": 1,
-                "request_id": Uuid::new_v4().to_string(),
-                "method": "thread.list",
-                "params": {},
-            });
-            let Ok(response) = self.probe(&request).await else {
-                continue;
-            };
-            let Some(threads) = response["result"]["threads"].as_array() else {
-                continue;
-            };
             let mut current = HashMap::new();
-            for thread in threads {
-                let (Some(thread_id), Some(status)) =
-                    (thread["thread_id"].as_str(), thread["status"].as_str())
-                else {
-                    continue;
-                };
-                let snapshot_request = json!({
+            for target in &self.0.targets {
+                let request = json!({
                     "version": 1,
                     "request_id": Uuid::new_v4().to_string(),
-                    "method": "thread.snapshot",
-                    "params": {"thread_id": thread_id},
+                    "method": "thread.list",
+                    "params": {},
                 });
-                let approvals = self
-                    .probe(&snapshot_request)
-                    .await
-                    .ok()
-                    .and_then(|snapshot| {
-                        snapshot["result"]["pending_approvals"]
-                            .as_array()
-                            .map(Vec::len)
-                    })
-                    .unwrap_or(0);
-                let observation = ThreadObservation {
-                    status: status.to_owned(),
-                    approvals,
-                    had_error: thread["had_error"].as_bool().unwrap_or(false),
+                let Ok(response) = self.probe(Some(&target.id), &request).await else {
+                    continue;
                 };
-                if let Some(previous) = prior.get(thread_id)
-                    && let Some(body) = thread_notification(previous, &observation)
-                {
-                    self.notify_all(body, thread_id).await;
+                let Some(threads) = response["result"]["threads"].as_array() else {
+                    continue;
+                };
+                for thread in threads {
+                    let (Some(thread_id), Some(status)) =
+                        (thread["thread_id"].as_str(), thread["status"].as_str())
+                    else {
+                        continue;
+                    };
+                    let snapshot_request = json!({
+                        "version": 1,
+                        "request_id": Uuid::new_v4().to_string(),
+                        "method": "thread.snapshot",
+                        "params": {"thread_id": thread_id},
+                    });
+                    let approvals = self
+                        .probe(Some(&target.id), &snapshot_request)
+                        .await
+                        .ok()
+                        .and_then(|snapshot| {
+                            snapshot["result"]["pending_approvals"]
+                                .as_array()
+                                .map(Vec::len)
+                        })
+                        .unwrap_or(0);
+                    let observation = ThreadObservation {
+                        status: status.to_owned(),
+                        approvals,
+                        had_error: thread["had_error"].as_bool().unwrap_or(false),
+                    };
+                    let key = format!("{}:{thread_id}", target.id);
+                    if let Some(previous) = prior.get(&key)
+                        && let Some(body) = thread_notification(previous, &observation)
+                    {
+                        self.notify_all(body, &target.id, thread_id).await;
+                    }
+                    current.insert(key, observation);
                 }
-                current.insert(thread_id.to_owned(), observation);
             }
             prior = current;
         }
     }
+}
+
+fn validate_probe_socket(probe: &Path) -> Result<()> {
+    let metadata = fs::metadata(probe).context("native probe socket unavailable")?;
+    let parent = fs::metadata(probe.parent().context("probe parent missing")?)?;
+    if !metadata.file_type().is_socket()
+        || metadata.permissions().mode() & 0o077 != 0
+        || !parent.is_dir()
+        || parent.permissions().mode() & 0o077 != 0
+    {
+        bail!("native probe must be in a private directory with private socket permissions");
+    }
+    Ok(())
 }
 async fn info(State(state): State<Gateway>) -> Json<Value> {
     Json(json!({"version":1,"gateway_id":state.0.persisted.lock().await.gateway_id}))
@@ -1028,6 +1159,7 @@ async fn notification_test(
             &subscription,
             "Notifications are ready for this device.",
             None,
+            None,
         )
         .await
     {
@@ -1073,9 +1205,13 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
     };
     if !matches!(
         method.as_str(),
-        "instance.info"
+        "instance.list"
+            | "instance.info"
             | "thread.list"
             | "thread.create"
+            | "thread.create.options"
+            | "thread.rename"
+            | "thread.unexpose"
             | "thread.snapshot"
             | "thread.history"
             | "thread.events"
@@ -1112,6 +1248,29 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             Json(json!({"error":"INVALID_REQUEST"})),
         );
     };
+    let target_id = request
+        .get("target_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if target_id
+        .as_ref()
+        .is_some_and(|id| id.is_empty() || id.len() > 64)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"INVALID_REQUEST"})),
+        );
+    }
+    if let Some(object) = request.as_object_mut() {
+        object.remove("target_id");
+    }
+    if method == "instance.list" {
+        let result = state.instance_list().await;
+        return (
+            StatusCode::OK,
+            Json(json!({"version":1,"request_id":original_request_id,"result":result})),
+        );
+    }
     if matches!(
         method.as_str(),
         "thread.send"
@@ -1134,7 +1293,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
         };
         request["params"]["original_request_id"] = json!(format!("{device_id}:{original_send_id}"));
     }
-    match state.probe(&request).await {
+    match state.probe(target_id.as_deref(), &request).await {
         Ok(mut response) => {
             response["request_id"] = json!(original_request_id);
             (StatusCode::OK, Json(response))
@@ -1173,6 +1332,9 @@ async fn events(
     if query.thread_id.is_empty() || query.thread_id.len() > 128 {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    if state.target(query.target_id.as_deref()).is_err() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     upgrade
         .protocols(["zedlink-v1"])
         .on_upgrade(move |socket| event_stream(socket, state, device_id, query))
@@ -1196,7 +1358,7 @@ async fn event_stream(mut socket: WebSocket, state: Gateway, device_id: Uuid, qu
         }
         let request = json!({"version":1,"request_id":Uuid::new_v4().to_string(),
             "method":"thread.events","params":{"thread_id":query.thread_id,"after_sequence":sequence}});
-        let response = match state.probe(&request).await {
+        let response = match state.probe(query.target_id.as_deref(), &request).await {
             Ok(response) => response,
             Err(_) => json!({"version":1,"error":{"code":"INSTANCE_UNAVAILABLE"}}),
         };

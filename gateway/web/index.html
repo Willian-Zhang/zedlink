@@ -51,10 +51,12 @@
       </section>
       <section class="panel hidden" id="sessions-panel">
         <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet" aria-label="Create native Zed Agent session" disabled title="Start patched Zed to create a session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button><button id="open-settings" type="button" class="quiet" aria-label="Open settings">⚙</button></div></div>
+        <div id="target-field" class="target-field hidden"><label for="target-select">Zed target</label><select id="target-select" aria-label="Choose a Zed instance"></select><small id="target-help">Choose a running patched Zed window.</small></div>
         <form id="new-session-form" class="new-session-form hidden">
           <label for="new-session-title">New native Agent session</label>
+          <div id="new-session-agent-row" class="new-session-agent-row hidden"><select id="new-session-agent" aria-label="Agent for new session"></select></div>
           <div><input id="new-session-title" maxlength="128" autocomplete="off" placeholder="Optional title"><button id="create-session" class="primary" type="submit">Create</button></div>
-          <p>Uses this project, Zed’s native Agent, and its current model.</p>
+          <p id="new-session-help">Uses this target’s allowed project and the selected agent’s configuration inside Zed.</p>
         </form>
         <label class="sr-only" for="session-search">Search sessions</label>
         <input id="session-search" type="search" placeholder="Search sessions" autocomplete="off">
@@ -73,6 +75,7 @@
         <div class="settings-row"><span>Selected Agent</span><strong id="agent-connection-state">No session</strong></div>
         <div class="settings-row"><span>Last live update</span><strong id="last-live-update">None yet</strong></div>
         <div class="settings-row"><span>Gateway</span><code id="mobile-gateway-id">Unknown</code></div>
+        <div class="settings-row"><span>Zed target</span><strong id="connection-target">Not selected</strong></div>
         <p class="muted">Gateway, desktop Zed, live updates, and the selected Agent are checked separately. A green gateway does not mean the configured model is reachable.</p>
         <p class="note">To remove this browser’s saved access, open Settings and select Sign out.</p>
       </section>
@@ -88,6 +91,11 @@
             <button id="save-zed-settings" class="primary" type="submit" disabled>Apply to Zed</button>
           </form>
           <p id="zed-settings-help" class="note">Settings become editable when an idle exposed session is selected.</p>
+          <div id="session-management" class="session-management hidden">
+            <div class="setting-field"><label for="session-title-input">Session title</label><input id="session-title-input" maxlength="128" autocomplete="off"></div>
+            <div class="session-management-actions"><button id="rename-session" class="quiet" type="button">Rename session</button><button id="unexpose-session" class="danger" type="button">Stop exposing</button></div>
+            <p class="note">Stopping exposure removes remote access to this session. The Agent thread remains open in desktop Zed.</p>
+          </div>
         </section>
         <section class="settings-group" aria-labelledby="browser-settings-heading">
           <p class="eyebrow">THIS DEVICE</p><h2 id="browser-settings-heading">Browser app</h2>
@@ -96,7 +104,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Zed hosted agent</strong></div>
-          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.06.29</code></div>
+          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.06.30</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>

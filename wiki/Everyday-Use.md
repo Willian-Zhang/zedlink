@@ -31,6 +31,7 @@ The task picker remains available for setup and maintenance:
 | **ZedLink: Status** | Shows configuration, build, launcher, socket, and gateway status |
 | **ZedLink: Install patched Zed launcher** | Adds **ZedLink — Patched Zed** to the Linux application menu |
 | **ZedLink: Manage connections** | Adds, enables, disables, selects, removes, or generates templates for gateway routes |
+| **ZedLink: Manage Zed targets** | Adds or removes isolated patched Zed instances served by the paired gateway |
 | **ZedLink: Check connections** | Verifies trusted HTTPS and stable gateway identity through every enabled route |
 | **ZedLink: Restart gateway** | Gracefully reloads the enabled listener configuration without changing pairings or gateway identity |
 | **ZedLink: Stop gateway** | Gracefully closes all gateway listeners while leaving saved state intact |
@@ -45,3 +46,10 @@ The task picker remains available for setup and maintenance:
 Build/install, launcher installation, full repair, and starting another patched Zed process intentionally remain tasks. They can compile for a long time, modify installation files, or create another application window, so they are poor fits for a Settings button. Runtime controls return promptly and are safe to use from Settings.
 
 Closing the gateway terminal stops remote browser access. Closing patched Zed makes the native thread unavailable. Neither action deletes the conversation or pairing records.
+## Switching Zed hosts and instances
+
+The iPhone, Android, and browser clients keep connection state separate for each paired gateway. Choose a saved gateway from **Connections** to move between workstations. When one gateway manages multiple patched Zed instances, use the **Zed target** selector above Sessions. Drafts, selected threads, live event cursors, and uncertain sends remain scoped to that target.
+
+An unavailable target remains selected and is shown as unavailable. ZedLink never sends its work to another target automatically.
+
+From **+ New**, choose an agent advertised by the selected Zed project. The native Zed Agent uses its current Zed model and profile. Codex, Claude Code, and other ACP choices retain their external agent configuration in Zed.

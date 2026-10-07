@@ -107,3 +107,6 @@ Proxy routes bind only to `127.0.0.1` or `::1`:
 - **Direct SSH:** the manager writes client instructions for a local forward. The desktop client must map the certificate hostname to loopback and open that exact HTTPS hostname. This remains unsuitable as the primary iPhone Safari route.
 
 Cloudflare and the VPS terminate the client-facing TLS session and can see application plaintext. Their authentication is an additional layer; every browser must still pair with ZedLink. Pairing credentials are scoped to an HTTPS origin, so a browser paired through Tailscale must pair separately through a Cloudflare or VPS hostname.
+## Multiple Zed targets
+
+A gateway can load a private target manifest containing up to 16 named probe sockets. The default setup creates one target. Run **ZedLink: Manage Zed targets** to add or remove another isolated patched Zed instance, then restart the gateway. Each target must use its own private probe directory and patched Zed profile. Target labels and availability are visible to paired devices; local socket paths are never returned.

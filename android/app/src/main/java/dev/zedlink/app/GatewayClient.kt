@@ -12,7 +12,7 @@ import java.io.ByteArrayOutputStream
 
 class GatewayException(message: String) : IOException(message)
 
-class GatewayClient(private val profile: ConnectionProfile, private val token: String?) {
+class GatewayClient(private val profile: ConnectionProfile, private val token: String?, private val targetId: String? = null) {
     private val origin = profile.endpoint.trimEnd('/')
 
     suspend fun gatewayId(): String = request("/v1/gateway").getString("gateway_id")
@@ -38,6 +38,7 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
             .put("request_id", requestId)
             .put("method", method)
             .put("params", params)
+        if (method != "instance.list" && targetId != null) body.put("target_id", targetId)
         val envelope = request("/v1/rpc", body, authorized = true)
         if (envelope.optInt("version") != 1 || envelope.optString("request_id") != requestId) {
             throw GatewayException("Gateway response did not match this request.")
