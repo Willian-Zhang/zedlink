@@ -1,6 +1,21 @@
 import XCTest
 
 final class OnboardingUITests: XCTestCase {
+    func testSessionsKeyboardDismissesWhenLeavingSearch() {
+        let app = XCUIApplication()
+        app.launch()
+
+        let search = app.textFields["session-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        search.typeText("agent")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+
+        app.tabBars.buttons["Connections"].tap()
+        XCTAssertTrue(app.staticTexts["No connections"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+    }
+
     func testFirstUseReachesPairingControls() {
         let app = XCUIApplication()
         app.launch()

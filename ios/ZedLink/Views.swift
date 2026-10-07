@@ -7,6 +7,7 @@ struct SessionsView: View {
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var session: SessionManager
     @State private var search = ""
+    @FocusState private var searchFocused: Bool
 
     private var visibleThreads: [NativeThread] {
         guard !search.isEmpty else { return session.threads }
@@ -23,6 +24,9 @@ struct SessionsView: View {
                         Image(systemName: "magnifyingglass").foregroundStyle(ZLTheme.muted)
                         TextField("Search exposed sessions", text: $search)
                             .textInputAutocapitalization(.never)
+                            .submitLabel(.search)
+                            .focused($searchFocused)
+                            .accessibilityIdentifier("session-search")
                     }
                     .padding(.horizontal, 12).frame(minHeight: 44)
                     .background(ZLTheme.surface)
@@ -43,6 +47,7 @@ struct SessionsView: View {
                             NavigationLink(value: thread.id) { SessionRow(thread: thread) }
                                 .buttonStyle(.plain)
                                 .accessibilityIdentifier("thread-\(thread.id)")
+                                .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
                             Hairline().padding(.leading, 48)
                         }
                     }
@@ -50,6 +55,7 @@ struct SessionsView: View {
                 .padding(.bottom, 30)
             }
             .background(ZLTheme.background)
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("ZedLink")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -62,6 +68,12 @@ struct SessionsView: View {
             }
             .navigationDestination(for: String.self) { ConversationView(threadID: $0) }
             .refreshable { await session.refresh() }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { searchFocused = false }
+                }
+            }
         }
     }
 
@@ -150,6 +162,7 @@ struct ConversationView: View {
     let threadID: String
     @State private var showingClearConfirmation = false
     @State private var showingCommands = false
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -160,15 +173,16 @@ struct ConversationView: View {
                 ContentUnavailableView("Loading native thread", systemImage: "bubble.left")
                     .frame(maxHeight: .infinity)
             }
-            composer
         }
         .background(ZLTheme.background)
+        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .navigationTitle(session.snapshot?.title ?? "Agent thread")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { ConnectionStatusView(state: session.state) }
         }
         .task(id: threadID) { await session.select(threadID) }
+        .onDisappear { composerFocused = false }
         .sheet(isPresented: $showingCommands) { CommandPicker() }
         .confirmationDialog("Clear uncertain delivery?", isPresented: $showingClearConfirmation) {
             Button("Clear locally", role: .destructive) { session.clearPending() }
@@ -192,7 +206,10 @@ struct ConversationView: View {
                     ForEach(Array(snapshot.entries.enumerated()).map {
                         IndexedTranscriptEntry(id: snapshot.entryStartIndex + $0.offset, markdown: $0.element)
                     }) { entry in
-                        NativeMessageView(message: NativeEntryPresentation(entry.markdown, index: entry.id))
+                        NativeMessageView(
+                            message: NativeEntryPresentation(entry.markdown, index: entry.id),
+                            thinkingLive: snapshot.isBusy && entry.id == snapshot.totalEntries - 1
+                        )
                             .id(entry.id)
                         Hairline().padding(.horizontal, 14)
                     }
@@ -200,6 +217,7 @@ struct ConversationView: View {
                 }
             }
             .defaultScrollAnchor(.bottom)
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: snapshot.lastSequence) { _, _ in
                 withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
             }
@@ -250,21 +268,27 @@ struct ConversationView: View {
                 TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
                     .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
                     .background(ZLTheme.surface)
-                    .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ZLTheme.line, lineWidth: 1))
+                    .focused($composerFocused)
+                    .submitLabel(.send)
+                    .onSubmit { sendAndDismissKeyboard() }
                     .accessibilityLabel("Message to native Zed Agent")
                     .accessibilityIdentifier("composer")
 
                 if session.canCancel {
-                    Button { Task { await session.cancelCurrentTurn() } } label: {
+                    Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
                         Image(systemName: "stop.fill").font(.headline).frame(width: 42, height: 42)
                     }
                     .foregroundStyle(.white).background(ZLTheme.danger)
+                    .clipShape(Circle())
                     .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
                 } else {
-                    Button { Task { await session.send() } } label: {
+                    Button { sendAndDismissKeyboard() } label: {
                         Image(systemName: "arrow.up").font(.headline).frame(width: 42, height: 42)
                     }
-                    .foregroundStyle(ZLTheme.background).background(.primary)
+                    .foregroundStyle(ZLTheme.background).background(ZLTheme.ink)
+                    .clipShape(Circle())
                     .disabled(!session.canSend || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityLabel("Send").accessibilityIdentifier("send-prompt")
                 }
@@ -273,6 +297,18 @@ struct ConversationView: View {
         .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
         .background(ZLTheme.background)
         .overlay(alignment: .top) { Hairline() }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { composerFocused = false }
+            }
+        }
+    }
+
+    private func sendAndDismissKeyboard() {
+        guard session.canSend, !session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        composerFocused = false
+        Task { await session.send() }
     }
 
     private var uncertainDelivery: some View {
@@ -359,6 +395,7 @@ private struct ActivityPanel: View {
 
 private struct NativeMessageView: View {
     let message: NativeEntryPresentation
+    let thinkingLive: Bool
 
     var body: some View {
         switch message.kind {
@@ -369,8 +406,9 @@ private struct NativeMessageView: View {
                     SectionLabel(message.label)
                     NativeMarkdownView(markdown: message.body)
                 }
-                .padding(12).background(ZLTheme.raised)
-                .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+                .padding(.horizontal, 14).padding(.vertical, 11)
+                .background(ZLTheme.raised)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
         case .tool:
@@ -379,14 +417,45 @@ private struct NativeMessageView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(message.label)
                 ForEach(Array(message.reasoning.enumerated()), id: \.offset) { _, thought in
-                    DisclosureGroup("Reasoning") { NativeMarkdownView(markdown: thought).padding(.top, 8) }
-                        .font(.footnote).tint(ZLTheme.muted)
+                    ThinkingDisclosure(thought: thought, live: thinkingLive)
                 }
                 if !message.body.isEmpty { NativeMarkdownView(markdown: message.body) }
             }
             .padding(.horizontal, 16).padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private struct ThinkingDisclosure: View {
+    let thought: String
+    let live: Bool
+    @State private var expanded: Bool
+
+    init(thought: String, live: Bool) {
+        self.thought = thought
+        self.live = live
+        _expanded = State(initialValue: live)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            NativeMarkdownView(markdown: thought).padding(.top, 8)
+        } label: {
+            HStack(spacing: 7) {
+                if live {
+                    ProgressView().controlSize(.mini).tint(ZLTheme.focus)
+                }
+                Text(live ? "Thinking" : "Thinking · complete")
+            }
+        }
+        .font(.footnote)
+        .tint(ZLTheme.muted)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(ZLTheme.surface)
+        .overlay(alignment: .leading) { Rectangle().fill(ZLTheme.line).frame(width: 2) }
+        .onChange(of: live) { _, active in if active { expanded = true } }
     }
 }
 

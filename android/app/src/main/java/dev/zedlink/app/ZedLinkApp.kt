@@ -11,6 +11,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,13 +25,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -41,7 +47,7 @@ private val Line = Color(0xFF2B2D30)
 private val Ink = Color(0xFFF3F3F1)
 private val Muted = Color(0xFFA2A5AA)
 private val Subtle = Color(0xFF797C82)
-private val Blue = Color(0xFF6AAEFF)
+private val Blue = Color(0xFFD5E7FF)
 private val Green = Color(0xFF79C79B)
 private val Warning = Color(0xFFE2BC80)
 
@@ -94,6 +100,7 @@ private fun BottomTabs(selected: Tab, inThread: Boolean, onSelect: (Tab) -> Unit
 @Composable
 private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnections: () -> Unit) {
     var query by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
     val threads = state.threads.filter { it.title.contains(query, true) || it.id.contains(query, true) }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
@@ -117,7 +124,10 @@ private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnect
                 Text("In patched Zed, open a native Agent conversation and select /remote-control.", color = Muted)
             }
         }
-        items(threads, key = { it.id }) { thread -> ThreadRow(thread) { model.selectThread(thread.id) } }
+        items(threads, key = { it.id }) { thread -> ThreadRow(thread) {
+            focusManager.clearFocus(force = true)
+            model.selectThread(thread.id)
+        } }
     }
 }
 
@@ -226,7 +236,16 @@ private fun Message(entry: NativeEntry, thinkingLive: Boolean = false) {
     var reasoningExpanded by remember(entry.reasoning, thinkingLive) { mutableStateOf(thinkingLive) }
     when (entry.kind) {
         EntryKind.TOOL -> ToolCard(entry)
-        else -> Column(Modifier.fillMaxWidth().then(if (entry.kind == EntryKind.USER) Modifier.background(Raised) else Modifier).padding(16.dp)) {
+        EntryKind.USER -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Spacer(Modifier.width(42.dp))
+            Column(Modifier.weight(1f).wrapContentWidth(Alignment.End).widthIn(max = 760.dp)
+                .background(Raised, RoundedCornerShape(12.dp, 12.dp, 3.dp, 12.dp)).padding(horizontal = 14.dp, vertical = 11.dp)) {
+                Text(entry.label.uppercase(), color = Subtle, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold)
+                SelectionContainer { MarkdownLikeText(entry.body) }
+            }
+        }
+        else -> Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text(entry.label.uppercase(), color = if (entry.kind == EntryKind.ASSISTANT) Color(0xFFB8C5D1) else Subtle,
                 fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
             if (entry.reasoning.isNotEmpty()) {
@@ -295,14 +314,30 @@ private fun CommandList(commands: List<NativeCommand>, choose: (NativeCommand) -
 
 @Composable
 private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> Unit) {
-    Row(Modifier.fillMaxWidth().border(1.dp, Line).background(Surface).padding(7.dp), verticalAlignment = Alignment.Bottom) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val submit = {
+        if (state.live && state.draft.isNotBlank() && !state.sending) {
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+            model.send()
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
+        .border(1.dp, Line, RoundedCornerShape(14.dp)).background(Surface, RoundedCornerShape(14.dp)).padding(5.dp),
+        verticalAlignment = Alignment.Bottom) {
         FlatIconButton("/", commands)
         BasicTextField(state.draft, model::setDraft, Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp).padding(11.dp),
-            textStyle = TextStyle(color = Ink, fontSize = 16.sp), cursorBrush = SolidColor(Ink), decorationBox = { inner ->
+            textStyle = TextStyle(color = Ink, fontSize = 16.sp), cursorBrush = SolidColor(Ink),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { submit() }),
+            decorationBox = { inner ->
                 Box { if (state.draft.isEmpty()) Text("Message Zed Agent…", color = Subtle); inner() }
             })
-        IconButton(onClick = model::send, enabled = state.live && state.draft.isNotBlank() && !state.sending) {
-            Icon(Icons.Default.ArrowUpward, "Send", tint = if (state.live && state.draft.isNotBlank()) Ink else Subtle)
+        val sendEnabled = state.live && state.draft.isNotBlank() && !state.sending
+        IconButton(onClick = submit, enabled = sendEnabled,
+            modifier = Modifier.background(if (sendEnabled) Ink else Line, RoundedCornerShape(50))) {
+            Icon(Icons.Default.ArrowUpward, "Send", tint = if (sendEnabled) Black else Subtle)
         }
     }
 }

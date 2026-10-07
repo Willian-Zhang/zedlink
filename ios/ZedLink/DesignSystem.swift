@@ -3,22 +3,28 @@ import UIKit
 
 enum ZLTheme {
     static let background = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0.025, green: 0.027, blue: 0.03, alpha: 1) : .systemBackground
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0, green: 0, blue: 0, alpha: 1) : .systemBackground
     })
     static let surface = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0.055, green: 0.059, blue: 0.065, alpha: 1) : .secondarySystemBackground
+        traits.userInterfaceStyle == .dark ? UIColor(red: 13 / 255, green: 14 / 255, blue: 16 / 255, alpha: 1) : .secondarySystemBackground
     })
     static let raised = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0.085, green: 0.09, blue: 0.098, alpha: 1) : .tertiarySystemBackground
+        traits.userInterfaceStyle == .dark ? UIColor(red: 21 / 255, green: 23 / 255, blue: 25 / 255, alpha: 1) : .tertiarySystemBackground
     })
     static let line = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(white: 0.18, alpha: 1) : .separator
+        traits.userInterfaceStyle == .dark ? UIColor(red: 43 / 255, green: 45 / 255, blue: 48 / 255, alpha: 1) : .separator
     })
-    static let muted = Color(uiColor: .secondaryLabel)
-    static let healthy = Color(red: 0.43, green: 0.78, blue: 0.58)
-    static let warning = Color(red: 0.9, green: 0.68, blue: 0.34)
+    static let ink = Color(red: 243 / 255, green: 243 / 255, blue: 241 / 255)
+    static let muted = Color(red: 162 / 255, green: 165 / 255, blue: 170 / 255)
+    static let subtle = Color(red: 121 / 255, green: 124 / 255, blue: 130 / 255)
+    static let healthy = Color(red: 121 / 255, green: 199 / 255, blue: 155 / 255)
+    static let warning = Color(red: 226 / 255, green: 188 / 255, blue: 128 / 255)
     static let danger = Color(red: 0.92, green: 0.38, blue: 0.4)
-    static let focus = Color(red: 0.39, green: 0.67, blue: 0.98)
+    static let focus = Color(red: 213 / 255, green: 231 / 255, blue: 1)
+}
+
+@MainActor func dismissZedLinkKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 }
 
 struct Hairline: View {
