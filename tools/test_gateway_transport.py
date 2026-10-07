@@ -590,7 +590,7 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.27"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.28"
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -741,6 +741,12 @@ def main():
                 assert "Working" in browser.find_element(By.CSS_SELECTOR, ".thread-status.busy").text
                 browser.save_screenshot("/tmp/zedlink-browser-active-session.png")
                 wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "transcript-entries").text)
+                progress = browser.find_element(By.ID, "turn-progress")
+                assert progress.is_displayed()
+                assert "Zed Agent is working" in progress.text
+                assert "Generating a response in desktop Zed" in progress.text
+                assert "Stop available" in progress.text
+                assert browser.find_element(By.ID, "send").get_attribute("data-mode") == "stop"
                 assert not browser.find_element(By.ID, "activity").is_displayed()
                 assert browser.find_element(By.CSS_SELECTOR, ".message.assistant details.thinking-block").get_attribute("open") == "true"
                 probe.activity_truncated = True
@@ -802,6 +808,8 @@ def main():
                 probe.active_turn_id = None
                 probe.sequence += 1
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".thread-item.running"))
+                wait.until(lambda driver: not driver.find_element(By.ID, "turn-progress").is_displayed())
+                assert browser.find_element(By.ID, "send").get_attribute("data-mode") == "send"
                 probe.agent_error = {"kind": "other", "title": "Agent request failed",
                                      "message": "image input requires a supported vision checkpoint served with --vision",
                                      "retrying": True}

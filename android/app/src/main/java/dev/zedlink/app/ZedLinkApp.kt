@@ -176,9 +176,6 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
                 Text(if (snapshot?.isBusy == true) "ZED IS WORKING" else "NATIVE THREAD READY", color = if (snapshot?.isBusy == true) Blue else Green,
                     fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
-            if (snapshot?.currentTurnId != null && "thread.cancel" in state.capabilities) {
-                TextButton(onClick = model::cancel, shape = androidx.compose.ui.graphics.RectangleShape) { Text("STOP", color = Color(0xFFF0C4C4)) }
-            }
         }
         if (state.issue.isNotBlank()) Notice(state.issue)
         if (snapshot == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Ink) }
@@ -186,7 +183,29 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         if (showCommands) CommandList(state.commands) { model.insertCommand(it); showCommands = false }
         if (state.delivery.isNotBlank()) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(8.dp))
+        if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
         Composer(state, model, { showCommands = !showCommands })
+    }
+}
+
+@Composable
+private fun AgentProgress(status: String, canCancel: Boolean) {
+    val detail = when {
+        status.contains("generat", true) -> "Generating in desktop Zed"
+        status.contains("tool", true) || status.contains("run", true) -> "Running native tools"
+        status.contains("wait", true) || status.contains("queue", true) -> "Waiting in desktop Zed"
+        else -> "$status in desktop Zed"
+    }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)
+        .border(1.dp, Blue.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+        .background(Blue.copy(alpha = 0.08f), RoundedCornerShape(10.dp)).padding(horizontal = 11.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(color = Blue, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+        Column(Modifier.padding(start = 10.dp).weight(1f)) {
+            Text("Zed Agent is working", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(detail, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+        }
+        Text(if (canCancel) "STOP AVAILABLE" else "LIVE", color = Blue, fontFamily = FontFamily.Monospace, fontSize = 9.sp)
     }
 }
 
@@ -334,10 +353,12 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
             decorationBox = { inner ->
                 Box { if (state.draft.isEmpty()) Text("Message Zed Agent…", color = Subtle); inner() }
             })
+        val canCancel = state.live && state.snapshot?.currentTurnId != null && "thread.cancel" in state.capabilities
         val sendEnabled = state.live && state.draft.isNotBlank() && !state.sending
-        IconButton(onClick = submit, enabled = sendEnabled,
-            modifier = Modifier.background(if (sendEnabled) Ink else Line, RoundedCornerShape(50))) {
-            Icon(Icons.Default.ArrowUpward, "Send", tint = if (sendEnabled) Black else Subtle)
+        IconButton(onClick = { if (canCancel) model.cancel() else submit() }, enabled = if (canCancel) !state.sending else sendEnabled,
+            modifier = Modifier.background(if (canCancel) Color(0xFF592828) else if (sendEnabled) Ink else Line, RoundedCornerShape(50))) {
+            Icon(if (canCancel) Icons.Default.Stop else Icons.Default.ArrowUpward, if (canCancel) "Stop current turn" else "Send",
+                tint = if (canCancel) Color(0xFFFFD4D4) else if (sendEnabled) Black else Subtle)
         }
     }
 }

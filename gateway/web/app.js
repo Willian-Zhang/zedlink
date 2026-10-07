@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.06.27";
+const UI_BUILD = "2026.10.06.28";
 const state = {
   gatewayId: null,
   token: null,
@@ -553,6 +553,25 @@ function canStopTurn() {
   return state.live && !!state.threadId && Number.isInteger(state.turnId)
     && state.capabilities.includes("thread.cancel");
 }
+function workingStatusLabel(status) {
+  const value = typeof status === "string" ? status.trim() : "";
+  if (!value || value === "Idle") return "Waiting for native activity…";
+  if (/generat/i.test(value)) return "Generating a response in desktop Zed";
+  if (/tool|execut|run/i.test(value)) return "Running native tools in desktop Zed";
+  if (/wait|pending|queue/i.test(value)) return "Waiting in desktop Zed";
+  return `${value} in desktop Zed`;
+}
+function renderTurnProgress() {
+  const progress = $("turn-progress");
+  const busy = !!state.threadId && !!state.threadStatus && state.threadStatus !== "Idle";
+  progress.classList.toggle("hidden", !busy);
+  progress.classList.toggle("cancellable", busy && canStopTurn());
+  if (!busy) return;
+  const agent = selectedAgent();
+  progress.querySelector("strong").textContent = `${agent.name} is working`;
+  $("turn-progress-detail").textContent = workingStatusLabel(state.threadStatus);
+  $("turn-progress-action").textContent = canStopTurn() ? "Live · Stop available" : "View activity";
+}
 function updateComposerAction() {
   const button = $("send");
   const stopping = canStopTurn();
@@ -567,6 +586,15 @@ function updateComposerAction() {
     : !state.threadId || !!state.pending || !state.token || !state.live
       || navigator.onLine === false || state.gatewayReachable === false;
   $("show-actions").disabled = !state.threadId || !state.token || !state.live;
+  renderTurnProgress();
+}
+
+function focusLiveActivity() {
+  const entries = $("transcript-entries");
+  const targets = entries.querySelectorAll(".message.assistant, .message.native, .message.tool");
+  const target = targets[targets.length - 1];
+  (target || entries).scrollIntoView({ behavior: "smooth", block: "end" });
+  target?.querySelector("details.thinking-block, .tool-details")?.setAttribute("open", "");
 }
 function apiError(code) {
   if (code === "UNAUTHENTICATED") return "Browser credential revoked or missing. Pair again.";
@@ -3035,6 +3063,7 @@ $("settings-back").addEventListener("click", () => {
   }
 });
 $("composer-form").addEventListener("submit", sendPrompt);
+$("turn-progress").addEventListener("click", focusLiveActivity);
 $("rewind-image").addEventListener("click", rewindImage);
 $("activity-toggle").addEventListener("click", () => {
   state.activityCollapsed = !state.activityCollapsed;

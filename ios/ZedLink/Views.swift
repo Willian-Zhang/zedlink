@@ -253,6 +253,9 @@ struct ConversationView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let snapshot = session.snapshot, snapshot.threadID == threadID, snapshot.isBusy {
+                agentProgress(snapshot)
+            }
             if !session.delivery.isEmpty {
                 Text(session.delivery).font(.caption).foregroundStyle(ZLTheme.muted)
                     .lineLimit(2).accessibilityIdentifier("delivery-status")
@@ -304,6 +307,32 @@ struct ConversationView: View {
                 Button("Done") { composerFocused = false }
             }
         }
+    }
+
+    private func agentProgress(_ snapshot: ThreadSnapshot) -> some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small).tint(ZLTheme.focus)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Zed Agent is working").font(.caption.weight(.semibold))
+                Text(progressDetail(snapshot.status)).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+            }
+            Spacer(minLength: 8)
+            Text(session.canCancel ? "STOP AVAILABLE" : "LIVE")
+                .font(.caption2.monospaced().weight(.semibold)).foregroundStyle(ZLTheme.focus)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        .background(ZLTheme.focus.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ZLTheme.focus.opacity(0.28), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("agent-working-indicator")
+    }
+
+    private func progressDetail(_ status: String) -> String {
+        if status.localizedCaseInsensitiveContains("generat") { return "Generating in desktop Zed" }
+        if status.localizedCaseInsensitiveContains("tool") || status.localizedCaseInsensitiveContains("run") { return "Running native tools" }
+        if status.localizedCaseInsensitiveContains("wait") || status.localizedCaseInsensitiveContains("queue") { return "Waiting in desktop Zed" }
+        return "\(status) in desktop Zed"
     }
 
     private func sendAndDismissKeyboard() {

@@ -233,11 +233,25 @@ body.no-session .messages { padding-bottom: 40px; }
   padding: 8px max(24px, calc((100% - 920px) / 2)) 14px;
   background: linear-gradient(180deg, transparent, #000 24%);
 }
-.composer-wrap > .delivery, .composer-wrap > .attachment-strip, .composer-wrap > .action-menu,
+.composer-wrap > .turn-progress, .composer-wrap > .delivery, .composer-wrap > .attachment-strip, .composer-wrap > .action-menu,
 .composer-wrap > .command-menu, .composer-wrap > .composer, .composer-wrap > .delivery-details {
   width: 100%;
   margin-inline: 0;
 }
+.turn-progress { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 48px; margin-bottom: 8px !important; padding: 7px 10px; border: 1px solid #35516e; border-radius: 10px; background: #0b1118; color: var(--ink); text-align: left; box-shadow: 0 7px 24px #0008; }
+.turn-progress:hover { border-color: #527aa4; background: #0e1721; }
+.turn-progress-wave { display: flex; align-items: center; justify-content: center; gap: 2px; width: 24px; height: 24px; }
+.turn-progress-wave i { display: block; width: 3px; height: 8px; background: #8ab8ed; animation: working-wave 1s ease-in-out infinite; }
+.turn-progress-wave i:nth-child(2) { animation-delay: -.75s; }
+.turn-progress-wave i:nth-child(3) { animation-delay: -.5s; }
+.turn-progress-wave i:nth-child(4) { animation-delay: -.25s; }
+.turn-progress-copy { min-width: 0; }
+.turn-progress-copy strong, .turn-progress-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-progress-copy strong { font-size: .78rem; font-weight: 650; }
+.turn-progress-copy small { margin-top: 3px; color: #9fb4ca; font: .67rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+#turn-progress-action { color: #a9c7e8; font-size: .69rem; white-space: nowrap; }
+.turn-progress.cancellable { border-color: #496d91; }
+@keyframes working-wave { 0%, 100% { height: 7px; opacity: .5; } 50% { height: 20px; opacity: 1; } }
 .activity { align-self: flex-start; width: min(100%, 1060px); margin: 10px 0 18px; border-block: 1px solid var(--line); background: transparent; }
 .activity-head { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 9px; min-height: 41px; padding: 7px 10px 7px 12px; color: var(--ink); font-size: .78rem; }
 .activity-indicator { width: 7px; height: 7px; background: var(--subtle); }
@@ -490,6 +504,9 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .message-copy { min-height: 32px; padding: 3px 6px; }
   .message-body { font-size: .95rem; line-height: 1.56; }
   .composer-wrap { padding: 5px 8px max(7px, env(safe-area-inset-bottom)); }
+  .turn-progress { min-height: 44px; padding: 6px 9px; }
+  #turn-progress-action { font-size: 0; }
+  #turn-progress-action::after { content: "VIEW"; font: .62rem ui-monospace, SFMono-Regular, Menlo, monospace; }
   .activity { margin: 7px 0 12px; }
   .activity-head { min-height: 36px; padding: 4px 7px 4px 9px; }
   .activity-content { max-height: min(34dvh, 300px); padding: 1px 10px 9px; font-size: .82rem; }
@@ -539,4 +556,5 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .messages { scroll-behavior: auto; }
   .composer-bottom .primary.stop-mode { animation: none; }
   .thread-progress i { height: 8px; animation: none; }
+  .turn-progress-wave i { height: 11px; animation: none; }
 }
