@@ -286,7 +286,11 @@ import Combine
             mergedEntries = Array(old.entries.prefix(pageStart - old.entryStartIndex)) + entries
             mergedStart = old.entryStartIndex
         }
-        let approvals = (result["pending_approvals"] as? [[String: Any]] ?? []).compactMap { row -> NativeApproval? in
+        let childApprovalRows = (result["subagents"] as? [[String: Any]] ?? []).flatMap { child in
+            child["pending_approvals"] as? [[String: Any]] ?? []
+        }
+        let approvalRows = (result["pending_approvals"] as? [[String: Any]] ?? []) + childApprovalRows
+        let approvals = approvalRows.compactMap { row -> NativeApproval? in
             guard let approvalID = row["approval_id"] as? String else { return nil }
             let permissionOptions = row["permission_options"] as? [String: Any]
             let decisions = (permissionOptions?["decisions"] as? [[String: Any]] ?? []).compactMap { decision -> NativeApprovalDecision? in

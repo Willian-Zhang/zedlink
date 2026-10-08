@@ -389,7 +389,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             && pageStart <= old.entryStartIndex + old.entries.size
         val mergedStart = if (canMerge) old!!.entryStartIndex else pageStart
         val mergedEntries = if (canMerge) old!!.entries.take(pageStart - old.entryStartIndex) + pageEntries else pageEntries
-        val approvals = result.optJSONArray("pending_approvals").objects().mapNotNull { row ->
+        val approvalRows = result.optJSONArray("pending_approvals").objects() +
+            result.optJSONArray("subagents").objects().flatMap { child ->
+                child.optJSONArray("pending_approvals").objects()
+            }
+        val approvals = approvalRows.mapNotNull { row ->
             val approvalId = row.optString("approval_id"); if (approvalId.isBlank()) null else NativeApproval(
                 approvalId, row.optIntOrNull("turn_id"), row.optString("tool_name", "Zed tool"),
                 row.optString("display", "Permission requested"), row.opt("raw_input")?.takeUnless { it == JSONObject.NULL }?.toString(),
