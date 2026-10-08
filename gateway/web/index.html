@@ -75,8 +75,10 @@
         <div class="settings-row"><span>Selected Agent</span><strong id="agent-connection-state">No session</strong></div>
         <div class="settings-row"><span>Last live update</span><strong id="last-live-update">None yet</strong></div>
         <div class="settings-row"><span>Gateway</span><code id="mobile-gateway-id">Unknown</code></div>
+        <div class="settings-row route-addresses-row"><span>Saved addresses</span><strong id="gateway-route-addresses">Checking…</strong></div>
         <div class="settings-row"><span>Zed target</span><strong id="connection-target">Not selected</strong></div>
         <p class="muted">Gateway, desktop Zed, live updates, and the selected Agent are checked separately. A green gateway does not mean the configured model is reachable.</p>
+        <p class="note">Browser pairing belongs to one HTTPS address. Keep using the saved hostname when changing private networks. Native iOS and Android profiles can verify a new address for the same Gateway ID and retain their credential.</p>
         <p class="note">To remove this browser’s saved access, open Settings and select Sign out.</p>
       </section>
       <section class="panel hidden" id="settings-panel">
@@ -104,7 +106,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Zed hosted agent</strong></div>
-          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.06.30</code></div>
+          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.08.1</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>

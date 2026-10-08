@@ -976,7 +976,7 @@ def write_listener_file(data: dict) -> Path:
     payload = {
         "version": 1,
         "listeners": [
-            {key: route[key] for key in ("id", "bind", "cert", "key")}
+            {key: route[key] for key in ("id", "bind", "cert", "key", "url")}
             for route in data["routes"] if route["enabled"]
         ],
     }

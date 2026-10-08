@@ -417,6 +417,7 @@ def main():
         targets = root / "targets.json"
         listeners.write_text(json.dumps({"version": 1, "listeners": [{
             "id": "fixture", "bind": f"127.0.0.1:{port}", "cert": str(cert), "key": str(key),
+            "url": f"https://localhost:{port}",
         }]}))
         targets.write_text(json.dumps({"version": 1, "targets": [
             {"id": "primary", "label": "Fixture Zed", "probe": str(probe.path)},
@@ -442,6 +443,7 @@ def main():
             base = f"https://localhost:{port}"
             status, info = http(base, context, "/v1/gateway")
             assert status == 200 and info["gateway_id"]
+            assert info["route_origins"] == [base]
             with urllib.request.urlopen(base + "/", context=context, timeout=5) as page_response:
                 page_html = page_response.read().decode()
                 assert "ZedLink" in page_html and "pair-form" in page_html
@@ -645,7 +647,8 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.06.30"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.08.1"
+                assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
                     options = [(option.get_attribute("value"), option.text, option.is_enabled())

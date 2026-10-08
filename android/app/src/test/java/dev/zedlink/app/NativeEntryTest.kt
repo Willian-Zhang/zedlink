@@ -5,6 +5,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeEntryTest {
+    @Test fun gatewayIdentityIsIndependentOfRouteAddress() {
+        val oldRoute = ConnectionProfile("Zed", "https://old.example", "gateway-1")
+        val newRoute = ConnectionProfile("Zed", "https://new.example", "gateway-1")
+        assertEquals(oldRoute.gatewayId, newRoute.gatewayId)
+        assertTrue(oldRoute.endpoint != newRoute.endpoint)
+    }
+
     @Test fun separatesReasoningFromAssistantAnswer() {
         val entry = NativeEntry.parse("## Assistant\n\n<thinking>\nInspecting\n</thinking>\n\nReady.")
         assertEquals(EntryKind.ASSISTANT, entry.kind)

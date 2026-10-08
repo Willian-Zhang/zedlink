@@ -71,6 +71,8 @@ def main() -> None:
         assert listener_file.stat().st_mode & 0o077 == 0
         listeners = json.loads(listener_file.read_text())
         assert [entry["id"] for entry in listeners["listeners"]] == ["primary", "loopback-two"]
+        assert [entry["url"] for entry in listeners["listeners"]] == [
+            f"https://localhost:{first}", f"https://localhost:{second}"]
         offline_dir = root / "offline-probe"
         offline_dir.mkdir(mode=0o700)
         configured["targets"][0]["probe"] = str(probe.path)
@@ -102,6 +104,12 @@ def main() -> None:
                 raise RuntimeError("multi-route gateway did not become ready")
             second_identity = request_identity(cert, second)
             assert first_identity == second_identity
+            first_info = json.loads(subprocess.check_output(
+                ["curl", "--silent", "--show-error", "--fail", "--noproxy", "*",
+                 "--cacert", str(cert), f"https://localhost:{first}/v1/gateway"],
+                text=True, timeout=5))
+            assert first_info["route_origins"] == sorted([
+                f"https://localhost:{first}", f"https://localhost:{second}"])
             duplicate = subprocess.run(
                 [str(BINARY), "serve-targets", str(listener_file), str(target_file),
                  str(state / "gateway")], capture_output=True, text=True, timeout=5)

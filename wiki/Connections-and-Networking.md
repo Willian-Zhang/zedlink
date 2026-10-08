@@ -79,6 +79,10 @@ The connection profiles enforce the same pairing and TLS boundaries for every pr
 
 ZedLink now supports up to 16 enabled private or loopback TLS listeners sharing the same gateway identity, paired devices, native Zed socket, and Agent state. Existing one-route configurations migrate automatically when read; the working Tailscale route is retained.
 
+Changing a route does not create a new gateway. Keep the same private state directory: it owns the stable Gateway ID and server-side paired-device records. The iOS and Android clients key their encrypted credential to that Gateway ID, so **Save new address and reconnect** first verifies the new HTTPS endpoint and then reuses the existing credential. A changed or missing Gateway ID is rejected before any credential is sent.
+
+Web storage is isolated by HTTPS origin. A browser paired at `https://host-a:44679` cannot read the credential stored by `https://host-b:44679`, even when both addresses reach the same gateway. The Connections screen lists the gateway's configured origins; use one stable certificate-valid hostname across network changes when possible. A new browser hostname or port requires pairing again by design.
+
 From Zed:
 
 1. Press `Ctrl+Shift+P` and select **task: spawn**.

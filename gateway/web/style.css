@@ -417,6 +417,9 @@ body.review-open { overflow: hidden; }
 .settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 15px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .78rem; }
 .settings-row:first-of-type { border-top: 1px solid var(--line); }
 .settings-row strong, .settings-row code { max-width: 64%; color: var(--ink); font-size: .75rem; text-align: right; overflow-wrap: anywhere; }
+.route-addresses-row { align-items: flex-start; }
+#gateway-route-addresses { display: grid; justify-items: end; gap: .35rem; }
+#gateway-route-addresses a { color: var(--ink); text-decoration-color: var(--line-strong); text-underline-offset: .2rem; }
 #connection-panel .quiet, #settings-panel .primary { width: 100%; margin-top: 24px; }
 .settings-head { margin-bottom: 25px; }
 .settings-head h1 { margin-bottom: 0; }

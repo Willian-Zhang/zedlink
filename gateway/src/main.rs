@@ -52,6 +52,7 @@ struct Gateway(Arc<Inner>);
 struct Inner {
     directory: PathBuf,
     targets: Vec<ProbeTarget>,
+    route_origins: Vec<String>,
     persisted: Mutex<Persisted>,
     pairing: Mutex<Option<Pairing>>,
     probe_limit: Arc<Semaphore>,
@@ -143,6 +144,8 @@ struct TlsListenerConfig {
     bind: SocketAddr,
     cert: PathBuf,
     key: PathBuf,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -211,6 +214,22 @@ fn validate_listener(listener: &TlsListenerConfig) -> Result<()> {
             listener.id
         );
     }
+    if let Some(origin) = &listener.url {
+        let parsed = url::Url::parse(origin).context("invalid listener HTTPS origin")?;
+        if parsed.scheme() != "https"
+            || parsed.host_str().is_none()
+            || parsed.username() != ""
+            || parsed.password().is_some()
+            || parsed.path() != "/"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            bail!(
+                "listener {} URL must be a trusted HTTPS origin",
+                listener.id
+            );
+        }
+    }
     Ok(())
 }
 
@@ -237,7 +256,13 @@ async fn run_gateway(
         }
     }
 
-    let state = Gateway::load(directory, targets)?;
+    let mut route_origins = listeners
+        .iter()
+        .filter_map(|listener| listener.url.clone())
+        .collect::<Vec<_>>();
+    route_origins.sort();
+    route_origins.dedup();
+    let state = Gateway::load(directory, targets, route_origins)?;
     let admin = state.clone();
     tokio::spawn(async move {
         if let Err(error) = admin.admin_server().await {
@@ -288,6 +313,7 @@ async fn main() -> Result<()> {
                     bind: address,
                     cert: PathBuf::from(&args[2]),
                     key: PathBuf::from(&args[3]),
+                    url: None,
                 }],
                 vec![ProbeTarget {
                     id: "default".into(),
@@ -510,7 +536,11 @@ fn save(directory: &Path, state: &Persisted) -> Result<()> {
     Ok(())
 }
 impl Gateway {
-    fn load(directory: PathBuf, targets: Vec<ProbeTarget>) -> Result<Self> {
+    fn load(
+        directory: PathBuf,
+        targets: Vec<ProbeTarget>,
+        route_origins: Vec<String>,
+    ) -> Result<Self> {
         if targets.is_empty() || targets.len() > 16 {
             bail!("configure between 1 and 16 Zed targets");
         }
@@ -575,6 +605,7 @@ impl Gateway {
         Ok(Self(Arc::new(Inner {
             directory,
             targets,
+            route_origins,
             persisted: Mutex::new(persisted),
             pairing: Mutex::new(None),
             probe_limit: Arc::new(Semaphore::new(16)),
@@ -924,7 +955,11 @@ fn validate_probe_socket(probe: &Path) -> Result<()> {
     Ok(())
 }
 async fn info(State(state): State<Gateway>) -> Json<Value> {
-    Json(json!({"version":1,"gateway_id":state.0.persisted.lock().await.gateway_id}))
+    Json(json!({
+        "version": 1,
+        "gateway_id": state.0.persisted.lock().await.gateway_id,
+        "route_origins": state.0.route_origins,
+    }))
 }
 async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) -> impl IntoResponse {
     if request.device_name.trim().is_empty() || request.device_name.len() > 64 {

@@ -777,6 +777,12 @@ struct AddConnectionView: View {
                           gatewayID: expectedID.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    private var savedGateway: ConnectionProfile? {
+        profiles.profiles.first {
+            $0.gatewayID.caseInsensitiveCompare(expectedID.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -820,6 +826,13 @@ struct AddConnectionView: View {
                     Button("Pair and save") { Task { await pair() } }
                         .disabled(busy || observedID.isEmpty || expectedID.isEmpty || code.isEmpty)
                         .accessibilityIdentifier("pair-and-save")
+                    if savedGateway != nil {
+                        Button("Save new address and reconnect") { Task { await saveExistingRoute() } }
+                            .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(expectedID) != .orderedSame)
+                            .accessibilityIdentifier("save-existing-route")
+                        Text("This gateway is already paired. Its Keychain credential will follow the gateway identity to the new private HTTPS address.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 if !issue.isEmpty { Section("Connection diagnostic") { Text(issue).foregroundStyle(ZLTheme.warning) } }
             }
@@ -891,12 +904,26 @@ struct AddConnectionView: View {
         guard shortCode || legacyCode else { issue = "Enter the 10-digit one-use pairing code."; return }
         do {
             let paired = try await GatewayClient(profile: profile, token: nil).pair(code: code, deviceName: deviceName)
-            try await CredentialVault.shared.write(paired.token, for: profile.id)
+            let saved = profiles.save(profile)
+            try await CredentialVault.shared.write(paired.token, for: saved)
             code = ""
-            profiles.save(profile)
-            await session.connect(profile)
+            await session.connect(saved)
             dismiss()
         } catch { issue = error.localizedDescription }
+    }
+
+    private func saveExistingRoute() async {
+        busy = true; defer { busy = false }
+        let profile = candidate
+        guard observedID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame, savedGateway != nil else {
+            issue = "Test the new HTTPS address and confirm the same gateway identity first."; return
+        }
+        let saved = profiles.save(profile)
+        guard await CredentialVault.shared.read(saved) != nil else {
+            issue = "The saved device credential is missing. Pair this device again once."; return
+        }
+        await session.connect(saved)
+        if session.state == .live { dismiss() } else { issue = session.issue }
     }
 }
 

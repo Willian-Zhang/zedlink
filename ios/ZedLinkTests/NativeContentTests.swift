@@ -2,6 +2,17 @@ import XCTest
 @testable import ZedLink
 
 final class NativeContentTests: XCTestCase {
+    @MainActor
+    func testProfileStoreKeepsIdentityWhenGatewayAddressChanges() {
+        let original = ConnectionProfile(name: "Zed", route: .tailscale,
+            endpoint: "https://old.example", gatewayID: "A415D217-C1C0-42DA-9CC8-887D4305A73E")
+        let updated = ProfileStore.profileForSave(ConnectionProfile(name: "Zed", route: .wireGuard,
+            endpoint: "https://new.example", gatewayID: "a415d217-c1c0-42da-9cc8-887d4305a73e"),
+            among: [original])
+        XCTAssertEqual(updated.id, original.id)
+        XCTAssertEqual(updated.endpoint, "https://new.example")
+    }
+
     func testAssistantSeparatesPublishedReasoningFromAnswer() {
         let entry = NativeEntryPresentation("""
         ## Assistant

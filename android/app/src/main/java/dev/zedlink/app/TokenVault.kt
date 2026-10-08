@@ -19,14 +19,19 @@ object TokenVault {
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
         val value = Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
-        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().putString("token.$gatewayId", value).apply()
+        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().putString(account(gatewayId), value).apply()
     }
 
     fun read(context: Context, gatewayId: String): String? = runCatching {
         val preferences = context.getSharedPreferences(Preferences, Context.MODE_PRIVATE)
-        val value = preferences.getString("token.$gatewayId", null)
+        val canonical = account(gatewayId)
+        val legacyAccount = "token.$gatewayId"
+        val value = preferences.getString(canonical, null)
+            ?: preferences.getString(legacyAccount, null)?.also {
+                if (legacyAccount != canonical) preferences.edit().putString(canonical, it).remove(legacyAccount).apply()
+            }
             ?: preferences.getString("token", null)?.also {
-                preferences.edit().putString("token.$gatewayId", it).remove("token").apply()
+                preferences.edit().putString(canonical, it).remove("token").apply()
             } ?: return null
         val bytes = Base64.decode(value, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -35,8 +40,11 @@ object TokenVault {
     }.getOrNull()
 
     fun clear(context: Context, gatewayId: String) {
-        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit().remove("token.$gatewayId").apply()
+        context.getSharedPreferences(Preferences, Context.MODE_PRIVATE).edit()
+            .remove(account(gatewayId)).remove("token.$gatewayId").apply()
     }
+
+    private fun account(gatewayId: String) = "token.${gatewayId.lowercase()}"
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

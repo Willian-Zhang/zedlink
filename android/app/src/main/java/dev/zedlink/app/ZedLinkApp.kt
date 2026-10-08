@@ -529,6 +529,15 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
         FlatInput(gateway, { gateway = it }, "Gateway identity", Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
         FlatInput(code, { code = it }, "10-digit pairing code", Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
         FlatInput(device, { device = it }, "Device name", Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
+        val alreadyPaired = state.profiles.any { it.gatewayId.equals(gateway, ignoreCase = true) }
+        if (alreadyPaired) {
+            FlatButton("SAVE NEW ADDRESS AND RECONNECT", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                endpoint.startsWith("https://") && gateway.isNotBlank()) {
+                model.updateRoute(ConnectionProfile(name, endpoint, gateway))
+            }
+            Text("This gateway is already paired. The encrypted credential follows its gateway identity to the new private HTTPS address.",
+                color = Muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
+        }
         FlatButton("PAIR AND CONNECT", Modifier.padding(16.dp), endpoint.startsWith("https://") && gateway.isNotBlank() && code.isNotBlank()) {
             model.pair(ConnectionProfile(name, endpoint, gateway), code, device)
         }

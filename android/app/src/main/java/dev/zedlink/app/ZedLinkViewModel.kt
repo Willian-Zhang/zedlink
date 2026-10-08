@@ -70,6 +70,24 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateRoute(profile: ConnectionProfile) = viewModelScope.launch {
+        state = state.copy(status = "Checking new address…", issue = "")
+        try {
+            val observed = GatewayClient(profile, null).gatewayId()
+            if (!observed.equals(profile.gatewayId, ignoreCase = true)) {
+                throw GatewayException("The new address belongs to a different gateway. No credential was sent.")
+            }
+            if (TokenVault.read(getApplication(), profile.gatewayId) == null) {
+                throw GatewayException("The saved device credential is missing. Pair this device again once.")
+            }
+            saveProfile(profile)
+            state = state.copy(profile = profile, profiles = loadProfiles())
+            connect()
+        } catch (error: Exception) {
+            state = state.copy(status = "Offline", issue = error.message ?: "Address update failed.")
+        }
+    }
+
     fun connect() {
         val profile = state.profile ?: return
         val token = TokenVault.read(getApplication(), profile.gatewayId) ?: run {
@@ -405,7 +423,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun saveProfile(profile: ConnectionProfile) {
-        val profiles = loadProfiles().filterNot { it.gatewayId == profile.gatewayId } + profile
+        val profiles = loadProfiles().filterNot { it.gatewayId.equals(profile.gatewayId, ignoreCase = true) } + profile
         persistProfiles(profiles)
         preferences.edit().putString("active_gateway", profile.gatewayId).apply()
     }

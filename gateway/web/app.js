@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.06.30";
+const UI_BUILD = "2026.10.08.1";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -871,6 +871,19 @@ async function loadGateway() {
     $("mobile-gateway-id").textContent = result.gateway_id;
     $("pair-origin").textContent = location.origin;
     $("expected-id").value = result.gateway_id;
+    const routeOrigins = Array.isArray(result.route_origins)
+      ? result.route_origins.filter((origin) => typeof origin === "string" && origin.startsWith("https://")) : [];
+    const routeElement = $("gateway-route-addresses");
+    if (routeElement) {
+      routeElement.replaceChildren(...(routeOrigins.length ? routeOrigins : [location.origin]).map((origin, index) => {
+        const link = document.createElement("a");
+        link.href = origin;
+        link.textContent = origin === location.origin ? `${origin} (current)` : origin;
+        link.rel = "noreferrer";
+        if (index) link.className = "route-address-next";
+        return link;
+      }));
+    }
     requireManualGatewayVerification();
     document.body.classList.toggle("sidebar-collapsed", safeStore.read(sidebarKey()) === "true");
     updateSidebarToggle();

@@ -72,7 +72,7 @@ import Combine
         profile = nextProfile
         state = .connecting
         do {
-            guard let token = await CredentialVault.shared.read(nextProfile.id) else {
+            guard let token = await CredentialVault.shared.read(nextProfile) else {
                 throw GatewayFailure.native("Pair this device first.")
             }
             let discoveryClient = GatewayClient(profile: nextProfile, token: token)

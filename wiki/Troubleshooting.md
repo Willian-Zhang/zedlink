@@ -144,6 +144,8 @@ Do not continue through the warning. Confirm:
 
 Use a normal browser window rather than private or incognito mode. Pairing is scoped to the exact HTTPS origin, including its hostname and port. Changing either creates a different browser origin. Browser policies that clear site data on exit also remove the saved credential.
 
+Open **Connections → Saved addresses** and return to the hostname previously used by that browser. iOS and Android native clients can instead edit or scan the new address and choose **Save new address and reconnect**; they verify that it reports the same Gateway ID before retrieving the existing Keychain or encrypted credential. If the Gateway ID changed, check that the workstation is still using the original ZedLink private state directory.
+
 ### The conversation stops updating on a phone
 
 Refresh once to load the latest web build, then reopen the thread. Open **Connections** to identify the failing layer. **Gateway unavailable** points to the phone route, TLS service, or gateway process. **Zed unavailable** means the gateway is reachable but its private native socket is not. **Live updates: Reconnecting** or **Timed out · polling** means HTTPS reconciliation continues while the WebSocket reconnects with bounded backoff. ZedLink reconnects when Safari or Chrome returns to the foreground. If it remains offline, confirm Tailscale is connected and run **ZedLink: Status** on the workstation.

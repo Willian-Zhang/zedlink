@@ -6,11 +6,11 @@ actor CredentialVault {
     static let shared = CredentialVault()
     private let service = "dev.zedlink.gateway"
 
-    func read(_ id: UUID) -> String? {
+    private func read(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -20,11 +20,29 @@ actor CredentialVault {
         return String(data: data, encoding: .utf8)
     }
 
-    func write(_ token: String, for id: UUID) throws {
+    private func gatewayAccount(_ gatewayID: String) -> String {
+        "gateway:\(gatewayID.lowercased())"
+    }
+
+    /// Credentials follow the gateway identity, rather than a route or profile UUID.
+    /// The UUID fallback migrates credentials written by ZedLink 1.x in place.
+    func read(_ profile: ConnectionProfile) -> String? {
+        let account = gatewayAccount(profile.gatewayID)
+        if let token = read(account: account) { return token }
+        guard let legacy = read(account: profile.id.uuidString) else { return nil }
+        do {
+            try write(legacy, for: profile)
+            delete(account: profile.id.uuidString)
+        } catch { /* Keep the legacy entry if migration cannot be committed. */ }
+        return legacy
+    }
+
+    func write(_ token: String, for profile: ConnectionProfile) throws {
+        let account = gatewayAccount(profile.gatewayID)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString
+            kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
         var add = query
@@ -35,13 +53,18 @@ actor CredentialVault {
         }
     }
 
-    func delete(_ id: UUID) {
+    private func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString
+            kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
+    }
+
+    func delete(_ profile: ConnectionProfile) {
+        delete(account: gatewayAccount(profile.gatewayID))
+        delete(account: profile.id.uuidString)
     }
 }
 
@@ -57,11 +80,25 @@ actor CredentialVault {
         }
     }
 
-    func save(_ profile: ConnectionProfile) {
-        profiles.removeAll { $0.id == profile.id }
-        profiles.append(profile)
-        markUsed(profile)
+    @discardableResult
+    func save(_ profile: ConnectionProfile) -> ConnectionProfile {
+        let saved = Self.profileForSave(profile, among: profiles)
+        profiles.removeAll {
+            $0.id == saved.id || $0.gatewayID.caseInsensitiveCompare(saved.gatewayID) == .orderedSame
+        }
+        profiles.append(saved)
+        markUsed(saved)
         persist()
+        return saved
+    }
+
+    static func profileForSave(_ profile: ConnectionProfile, among profiles: [ConnectionProfile]) -> ConnectionProfile {
+        guard let existing = profiles.first(where: {
+            $0.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame
+        }) else { return profile }
+        var saved = profile
+        saved.id = existing.id
+        return saved
     }
 
     var preferredProfile: ConnectionProfile? {
@@ -81,7 +118,7 @@ actor CredentialVault {
             UserDefaults.standard.removeObject(forKey: lastProfileKey)
         }
         persist()
-        await CredentialVault.shared.delete(profile.id)
+        await CredentialVault.shared.delete(profile)
     }
 
     private func persist() {
