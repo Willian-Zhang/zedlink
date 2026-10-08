@@ -97,6 +97,8 @@ A private pairing page opens on the Zed computer. It supports these paths:
 
 Confirm Tailscale or your routed VPN is connected on the destination device and that the HTTPS page has no certificate warning. The link, QR, and 10-digit code expire after five minutes and work once. Keep them private.
 
+The native iOS app has its own scanner under **Connections → + → Scan workstation QR**. A valid scan verifies the HTTPS identity and then pairs automatically, or reuses the existing Keychain credential when that Gateway ID is already trusted. Each reachable HTTPS address is saved separately, so Tailscale, local HTTPS, WireGuard, and proxy routes to the same gateway can coexist and be switched without another scan. Removing one route keeps the credential while another saved route still uses it. The Connections screen also lists every Zed instance advertised by the active gateway and switches the native target directly.
+
 The browser name and operating system are detected automatically, such as **Firefox on Linux** or **Edge on Windows**, and can be edited before manual pairing. Pairing is saved for the exact HTTPS origin in normal browser storage. Refreshing or opening another normal tab should not require another code. Private browsing and storage-clearing policies may not preserve it.
 
 #### Supported desktop browsers

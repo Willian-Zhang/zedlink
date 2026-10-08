@@ -750,6 +750,27 @@ struct ConnectionsView: View {
                     }
                     .padding(.vertical, 7).listRowBackground(ZLTheme.surface)
                 }
+                if let active = session.profile, !session.targets.isEmpty {
+                    Section("Zed instances on \(active.name)") {
+                        ForEach(session.targets) { target in
+                            Button {
+                                Task { await session.selectTarget(target.id) }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(target.label).foregroundStyle(.primary)
+                                        Text(target.available ? "Available" : "Unavailable")
+                                            .font(.caption).foregroundStyle(target.available ? ZLTheme.healthy : ZLTheme.muted)
+                                    }
+                                    Spacer()
+                                    if session.targetID == target.id { Image(systemName: "checkmark").foregroundStyle(ZLTheme.focus) }
+                                }
+                            }
+                            .disabled(!target.available || session.targetID == target.id)
+                            .accessibilityIdentifier("switch-target-\(target.id)")
+                        }
+                    }
+                }
             }
             .scrollContentBackground(.hidden).background(ZLTheme.background)
             .navigationTitle("Connections")
@@ -845,10 +866,10 @@ struct AddConnectionView: View {
                         .disabled(busy || observedID.isEmpty || expectedID.isEmpty || code.isEmpty)
                         .accessibilityIdentifier("pair-and-save")
                     if savedGateway != nil {
-                        Button("Save new address and reconnect") { Task { await saveExistingRoute() } }
+                        Button("Save as another connection") { Task { await saveExistingRoute() } }
                             .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(expectedID) != .orderedSame)
                             .accessibilityIdentifier("save-existing-route")
-                        Text("This gateway is already paired. Its Keychain credential will follow the gateway identity to the new private HTTPS address.")
+                        Text("This gateway is already paired. Save this address as another connection and reuse its protected Keychain credential.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -900,7 +921,17 @@ struct AddConnectionView: View {
         code = query.first(where: { $0.name == "pair" })?.value ?? ""
         observedID = ""
         issue = "Address and gateway identity loaded. Checking HTTPS before pairing."
-        Task { await testEndpoint() }
+        Task { await finishScannedPairing() }
+    }
+
+    private func finishScannedPairing() async {
+        await testEndpoint()
+        guard observedID.caseInsensitiveCompare(expectedID) == .orderedSame else { return }
+        if savedGateway != nil, await CredentialVault.shared.read(candidate) != nil {
+            await saveExistingRoute()
+        } else if !code.isEmpty {
+            await pair()
+        }
     }
 
     private func testEndpoint() async {
@@ -926,7 +957,12 @@ struct AddConnectionView: View {
             try await CredentialVault.shared.write(paired.token, for: saved)
             code = ""
             await session.connect(saved)
-            dismiss()
+            if session.state == .live {
+                profiles.markUsed(saved)
+                dismiss()
+            } else {
+                issue = "Pairing was saved. Connection failed: \(session.issue)"
+            }
         } catch { issue = error.localizedDescription }
     }
 
@@ -941,7 +977,12 @@ struct AddConnectionView: View {
             issue = "The saved device credential is missing. Pair this device again once."; return
         }
         await session.connect(saved)
-        if session.state == .live { dismiss() } else { issue = session.issue }
+        if session.state == .live {
+            profiles.markUsed(saved)
+            dismiss()
+        } else {
+            issue = "Connection was saved. \(session.issue)"
+        }
     }
 }
 

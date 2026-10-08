@@ -83,22 +83,25 @@ actor CredentialVault {
     @discardableResult
     func save(_ profile: ConnectionProfile) -> ConnectionProfile {
         let saved = Self.profileForSave(profile, among: profiles)
-        profiles.removeAll {
-            $0.id == saved.id || $0.gatewayID.caseInsensitiveCompare(saved.gatewayID) == .orderedSame
-        }
+        profiles.removeAll { $0.id == saved.id }
         profiles.append(saved)
-        markUsed(saved)
         persist()
         return saved
     }
 
     static func profileForSave(_ profile: ConnectionProfile, among profiles: [ConnectionProfile]) -> ConnectionProfile {
         guard let existing = profiles.first(where: {
-            $0.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame
+            $0.id == profile.id ||
+                ($0.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame &&
+                 normalizedEndpoint($0.endpoint) == normalizedEndpoint(profile.endpoint))
         }) else { return profile }
         var saved = profile
         saved.id = existing.id
         return saved
+    }
+
+    private static func normalizedEndpoint(_ value: String) -> String {
+        value.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
     }
 
     var preferredProfile: ConnectionProfile? {
@@ -118,7 +121,10 @@ actor CredentialVault {
             UserDefaults.standard.removeObject(forKey: lastProfileKey)
         }
         persist()
-        await CredentialVault.shared.delete(profile)
+        let stillUsesCredential = profiles.contains {
+            $0.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame
+        }
+        if !stillUsesCredential { await CredentialVault.shared.delete(profile) }
     }
 
     private func persist() {
