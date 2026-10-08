@@ -13,7 +13,7 @@ ZedLink intentionally exposes a smaller remote surface than desktop Zed. The fol
 | Edit, regenerate, rewind, and checkpoints | Image-error rewind exists; general history controls do not | Expose native checkpoint IDs and guarded restore actions |
 | Thread history and management | Indexed history is paged; sessions can be created, renamed, and removed from remote exposure without closing native Zed | Add archive, delete, broader pagination, and project/worktree selection |
 | External ACP agents | Existing root ACP threads can be controlled, and configured ACP agents can be selected when creating a session in the allowed project | Complete a real Codex/Claude Code creation and prompt round trip |
-| Rich tool interaction | Thinking, tools, terminal output, approvals, and child agents render inline | Add structured elicitation forms, interactive terminal input, and richer tool result views |
+| Rich tool interaction | Thinking, tools, terminal output, exact native permission/action choices, and child agents render inline | Add structured ACP elicitation forms, Agent edit-review Keep/Reject controls, interactive terminal input, and richer tool result views |
 | Diff review | Files, search, unified diffs, stage, and unstage are available | Add native hunk accept/reject and checkpoint-aware review |
 | Context accounting | `/compact` uses the native command path | Show token usage, context limits, compaction state, and supported settings |
 | MCP and tool configuration | Existing Zed MCP servers and tools execute in the native runtime | Add read-only status and safe per-thread configuration where Zed exposes it |

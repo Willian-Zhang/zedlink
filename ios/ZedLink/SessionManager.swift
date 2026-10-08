@@ -288,6 +288,18 @@ import Combine
         }
         let approvals = (result["pending_approvals"] as? [[String: Any]] ?? []).compactMap { row -> NativeApproval? in
             guard let approvalID = row["approval_id"] as? String else { return nil }
+            let permissionOptions = row["permission_options"] as? [String: Any]
+            let decisions = (permissionOptions?["decisions"] as? [[String: Any]] ?? []).compactMap { decision -> NativeApprovalDecision? in
+                guard let optionID = decision["option_id"] as? String else { return nil }
+                return NativeApprovalDecision(
+                    optionID: optionID,
+                    label: decision["label"] as? String ?? "Choose",
+                    optionKind: decision["option_kind"] as? String ?? "unknown",
+                    choiceIndex: decision["choice_index"] as? Int,
+                    selectedPatternIndices: decision["selected_pattern_indices"] as? [Int] ?? [],
+                    action: decision["action"] as? String
+                )
+            }
             return NativeApproval(id: approvalID,
                                   turnID: row["turn_id"] as? Int,
                                   toolName: row["tool_name"] as? String ?? "Zed tool",
@@ -295,7 +307,10 @@ import Combine
                                   rawInput: Self.jsonText(row["raw_input"]),
                                   detailsTruncated: row["details_truncated"] as? Bool ?? true,
                                   canApproveOnce: row["can_approve_once"] as? Bool ?? false,
-                                  canDenyOnce: row["can_deny_once"] as? Bool ?? false)
+                                  canDenyOnce: row["can_deny_once"] as? Bool ?? false,
+                                  subagentID: row["subagent_id"] as? String,
+                                  authorizationKind: row["authorization_kind"] as? String ?? "permission_grant",
+                                  decisions: decisions)
         }
         snapshot = ThreadSnapshot(threadID: id,
                                   title: result["title"] as? String ?? "Untitled Agent thread",
@@ -444,6 +459,29 @@ import Combine
             guard result["outcome"] as? String == "requested",
                   result["turn_id"] as? Int == turnID else { throw GatewayFailure.invalidResponse }
             delivery = "Stop requested for this desktop Zed turn. Completed tool effects remain."
+            try await loadSnapshot(threadID)
+        } catch {
+            issue = error.localizedDescription
+            try? await loadSnapshot(threadID)
+        }
+    }
+
+    func respond(to approval: NativeApproval, with decision: NativeApprovalDecision) async {
+        guard capabilities.contains("approval.respond"), let client, let instanceID, let epoch,
+              let threadID = selectedThreadID, let turnID = approval.turnID else { return }
+        var params: [String: Any] = [
+            "instance_id": instanceID, "epoch": epoch, "thread_id": threadID,
+            "turn_id": turnID, "approval_id": approval.id, "option_id": decision.optionID
+        ]
+        if let choiceIndex = decision.choiceIndex { params["choice_index"] = choiceIndex }
+        if !decision.selectedPatternIndices.isEmpty {
+            params["selected_pattern_indices"] = decision.selectedPatternIndices
+        }
+        if let subagentID = approval.subagentID { params["subagent_id"] = subagentID }
+        do {
+            let result = try await client.rpc("approval.respond", params: params)
+            guard result["outcome"] as? String == "resolved" else { throw GatewayFailure.invalidResponse }
+            delivery = "Sent “\(decision.displayLabel)” to desktop Zed."
             try await loadSnapshot(threadID)
         } catch {
             issue = error.localizedDescription

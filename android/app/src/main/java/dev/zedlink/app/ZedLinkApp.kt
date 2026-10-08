@@ -320,7 +320,7 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
         itemsIndexed(snapshot.entries, key = { index, _ -> snapshot.entryStartIndex + index }) { index, markdown ->
             Message(NativeEntry.parse(markdown), snapshot.isBusy && index == snapshot.entries.lastIndex)
         }
-        items(snapshot.approvals, key = { it.id }) { ApprovalCard(it) }
+        items(snapshot.approvals, key = { it.id }) { ApprovalCard(it, model::respondApproval) }
     }
 }
 
@@ -405,13 +405,23 @@ private fun MarkdownLikeText(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ApprovalCard(approval: NativeApproval) {
+private fun ApprovalCard(approval: NativeApproval, respond: (NativeApproval, NativeApprovalDecision) -> Unit) {
     Column(Modifier.fillMaxWidth().background(Color(0xFF1C1915)).border(1.dp, Warning).padding(14.dp)) {
-        Text("DESKTOP APPROVAL REQUIRED", color = Warning, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        Text(if (approval.authorizationKind == "action_choice") "CHOOSE AN ACTION" else "PERMISSION REQUESTED",
+            color = Warning, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(approval.toolName, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 7.dp))
         Text(approval.display, color = Muted)
         approval.rawInput?.let { SelectionContainer { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp)) } }
-        Text("Resolve this request in desktop Zed.", color = Warning, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+        if (approval.decisions.isEmpty()) {
+            Text("Update patched Zed to resolve this request remotely.", color = Warning, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+        } else approval.decisions.forEach { decision ->
+            Button(
+                onClick = { respond(approval, decision) },
+                enabled = !approval.detailsTruncated || (decision.isRejecting && approval.authorizationKind != "action_choice"),
+                shape = androidx.compose.ui.graphics.RectangleShape,
+                modifier = Modifier.fillMaxWidth().padding(top = 7.dp),
+            ) { Text(decision.displayLabel) }
+        }
     }
 }
 

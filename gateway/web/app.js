@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.08.1";
+const UI_BUILD = "2026.10.08.2";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -69,6 +69,7 @@ const state = {
   reviewSource: "",
   reviewLanguage: "text",
   approvals: [],
+  approvalsSignature: null,
   subagents: [],
   subagentsSignature: null,
   stoppingSubagent: null,
@@ -1942,7 +1943,11 @@ async function addUploads(files) {
 }
 
 function renderApprovals(approvals) {
-  state.approvals = Array.isArray(approvals) ? approvals : [];
+  const next = Array.isArray(approvals) ? approvals : [];
+  const signature = JSON.stringify(next);
+  state.approvals = next;
+  if (signature === state.approvalsSignature) return;
+  state.approvalsSignature = signature;
   const panel = $("approvals");
   panel.replaceChildren();
   panel.classList.toggle("hidden", state.approvals.length === 0 || !state.capabilities.includes("approval.respond"));
@@ -1952,6 +1957,9 @@ function renderApprovals(approvals) {
     const details = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = approval.display || approval.tool_name || "Zed tool approval";
+    const kind = document.createElement("span");
+    kind.className = "approval-kind";
+    kind.textContent = approval.authorization_kind === "action_choice" ? "Choose an action" : "Permission requested";
     if (approval.subagent_id) {
       const origin = document.createElement("span");
       origin.className = "approval-origin";
@@ -1960,36 +1968,95 @@ function renderApprovals(approvals) {
       details.append(origin);
     }
     const input = document.createElement("small");
-    input.textContent = approval.raw_input ? JSON.stringify(approval.raw_input) : "Details unavailable; approval is disabled.";
-    details.append(title, input);
+    input.textContent = approval.raw_input
+      ? (typeof approval.raw_input === "string" ? approval.raw_input : JSON.stringify(approval.raw_input))
+      : "Details unavailable. Actions that can make changes are disabled.";
+    details.append(kind, title, input);
     const actions = document.createElement("div");
     actions.className = "approval-actions";
-    const deny = document.createElement("button");
-    deny.type = "button";
-    deny.className = "quiet";
-    deny.textContent = "Deny";
-    deny.disabled = !approval.can_deny_once;
-    deny.addEventListener("click", () => respondApproval(approval, "deny_once"));
-    const approve = document.createElement("button");
-    approve.type = "button";
-    approve.className = "primary";
-    approve.textContent = "Approve once";
-    approve.disabled = !approval.can_approve_once;
-    approve.addEventListener("click", () => respondApproval(approval, "approve_once"));
-    actions.append(deny, approve);
+    const permissionOptions = approval.permission_options;
+    const decisions = Array.isArray(permissionOptions?.decisions) ? permissionOptions.decisions : [];
+    if (permissionOptions?.presentation === "dropdown" || permissionOptions?.presentation === "dropdown_with_patterns") {
+      const choices = [...new Map(decisions.filter((decision) => Number.isInteger(decision.choice_index)
+          && !Array.isArray(decision.selected_pattern_indices))
+        .map((decision) => [decision.choice_index, decision.label])).entries()];
+      const selector = document.createElement("select");
+      selector.setAttribute("aria-label", "Permission scope");
+      for (const [index, label] of choices) selector.add(new Option(label || `Choice ${index + 1}`, String(index)));
+      if (permissionOptions.presentation === "dropdown_with_patterns" && Array.isArray(permissionOptions.patterns)
+          && permissionOptions.patterns.length) selector.add(new Option("Selected command patterns", "patterns"));
+      selector.value = String(choices.at(-1)?.[0] ?? 0);
+      const patternList = document.createElement("div");
+      patternList.className = "approval-patterns hidden";
+      for (const pattern of permissionOptions.patterns || []) {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = String(pattern.index);
+        checkbox.checked = true;
+        label.append(checkbox, document.createTextNode(pattern.display_name || `Pattern ${pattern.index + 1}`));
+        patternList.append(label);
+      }
+      selector.addEventListener("change", () => patternList.classList.toggle("hidden", selector.value !== "patterns"));
+      const choose = (action) => {
+        const patternMode = selector.value === "patterns";
+        const choiceIndex = patternMode ? 0 : Number(selector.value);
+        const decision = decisions.find((item) => item.choice_index === choiceIndex && item.action === action);
+        if (!decision) return;
+        const selectedPatternIndices = patternMode
+          ? [...patternList.querySelectorAll("input:checked")].map((item) => Number(item.value)) : [];
+        respondApproval(approval, decision, selectedPatternIndices);
+      };
+      const deny = document.createElement("button");
+      deny.type = "button"; deny.className = "quiet"; deny.textContent = "Deny";
+      deny.addEventListener("click", () => choose("deny"));
+      const allow = document.createElement("button");
+      allow.type = "button"; allow.className = "primary"; allow.textContent = "Allow";
+      allow.disabled = approval.details_truncated;
+      allow.addEventListener("click", () => choose("allow"));
+      actions.append(selector, patternList, deny, allow);
+    } else if (decisions.length) {
+      for (const decision of decisions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = decision.label || "Choose";
+        const rejecting = String(decision.option_kind || "").startsWith("reject");
+        button.className = rejecting ? "quiet" : "primary";
+        button.disabled = approval.details_truncated && (!rejecting || approval.authorization_kind === "action_choice");
+        button.addEventListener("click", () => respondApproval(approval, decision));
+        actions.append(button);
+      }
+    } else {
+      const deny = document.createElement("button");
+      deny.type = "button"; deny.className = "quiet"; deny.textContent = "Deny";
+      deny.disabled = !approval.can_deny_once;
+      deny.addEventListener("click", () => respondApproval(approval, { legacyDecision: "deny_once" }));
+      const approve = document.createElement("button");
+      approve.type = "button"; approve.className = "primary"; approve.textContent = "Approve once";
+      approve.disabled = !approval.can_approve_once;
+      approve.addEventListener("click", () => respondApproval(approval, { legacyDecision: "approve_once" }));
+      actions.append(deny, approve);
+    }
     card.append(details, actions);
     panel.append(card);
   }
 }
 
-async function respondApproval(approval, decision) {
+async function respondApproval(approval, decision, selectedPatternIndices = []) {
+  const patternIndices = selectedPatternIndices.length
+    ? selectedPatternIndices : (Array.isArray(decision.selected_pattern_indices) ? decision.selected_pattern_indices : []);
   try {
     await rpc("approval.respond", {
       ...baseThreadParams(), approval_id: approval.approval_id,
-      turn_id: approval.turn_id, decision,
+      turn_id: approval.turn_id,
+      ...(decision.legacyDecision ? { decision: decision.legacyDecision } : {
+        option_id: decision.option_id,
+        ...(Number.isInteger(decision.choice_index) ? { choice_index: decision.choice_index } : {}),
+        ...(patternIndices.length ? { selected_pattern_indices: patternIndices } : {}),
+      }),
       ...(approval.subagent_id ? { subagent_id: approval.subagent_id } : {}),
     });
-    notice(decision === "approve_once" ? "Approved this tool call once." : "Denied this tool call.");
+    notice(`Sent “${decision.label || (decision.legacyDecision === "approve_once" ? "Approve once" : "Deny")}” to Zed.`);
   } catch (error) { notice(error.message); }
   await refreshSnapshot().catch((error) => notice(error.message));
 }

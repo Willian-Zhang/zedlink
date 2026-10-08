@@ -22,6 +22,10 @@ def main() -> int:
     parser.add_argument("--turn-id", type=int, help="Current turn ID from thread.snapshot for cancel")
     parser.add_argument("--approval-id", help="Exact pending approval ID from thread.approvals")
     parser.add_argument("--decision", choices=("approve_once", "deny_once"))
+    parser.add_argument("--option-id", help="Exact native permission option ID from thread.approvals")
+    parser.add_argument("--choice-index", type=int, help="Native dropdown choice index for --option-id")
+    parser.add_argument("--pattern-index", type=int, action="append", help="Checked terminal permission pattern; repeat as needed")
+    parser.add_argument("--subagent-id", help="Owning subagent ID for a nested approval")
     parser.add_argument("--after-sequence", type=int, default=0, help="Event cursor for events")
     parser.add_argument("--title", help="Optional title for a new native Zed Agent session")
     parser.add_argument("--profile-id", help="Native Agent profile ID for update-settings")
@@ -47,8 +51,9 @@ def main() -> int:
         parser.error("send requires a thread_id and text")
     if args.operation == "cancel" and (not args.thread_id or args.text or args.turn_id is None):
         parser.error("cancel requires only a thread_id and --turn-id")
-    if args.operation == "respond" and (not args.thread_id or args.text or args.turn_id is None or not args.approval_id or not args.decision):
-        parser.error("respond requires thread_id, --turn-id, --approval-id, and --decision")
+    if args.operation == "respond" and (not args.thread_id or args.text or args.turn_id is None
+                                         or not args.approval_id or bool(args.decision) == bool(args.option_id)):
+        parser.error("respond requires thread_id, --turn-id, --approval-id, and exactly one of --option-id or legacy --decision")
     identified = ("create", "send", "cancel", "status", "respond", "commands", "settings", "update-settings", "files", "file", "search", "changes", "diff", "stage", "unstage")
     if args.operation in identified and (not args.instance_id or not args.epoch):
         parser.error(f"{args.operation} requires --instance-id and --epoch from thread.list")
@@ -62,8 +67,13 @@ def main() -> int:
         parser.error(f"{args.operation} requires --instance-id and --epoch from thread.list")
     if args.operation not in ("cancel", "respond") and args.turn_id is not None:
         parser.error("--turn-id is only available for cancel or respond")
-    if args.operation != "respond" and (args.approval_id or args.decision):
-        parser.error("--approval-id and --decision are only available for respond")
+    if args.operation != "respond" and (args.approval_id or args.decision or args.option_id
+                                         or args.choice_index is not None or args.pattern_index or args.subagent_id):
+        parser.error("approval selection arguments are only available for respond")
+    if args.operation == "respond" and args.option_id and args.choice_index is None and args.pattern_index:
+        parser.error("--pattern-index requires --choice-index")
+    if args.operation == "respond" and args.choice_index is not None and not args.option_id:
+        parser.error("--choice-index requires --option-id")
     if args.operation != "status" and args.original_request_id:
         parser.error("--original-request-id is only available for status")
     if args.operation != "create" and args.title:
@@ -194,11 +204,20 @@ def main() -> int:
     if args.operation == "respond":
         params.update(
             approval_id=args.approval_id,
-            decision=args.decision,
             turn_id=args.turn_id,
             instance_id=args.instance_id,
             epoch=args.epoch,
         )
+        if args.decision:
+            params["decision"] = args.decision
+        else:
+            params["option_id"] = args.option_id
+            if args.choice_index is not None:
+                params["choice_index"] = args.choice_index
+            if args.pattern_index:
+                params["selected_pattern_indices"] = args.pattern_index
+        if args.subagent_id:
+            params["subagent_id"] = args.subagent_id
     payload = call(
         {"info": "instance.info", "status": "request.status", "respond": "approval.respond",
          "settings": "thread.settings", "update-settings": "thread.settings.update",

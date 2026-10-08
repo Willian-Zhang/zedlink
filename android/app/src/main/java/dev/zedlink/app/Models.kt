@@ -30,7 +30,22 @@ data class NativeApproval(
     val display: String,
     val rawInput: String?,
     val detailsTruncated: Boolean,
+    val subagentId: String?,
+    val authorizationKind: String,
+    val decisions: List<NativeApprovalDecision>,
 )
+
+data class NativeApprovalDecision(
+    val optionId: String,
+    val label: String,
+    val optionKind: String,
+    val choiceIndex: Int?,
+    val selectedPatternIndices: List<Int>,
+    val action: String?,
+) {
+    val isRejecting: Boolean get() = optionKind.startsWith("reject")
+    val displayLabel: String get() = action?.let { "${if (it == "allow") "Allow" else "Deny"} · $label" } ?: label
+}
 
 data class ThreadSnapshot(
     val threadId: String,

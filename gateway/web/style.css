@@ -341,10 +341,14 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .approval-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .approval-card:last-child { border-bottom: 0; }
 .approval-card strong, .approval-card small { display: block; }
+.approval-kind { display: block; margin-bottom: 4px; color: var(--warning); font: .62rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
 .approval-card strong { font-size: .8rem; }
 .approval-card small { margin-top: 5px; color: var(--muted); font: .7rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-.approval-actions { display: flex; gap: 7px; }
+.approval-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; max-width: 560px; }
 .approval-actions button { min-height: 38px; padding: 6px 10px; }
+.approval-actions select { min-height: 38px; max-width: 260px; border: 1px solid var(--line-strong); background: var(--raised); color: var(--ink); padding: 6px 28px 6px 9px; }
+.approval-patterns { flex-basis: 100%; display: grid; gap: 5px; padding: 8px; border: 1px solid var(--line); background: var(--background); }
+.approval-patterns label { display: flex; align-items: center; gap: 7px; color: var(--muted); font: .7rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .context-panel { position: absolute; inset: 0 0 0 auto; z-index: 8; display: flex; flex-direction: column; width: min(390px, 42vw); border-left: 1px solid var(--line); background: #070809; box-shadow: -18px 0 40px #000a; }
 .context-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 76px; padding: 14px 16px; }
 .context-head .eyebrow { margin: 0 0 6px; }

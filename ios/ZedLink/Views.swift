@@ -606,6 +606,7 @@ private struct ToolMessageView: View {
 }
 
 private struct NativeApprovalView: View {
+    @EnvironmentObject private var session: SessionManager
     let approval: NativeApproval
     @State private var expanded = false
 
@@ -624,11 +625,28 @@ private struct NativeApprovalView: View {
                 }
             }
             Button(expanded ? "Hide details" : "Review details") { expanded.toggle() }.font(.caption)
-            Text("Decide in desktop Zed").font(.caption2).foregroundStyle(ZLTheme.muted)
+            Text(approval.authorizationKind == "action_choice" ? "Choose an action" : "Permission requested")
+                .font(.caption2.monospaced()).foregroundStyle(ZLTheme.warning)
+            if approval.decisions.isEmpty {
+                Text("Update patched Zed to resolve this request remotely.")
+                    .font(.caption2).foregroundStyle(ZLTheme.muted)
+            } else {
+                ForEach(approval.decisions) { decision in
+                    Button {
+                        Task { await session.respond(to: approval, with: decision) }
+                    } label: {
+                        Text(decision.displayLabel)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(decision.isRejecting ? ZLTheme.warning : ZLTheme.focus)
+                    .disabled(approval.detailsTruncated && (!decision.isRejecting || approval.authorizationKind == "action_choice"))
+                }
+            }
         }
         .padding(12).frame(width: 290, alignment: .leading)
         .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.45), lineWidth: 1))
-        .accessibilityIdentifier("approval-unavailable")
+        .accessibilityIdentifier("native-approval")
     }
 }
 

@@ -57,6 +57,7 @@ class ProbeFixture:
         self.settings_updates = 0
         self.approvals = []
         self.approval_decisions = 0
+        self.approval_responses = []
         self.subagent_cancellations = 0
         self.subagents = [
             {"session_id": "fixture-child-running", "tool_call_id": "spawn-running",
@@ -67,9 +68,16 @@ class ProbeFixture:
              "entries_truncated": False,
              "pending_approvals": [{"approval_id": "child-approval", "turn_id": 31,
                                       "subagent_id": "fixture-child-running", "tool_name": "terminal",
-                                      "display": "Run child fixture command", "raw_input": {"command": "printf child"},
-                                      "details_truncated": False, "can_approve_once": True,
-                                      "can_deny_once": True}]},
+                                      "display": "Save modified fixture", "raw_input": {"path": "fixture.txt"},
+                                      "details_truncated": False, "authorization_kind": "action_choice",
+                                      "permission_options": {"presentation": "flat", "patterns": [], "decisions": [
+                                          {"option_id": "save", "label": "Save", "option_kind": "unknown",
+                                           "choice_index": None, "action": None},
+                                          {"option_id": "discard", "label": "Discard", "option_kind": "unknown",
+                                           "choice_index": None, "action": None},
+                                          {"option_id": "keep", "label": "Keep", "option_kind": "unknown",
+                                           "choice_index": None, "action": None},
+                                      ]}, "can_approve_once": False, "can_deny_once": False}]},
             {"session_id": "fixture-child-complete", "tool_call_id": "spawn-complete",
              "label": "Review browser layout", "title": "UI reviewer",
              "status": "Completed", "current_turn_id": None,
@@ -277,14 +285,23 @@ class ProbeFixture:
                     if not matching:
                         error = {"code": "APPROVAL_EXPIRED"}
                     else:
-                        if params.get("subagent_id"):
-                            for subagent in self.subagents:
-                                if subagent["session_id"] == params["subagent_id"]:
-                                    subagent["pending_approvals"] = []
+                        approval = matching[0]
+                        decisions = approval.get("permission_options", {}).get("decisions", [])
+                        if decisions and not any(
+                                item.get("option_id") == params.get("option_id")
+                                and item.get("choice_index") == params.get("choice_index")
+                                for item in decisions):
+                            error = {"code": "INVALID_PERMISSION_OPTION"}
                         else:
-                            self.approvals = []
-                        self.approval_decisions += 1
-                        result = {"outcome": "resolved"}
+                            self.approval_responses.append(dict(params))
+                            if params.get("subagent_id"):
+                                for subagent in self.subagents:
+                                    if subagent["session_id"] == params["subagent_id"]:
+                                        subagent["pending_approvals"] = []
+                            else:
+                                self.approvals = []
+                            self.approval_decisions += 1
+                            result = {"outcome": "resolved"}
                 elif method == "thread.send":
                     key = request["request_id"]
                     text = params["text"]
@@ -647,7 +664,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.08.1"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.08.2"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -706,9 +723,11 @@ def main():
                 assert "Checking concurrent gateway behavior" in browser.find_element(By.ID, "subagents").get_attribute("textContent")
                 assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") == "true"
                 assert "parallel agent" in browser.find_element(By.ID, "approvals").text.casefold()
-                assert "printf child" in browser.find_element(By.ID, "approvals").text
+                assert "Save modified fixture" in browser.find_element(By.ID, "approvals").text
                 browser.find_element(By.CSS_SELECTOR, "#approvals .primary").click()
                 wait.until(lambda driver: probe.approval_decisions == 1)
+                assert probe.approval_responses[-1]["option_id"] == "save"
+                assert "decision" not in probe.approval_responses[-1]
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-stop").click()
                 wait.until(lambda driver: probe.subagent_cancellations == 1)
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".subagent.active"))
@@ -879,15 +898,34 @@ def main():
                 probe.sequence += 1
                 wait.until(lambda driver: "conversation entries" in driver.find_element(By.ID, "thread-meta").text)
                 probe.approvals = [{"approval_id": "fixture-approval", "turn_id": 8,
-                                    "tool_name": "terminal", "display": "Run fixture command",
-                                    "raw_input": {"command": "printf fixture"},
-                                    "details_truncated": False, "can_approve_once": True,
-                                    "can_deny_once": True}]
+                                    "tool_name": "fetch", "display": "Fetch https://example.test/docs",
+                                    "raw_input": {"url": "https://example.test/docs"},
+                                    "details_truncated": False, "authorization_kind": "permission_grant",
+                                    "permission_options": {"presentation": "dropdown", "patterns": [], "decisions": [
+                                        {"option_id": "fetch-always-allow", "label": "Always for fetch",
+                                         "option_kind": "allow_always", "choice_index": 0, "action": "allow"},
+                                        {"option_id": "fetch-always-deny", "label": "Always for fetch",
+                                         "option_kind": "reject_always", "choice_index": 0, "action": "deny"},
+                                        {"option_id": "host-allow", "label": "For example.test",
+                                         "option_kind": "allow_always", "choice_index": 1, "action": "allow"},
+                                        {"option_id": "host-deny", "label": "For example.test",
+                                         "option_kind": "reject_always", "choice_index": 1, "action": "deny"},
+                                        {"option_id": "fetch-once-allow", "label": "Only this time",
+                                         "option_kind": "allow_once", "choice_index": 2, "action": "allow"},
+                                        {"option_id": "fetch-once-deny", "label": "Only this time",
+                                         "option_kind": "reject_once", "choice_index": 2, "action": "deny"},
+                                    ]}, "can_approve_once": True, "can_deny_once": True}]
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_element(By.ID, "approvals").is_displayed())
-                assert "printf fixture" in browser.find_element(By.ID, "approvals").text
+                assert "example.test/docs" in browser.find_element(By.ID, "approvals").text
+                approval_scope = Select(browser.find_element(By.CSS_SELECTOR, "#approvals select"))
+                assert len(approval_scope.options) == 3
+                approval_scope.select_by_visible_text("For example.test")
+                assert approval_scope.first_selected_option.get_attribute("value") == "1"
                 browser.find_element(By.CSS_SELECTOR, "#approvals .primary").click()
                 wait.until(lambda driver: probe.approval_decisions == 2)
+                assert probe.approval_responses[-1]["option_id"] == "host-allow", probe.approval_responses[-1]
+                assert probe.approval_responses[-1]["choice_index"] == 1, probe.approval_responses[-1]
                 wait.until(lambda driver: not driver.find_element(By.ID, "approvals").is_displayed())
                 probe.active_turn_id = None
                 probe.sequence += 1

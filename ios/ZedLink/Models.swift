@@ -65,6 +65,28 @@ struct NativeApproval: Identifiable, Equatable {
     let detailsTruncated: Bool
     let canApproveOnce: Bool
     let canDenyOnce: Bool
+    let subagentID: String?
+    let authorizationKind: String
+    let decisions: [NativeApprovalDecision]
+}
+
+struct NativeApprovalDecision: Identifiable, Equatable {
+    let optionID: String
+    let label: String
+    let optionKind: String
+    let choiceIndex: Int?
+    let selectedPatternIndices: [Int]
+    let action: String?
+
+    var id: String {
+        "\(optionID):\(choiceIndex.map(String.init) ?? "flat"):\(selectedPatternIndices.map(String.init).joined(separator: ","))"
+    }
+
+    var isRejecting: Bool { optionKind.hasPrefix("reject") }
+    var displayLabel: String {
+        guard let action else { return label }
+        return "\(action == "allow" ? "Allow" : "Deny") · \(label)"
+    }
 }
 
 struct ThreadSnapshot {

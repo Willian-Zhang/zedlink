@@ -393,7 +393,16 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             val approvalId = row.optString("approval_id"); if (approvalId.isBlank()) null else NativeApproval(
                 approvalId, row.optIntOrNull("turn_id"), row.optString("tool_name", "Zed tool"),
                 row.optString("display", "Permission requested"), row.opt("raw_input")?.takeUnless { it == JSONObject.NULL }?.toString(),
-                row.optBoolean("details_truncated", true))
+                row.optBoolean("details_truncated", true), row.optString("subagent_id").takeIf { it.isNotBlank() },
+                row.optString("authorization_kind", "permission_grant"),
+                row.optJSONObject("permission_options")?.optJSONArray("decisions").objects().mapNotNull { decision ->
+                    val optionId = decision.optString("option_id")
+                    if (optionId.isBlank()) null else NativeApprovalDecision(
+                        optionId, decision.optString("label", "Choose"), decision.optString("option_kind", "unknown"),
+                        decision.optIntOrNull("choice_index"),
+                        decision.optJSONArray("selected_pattern_indices").integers(),
+                        if (decision.isNull("action")) null else decision.optString("action").takeIf { it.isNotBlank() })
+                })
         }
         state = state.copy(snapshot = ThreadSnapshot(
             id, result.optString("title", "Untitled Agent thread"), result.optString("status", "Unknown"),
@@ -419,6 +428,30 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private fun checkIdentity(result: JSONObject) {
         if (result.optString("instance_id") != state.instanceId || result.optString("epoch") != state.epoch) {
             throw GatewayException("Desktop Zed restarted. Reconnect before sending.")
+        }
+    }
+
+    fun respondApproval(approval: NativeApproval, decision: NativeApprovalDecision) = viewModelScope.launch {
+        val activeClient = client ?: return@launch
+        val threadId = state.selectedThreadId ?: return@launch
+        val turnId = approval.turnId ?: return@launch
+        if ("approval.respond" !in state.capabilities) return@launch
+        try {
+            val params = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("thread_id", threadId).put("turn_id", turnId)
+                .put("approval_id", approval.id).put("option_id", decision.optionId)
+            decision.choiceIndex?.let { params.put("choice_index", it) }
+            if (decision.selectedPatternIndices.isNotEmpty()) {
+                params.put("selected_pattern_indices", JSONArray(decision.selectedPatternIndices))
+            }
+            approval.subagentId?.let { params.put("subagent_id", it) }
+            val result = activeClient.rpc("approval.respond", params)
+            if (result.optString("outcome") != "resolved") throw GatewayException("Zed returned an invalid approval state.")
+            state = state.copy(delivery = "Sent “${decision.displayLabel}” to desktop Zed.", issue = "")
+            loadSnapshot(threadId)
+        } catch (error: Exception) {
+            state = state.copy(issue = error.message.orEmpty())
+            runCatching { loadSnapshot(threadId) }
         }
     }
 
@@ -460,4 +493,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
 private fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 private fun JSONArray?.strings(): List<String> = if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).takeIf(String::isNotBlank) }
+private fun JSONArray?.integers(): List<Int> = if (this == null) emptyList() else (0 until length()).mapNotNull { index ->
+    if (isNull(index)) null else optInt(index)
+}
 private fun JSONObject.optIntOrNull(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key)
