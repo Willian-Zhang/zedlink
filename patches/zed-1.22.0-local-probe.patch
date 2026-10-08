@@ -135,6 +135,42 @@ index 135c970ce0..798331b0a5 100644
                  match result {
                      Ok(event) => {
                          log::trace!("Received completion event: {:?}", event);
+diff --git a/crates/agent/src/thread.rs b/crates/agent/src/thread.rs
+index be234e5147..c05f123eb1 100644
+--- a/crates/agent/src/thread.rs
++++ b/crates/agent/src/thread.rs
+@@ -122,6 +122,7 @@ pub enum SandboxStatusRefresh {
+ /// pass to be worthwhile, so we leave the thread uncompacted and let the UI warn
+ /// the user instead.
+ pub const MIN_COMPACTION_CONTEXT_WINDOW: u64 = 80_000;
++const NATIVE_COMPACTION_MAX_OUTPUT_TOKENS: u64 = 2_048;
+
+ // Using the heuristic that 1 token is about 4 bytes, keep the last 80K bytes of user-message content (~20k tokens).
+ const COMPACTION_RETAINED_USER_MESSAGES_BYTE_BUDGET: usize = 80_000;
+@@ -4544,6 +4545,12 @@ impl Thread {
+             prompt_id: Some(self.prompt_id.to_string()),
+             intent: Some(CompletionIntent::ThreadContextSummarization),
+             temperature: AgentSettings::temperature_for_model(model, cx),
++            max_output_tokens: Some(
++                model
++                    .max_output_tokens()
++                    .unwrap_or(NATIVE_COMPACTION_MAX_OUTPUT_TOKENS)
++                    .min(NATIVE_COMPACTION_MAX_OUTPUT_TOKENS),
++            ),
+             messages: self.build_request_messages_until(Vec::new(), insertion_ix, cx),
+             ..Default::default()
+         };
+@@ -7632,6 +7639,10 @@ mod tests {
+             compaction_request.intent,
+             Some(CompletionIntent::ThreadContextSummarization)
+         );
++        assert_eq!(
++            compaction_request.max_output_tokens,
++            Some(NATIVE_COMPACTION_MAX_OUTPUT_TOKENS)
++        );
+         let compaction_texts = request_texts_after_system(&compaction_request.messages);
+         assert_eq!(compaction_texts.len(), 3);
+         assert_eq!(compaction_texts[0], "old user");
 diff --git a/crates/agent_ui/Cargo.toml b/crates/agent_ui/Cargo.toml
 index 3c22a95cad..31702090c8 100644
 --- a/crates/agent_ui/Cargo.toml
