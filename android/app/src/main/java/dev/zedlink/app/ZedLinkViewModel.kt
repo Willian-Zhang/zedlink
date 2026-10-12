@@ -45,6 +45,7 @@ data class AppState(
     val terminals: List<NativeTerminal> = emptyList(),
     val terminalSnapshot: NativeTerminalSnapshot? = null,
     val configuredTasks: List<NativeConfiguredTask> = emptyList(),
+    val debuggerCatalog: List<NativeDebugScenario> = emptyList(),
     val debuggerSessions: List<NativeDebuggerSession> = emptyList(),
     val previewTitle: String = "",
     val previewContent: String = "",
@@ -572,7 +573,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)
         try {
             var files = state.projectFiles; var entries = state.changes; var revision = state.changesRevision
-            var terminals = state.terminals; var configuredTasks = state.configuredTasks; var debuggerSessions = state.debuggerSessions
+            var terminals = state.terminals; var configuredTasks = state.configuredTasks; var debuggerCatalog = state.debuggerCatalog; var debuggerSessions = state.debuggerSessions
             if ("project.files" in state.capabilities) files = client!!.rpc("project.files", JSONObject(base.toString())).optJSONArray("entries").objects().mapNotNull { row ->
                 val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
             if ("changes.snapshot" in state.capabilities) {
@@ -591,13 +592,20 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                         if (id.isBlank() || label.isBlank()) null else NativeConfiguredTask(id, label, row.optString("source", "project"))
                     }
             } else emptyList()
+            debuggerCatalog = if ("debugger.catalog" in state.capabilities) {
+                client!!.rpc("debugger.catalog", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch))
+                    .optJSONArray("scenarios").objects().mapNotNull { row ->
+                        val id = row.optString("scenario_id"); val label = row.optString("label")
+                        if (id.isBlank() || label.isBlank()) null else NativeDebugScenario(id, label, row.optString("adapter", "DAP"), row.optString("source", "project"))
+                    }
+            } else emptyList()
             debuggerSessions = if ("debugger.snapshot" in state.capabilities) {
                 client!!.rpc("debugger.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch))
                     .optJSONArray("sessions").objects().mapNotNull(::decodeDebuggerSession)
             } else emptyList()
             state = state.copy(projectFiles = files, changes = entries, changesRevision = revision, terminals = terminals,
                 terminalSnapshot = state.terminalSnapshot?.takeIf { snapshot -> terminals.any { it.id == snapshot.terminal.id } },
-                configuredTasks = configuredTasks, debuggerSessions = debuggerSessions)
+                configuredTasks = configuredTasks, debuggerCatalog = debuggerCatalog, debuggerSessions = debuggerSessions)
         } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
     }
     fun loadTerminal(terminal: NativeTerminal) = viewModelScope.launch { try {
@@ -645,6 +653,14 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         try {
             client!!.rpc("debugger.control", params, UUID.randomUUID().toString())
             delay(180); loadProjectContext()
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+    fun launchDebugger(scenario: NativeDebugScenario) = viewModelScope.launch {
+        if ("debugger.launch" !in state.capabilities) return@launch
+        try {
+            client!!.rpc("debugger.launch", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("scenario_id", scenario.id), UUID.randomUUID().toString())
+            delay(350); loadProjectContext()
         } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
     }
     private fun decodeDebuggerSession(row: JSONObject): NativeDebuggerSession? {

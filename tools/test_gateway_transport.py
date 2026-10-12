@@ -102,6 +102,7 @@ class ProbeFixture:
         self.terminal_inputs = {}
         self.task_stops = {}
         self.task_runs = {}
+        self.debugger_launches = {}
         self.debugger_controls = {}
         self.drop_send_before_accept_once = False
         self.stopped = False
@@ -322,6 +323,22 @@ class ProbeFixture:
                         else:
                             self.task_runs[request["request_id"]] = payload
                             result = {"outcome": "requested", "duplicate": duplicate}
+                elif method == "debugger.catalog":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "scenarios": [
+                        {"scenario_id": "configured-fixture-debugger", "label": "Debug fixture", "adapter": "fixture-dap", "source": "project"}
+                    ]}
+                elif method == "debugger.launch":
+                    allowed = {"instance_id", "epoch", "scenario_id"}
+                    if set(params) - allowed or params.get("scenario_id") != "configured-fixture-debugger":
+                        error = {"code": "INVALID_REQUEST"}
+                    else:
+                        payload = json.dumps(params, sort_keys=True)
+                        duplicate = request["request_id"] in self.debugger_launches
+                        if duplicate and self.debugger_launches[request["request_id"]] != payload:
+                            error = {"code": "REQUEST_ID_CONFLICT"}
+                        else:
+                            self.debugger_launches[request["request_id"]] = payload
+                            result = {"outcome": "requested", "duplicate": duplicate}
                 elif method == "debugger.snapshot":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "sessions": [
                         {"session_id": "fixture-debugger", "label": "Debug fixture", "adapter": "fixture-dap",
@@ -484,7 +501,7 @@ class ProbeFixture:
                                                "thread.approvals", "approval.respond", "project.files",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
                                                "terminal.list", "terminal.snapshot", "terminal.input", "task.list", "task.stop",
-                                               "task.catalog", "task.run", "debugger.snapshot", "debugger.control",
+                                               "task.catalog", "task.run", "debugger.catalog", "debugger.launch", "debugger.snapshot", "debugger.control",
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
@@ -751,6 +768,21 @@ def main():
                                  params={**task_run["params"], "command": "touch /tmp/never"})
             status, smuggled_result = http(base, context, "/v1/rpc", "POST", smuggled_task, token1)
             assert status == 200 and smuggled_result["error"]["code"] == "INVALID_REQUEST"
+            debugger_catalog = {"version": 1, "request_id": "debugger-catalog", "method": "debugger.catalog",
+                                "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}}
+            status, debug_catalog_result = http(base, context, "/v1/rpc", "POST", debugger_catalog, token1)
+            assert status == 200 and debug_catalog_result["result"]["scenarios"][0]["scenario_id"] == "configured-fixture-debugger"
+            debugger_launch = {"version": 1, "request_id": "debugger-launch", "method": "debugger.launch",
+                               "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                          "scenario_id": "configured-fixture-debugger"}}
+            for duplicate in (False, True):
+                status, launch_result = http(base, context, "/v1/rpc", "POST", debugger_launch, token1)
+                assert status == 200 and launch_result["result"]["duplicate"] is duplicate
+            assert len(probe.debugger_launches) == 1
+            smuggled_debugger = dict(debugger_launch, request_id="debugger-launch-smuggled",
+                                     params={**debugger_launch["params"], "program": "/tmp/never"})
+            status, smuggled_debugger_result = http(base, context, "/v1/rpc", "POST", smuggled_debugger, token1)
+            assert status == 200 and smuggled_debugger_result["error"]["code"] == "INVALID_REQUEST"
             debugger_snapshot = {"version": 1, "request_id": "debugger-snapshot",
                                  "method": "debugger.snapshot",
                                  "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}}
@@ -880,7 +912,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.2"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.3"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1045,6 +1077,11 @@ def main():
                 wait.until(lambda driver: len(probe.task_runs) >= 1)
                 assert "ready" in browser.find_element(By.ID, "terminal-output").text
                 browser.find_element(By.ID, "context-debug-tab").click()
+                wait.until(lambda driver: "Debug fixture" in driver.find_element(By.ID, "debugger-select").text)
+                launches_before_browser = len(probe.debugger_launches)
+                assert not browser.find_element(By.ID, "launch-debugger").get_attribute("disabled")
+                browser.find_element(By.ID, "launch-debugger").click()
+                wait.until(lambda driver: len(probe.debugger_launches) == launches_before_browser + 1)
                 wait.until(lambda driver: "Debug fixture" in driver.find_element(By.ID, "debugger-list").text)
                 assert "STOPPED" in browser.find_element(By.ID, "debugger-list").text
                 next(button for button in browser.find_elements(By.CSS_SELECTOR, "#debugger-list button")

@@ -162,6 +162,12 @@ struct NativeConfiguredTask: Identifiable, Equatable {
     let label: String
     let source: String
 }
+struct NativeDebugScenario: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let adapter: String
+    let source: String
+}
 struct NativeDebuggerThread: Identifiable, Equatable {
     let id: Int
     let name: String

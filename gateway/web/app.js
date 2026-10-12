@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.2";
+const UI_BUILD = "2026.10.12.3";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -65,6 +65,7 @@ const state = {
   terminalSnapshot: null,
   lastTerminalSnapshotAt: 0,
   taskCatalog: [],
+  debuggerCatalog: [],
   debuggerSessions: [],
   lastDebuggerSnapshotAt: 0,
   contextPaths: [],
@@ -1033,6 +1034,7 @@ function resetTargetSession() {
   state.selectedTerminalId = null;
   state.terminalSnapshot = null;
   state.taskCatalog = [];
+  state.debuggerCatalog = [];
   state.debuggerSessions = [];
   $("transcript-entries").replaceChildren();
   renderThreads();
@@ -1966,6 +1968,12 @@ async function runConfiguredTask(event) {
 }
 
 async function loadDebugger() {
+  if (state.capabilities.includes("debugger.catalog")) {
+    const catalog = await rpc("debugger.catalog", baseInstanceParams());
+    state.debuggerCatalog = Array.isArray(catalog.scenarios) ? catalog.scenarios : [];
+  } else {
+    state.debuggerCatalog = [];
+  }
   if (!state.capabilities.includes("debugger.snapshot")) {
     state.debuggerSessions = [];
     renderDebugger();
@@ -1988,6 +1996,28 @@ function debuggerButton(label, action, session, thread = null) {
 }
 
 function renderDebugger() {
+  const select = $("debugger-select");
+  const prior = select.value;
+  select.replaceChildren();
+  for (const scenario of state.debuggerCatalog) {
+    const option = document.createElement("option");
+    option.value = scenario.scenario_id;
+    option.textContent = `${scenario.label} · ${scenario.adapter}`;
+    select.append(option);
+  }
+  if (!state.debuggerCatalog.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = state.capabilities.includes("debugger.catalog") ? "No configured debuggers" : "Debugger launching disabled";
+    select.append(option);
+  }
+  if (state.debuggerCatalog.some((scenario) => scenario.scenario_id === prior)) select.value = prior;
+  const launchEnabled = state.capabilities.includes("debugger.launch") && state.debuggerCatalog.length > 0;
+  select.disabled = !launchEnabled;
+  $("launch-debugger").disabled = !launchEnabled;
+  $("debugger-launch-help").textContent = state.capabilities.includes("debugger.catalog")
+    ? "Starts only a debugger configuration already saved in Zed for this project."
+    : "Enable Start Configured Debuggers in desktop ZedLink settings, then restart patched Zed.";
   const list = $("debugger-list");
   list.replaceChildren();
   const supported = state.capabilities.includes("debugger.snapshot");
@@ -2044,6 +2074,20 @@ function renderDebugger() {
     empty.textContent = supported ? "No debugger session is running in this Zed project." : "Debugger access is unavailable.";
     list.append(empty);
   }
+}
+
+async function launchConfiguredDebugger(event) {
+  event.preventDefault();
+  const scenarioId = $("debugger-select").value;
+  if (!scenarioId || !state.capabilities.includes("debugger.launch")) return;
+  $("launch-debugger").disabled = true;
+  try {
+    await rpc("debugger.launch", { ...baseInstanceParams(), scenario_id: scenarioId }, crypto.randomUUID());
+    notice("Zed started the configured debugger.");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await loadDebugger();
+  } catch (error) { notice(error.message); }
+  finally { $("launch-debugger").disabled = false; }
 }
 
 async function controlDebugger(sessionId, action, threadId) {
@@ -3697,6 +3741,7 @@ $("context-activity-tab").addEventListener("click", () => switchContextTab("acti
 $("refresh-terminal").addEventListener("click", () => loadTerminalSnapshot().catch((error) => notice(error.message)));
 $("terminal-input-form").addEventListener("submit", sendTerminalInput);
 $("task-run-form").addEventListener("submit", runConfiguredTask);
+$("debugger-launch-form").addEventListener("submit", launchConfiguredDebugger);
 $("file-search").addEventListener("input", renderProjectFiles);
 $("project-search-form").addEventListener("submit", searchProject);
 $("project-search").addEventListener("input", () => {

@@ -360,6 +360,20 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 }
             }
             Text("DEBUGGER", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+            if ("debugger.catalog" !in state.capabilities) {
+                Text("Enable Start Configured Debuggers in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
+            } else if (state.debuggerCatalog.isEmpty()) {
+                Text("No configured Zed debuggers are available for this project.", color = Muted, fontSize = 12.sp)
+            }
+            state.debuggerCatalog.forEach { scenario ->
+                TextButton(onClick = { model.launchDebugger(scenario) }, enabled = "debugger.launch" in state.capabilities,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth()) {
+                        Text(scenario.label, modifier = Modifier.weight(1f), maxLines = 1)
+                        Text(scenario.adapter.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
             if ("debugger.snapshot" !in state.capabilities) {
                 Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
             } else if (state.debuggerSessions.isEmpty()) {

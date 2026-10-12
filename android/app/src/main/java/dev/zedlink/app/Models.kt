@@ -96,6 +96,7 @@ data class NativeTerminal(
 )
 data class NativeTerminalSnapshot(val terminal: NativeTerminal, val content: String, val truncated: Boolean)
 data class NativeConfiguredTask(val id: String, val label: String, val source: String)
+data class NativeDebugScenario(val id: String, val label: String, val adapter: String, val source: String)
 data class NativeDebuggerThread(val id: Long, val name: String, val status: String)
 data class NativeDebuggerSession(
     val id: String,

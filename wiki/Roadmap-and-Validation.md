@@ -36,6 +36,7 @@ Verified:
 - automatically visible live reasoning and tool activity from a bounded recent native snapshot,
 - source-compiled root ACP exposure plus authenticated browser coverage for agent identity, external configuration ownership, commands, streaming, send, cancel, and approvals,
 - global Zed task discovery and Status execution in an already-open Zed window,
+- configured debugger discovery and launch plus pause, continue, stepping, restart, and stop through a real native DAP session,
 - authenticated Web Push registration, private-endpoint rejection, persisted VAPID identity, subscription removal on revocation, and service-worker notification/open-session handling in deterministic tests.
 - one paired gateway routing explicitly among named online/offline Zed targets without cross-target failover or shared pending-send state,
 - browser creation with a fixture-advertised ACP agent plus native session rename and stop-exposure controls.

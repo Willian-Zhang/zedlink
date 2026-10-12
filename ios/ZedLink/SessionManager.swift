@@ -23,6 +23,7 @@ import Combine
     @Published private(set) var terminals: [NativeTerminal] = []
     @Published private(set) var terminalSnapshot: NativeTerminalSnapshot?
     @Published private(set) var configuredTasks: [NativeConfiguredTask] = []
+    @Published private(set) var debuggerCatalog: [NativeDebugScenario] = []
     @Published private(set) var debuggerSessions: [NativeDebuggerSession] = []
     @Published private(set) var previewTitle = ""
     @Published private(set) var previewContent = ""
@@ -78,7 +79,7 @@ import Combine
         queuedMessages = []
         editReview = nil
         threadSettings = nil
-        projectFiles = []; changes = []; changesRevision = nil; terminals = []; terminalSnapshot = nil; configuredTasks = []; debuggerSessions = []; previewTitle = ""; previewContent = ""; contextPaths = []
+        projectFiles = []; changes = []; changesRevision = nil; terminals = []; terminalSnapshot = nil; configuredTasks = []; debuggerCatalog = []; debuggerSessions = []; previewTitle = ""; previewContent = ""; contextPaths = []
         creatingThread = false
         pending = nil
         delivery = ""
@@ -559,6 +560,13 @@ import Combine
                     return NativeConfiguredTask(id: id, label: label, source: row["source"] as? String ?? "project")
                 }
             } else { configuredTasks = [] }
+            if capabilities.contains("debugger.catalog") {
+                let result = try await client.rpc("debugger.catalog", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                debuggerCatalog = (result["scenarios"] as? [[String: Any]] ?? []).compactMap { row in
+                    guard let id = row["scenario_id"] as? String, let label = row["label"] as? String else { return nil }
+                    return NativeDebugScenario(id: id, label: label, adapter: row["adapter"] as? String ?? "DAP", source: row["source"] as? String ?? "project")
+                }
+            } else { debuggerCatalog = [] }
             if capabilities.contains("debugger.snapshot") {
                 let result = try await client.rpc("debugger.snapshot", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
                 debuggerSessions = (result["sessions"] as? [[String: Any]] ?? []).compactMap(Self.decodeDebuggerSession)
@@ -586,6 +594,17 @@ import Combine
         do {
             _ = try await client.rpc("debugger.control", params: params, requestID: UUID().uuidString)
             try? await Task.sleep(for: .milliseconds(180))
+            await loadProjectContext()
+        } catch { issue = error.localizedDescription }
+    }
+
+    func launchDebugger(_ scenario: NativeDebugScenario) async {
+        guard let client, capabilities.contains("debugger.launch") else { return }
+        do {
+            _ = try await client.rpc("debugger.launch", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "scenario_id": scenario.id,
+            ], requestID: UUID().uuidString)
+            try? await Task.sleep(for: .milliseconds(350))
             await loadProjectContext()
         } catch { issue = error.localizedDescription }
     }

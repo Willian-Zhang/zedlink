@@ -50,10 +50,10 @@ index 9f641fb384..24840eec03 100644
  
  [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index c0e79ab191..22a94c6929 100644
+index c0e79ab191..6239b909bd 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
-@@ -2898,6 +2898,36 @@
+@@ -2898,6 +2898,37 @@
    //   - "proxy": "socks5h://localhost:10808"
    //   - "proxy": "http://127.0.0.1:10809"
    "proxy": "",
@@ -76,6 +76,7 @@ index c0e79ab191..22a94c6929 100644
 +    "allow_task_control": false,
 +    "allow_task_start": false,
 +    "allow_debugger_read": false,
++    "allow_debugger_start": false,
 +    "allow_debugger_control": false,
 +    "connection_id": "",
 +    "connection_label": "",
@@ -487,10 +488,10 @@ index bfefb986bd..de394bf31d 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..cac5f85d48
+index 0000000000..658e00368e
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,4001 @@
+@@ -0,0 +1,4163 @@
 +use std::{
 +    cell::RefCell,
 +    collections::{HashMap, HashSet, VecDeque},
@@ -527,7 +528,9 @@ index 0000000000..cac5f85d48
 +use serde_json::{Value, json};
 +use settings::SettingsStore;
 +use sha2::{Digest, Sha256};
-+use task::{ResolvedTask, TaskContext, TaskVariables, VariableName};
++use task::{
++    DebugScenario, ResolvedTask, SharedTaskContext, TaskContext, TaskVariables, VariableName,
++};
 +use terminal::TaskStatus;
 +use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 +use util::rel_path::RelPath;
@@ -598,6 +601,7 @@ index 0000000000..cac5f85d48
 +    task_control: bool,
 +    task_start: bool,
 +    debugger_read: bool,
++    debugger_start: bool,
 +    debugger_control: bool,
 +}
 +
@@ -669,6 +673,9 @@ index 0000000000..cac5f85d48
 +        if self.debugger_read {
 +            capabilities.push("debugger.snapshot");
 +        }
++        if self.debugger_start {
++            capabilities.extend(["debugger.catalog", "debugger.launch"]);
++        }
 +        if self.debugger_control {
 +            capabilities.push("debugger.control");
 +        }
@@ -699,6 +706,7 @@ index 0000000000..cac5f85d48
 +            "task.list" | "task.stop" => self.task_control,
 +            "task.catalog" | "task.run" => self.task_start,
 +            "debugger.snapshot" => self.debugger_read,
++            "debugger.catalog" | "debugger.launch" => self.debugger_start,
 +            "debugger.control" => self.debugger_control,
 +            _ => true,
 +        }
@@ -810,6 +818,10 @@ index 0000000000..cac5f85d48
 +        debugger_read: settings
 +            .as_ref()
 +            .and_then(|settings| settings.allow_debugger_read)
++            .unwrap_or(false),
++        debugger_start: settings
++            .as_ref()
++            .and_then(|settings| settings.allow_debugger_start)
 +            .unwrap_or(false),
 +        debugger_control: settings
 +            .as_ref()
@@ -1418,6 +1430,8 @@ index 0000000000..cac5f85d48
 +        "task.catalog" => task_catalog(&request, state, cx),
 +        "task.run" => task_run(&request, state, cx),
 +        "debugger.snapshot" => debugger_snapshot(&request, state, cx),
++        "debugger.catalog" => debugger_catalog(&request, state, cx),
++        "debugger.launch" => debugger_launch(&request, state, cx),
 +        "debugger.control" => debugger_control(&request, state, cx),
 +        "project.files" => project_files(&request, state, cx),
 +        "project.file" => project_file(&request, state, cx),
@@ -4097,6 +4111,98 @@ index 0000000000..cac5f85d48
 +    )
 +}
 +
++fn debugger_catalog(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
++    if !matches_instance(request, state) {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let scenarios = configured_debug_scenarios(&state.project_root, cx)
++        .into_iter()
++        .map(|(_, source, scenario, _)| {
++            json!({
++                "scenario_id": debug_scenario_id(&source, &scenario),
++                "label": scenario.label,
++                "adapter": scenario.adapter,
++                "source": task_source_label(&source),
++            })
++        })
++        .collect::<Vec<_>>();
++    success(
++        &request.request_id,
++        json!({
++            "instance_id": state.instance_id,
++            "epoch": state.epoch,
++            "scenarios": scenarios,
++            "provisional": true,
++        }),
++    )
++}
++
++fn debugger_launch(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    if !matches_instance(request, state) {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    if !params_contain_only(&request.params, &["instance_id", "epoch", "scenario_id"]) {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    let Some(scenario_id) = request.params.get("scenario_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if scenario_id.is_empty() || scenario_id.len() > 128 {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    let digest = match payload_digest(&request.params) {
++        Ok(digest) => digest,
++        Err(code) => return error(&request.request_id, code),
++    };
++    if let Some(existing) = state.terminal_operations.borrow().get(&request.request_id) {
++        return if existing == &digest {
++            success(
++                &request.request_id,
++                json!({"outcome": "requested", "duplicate": true}),
++            )
++        } else {
++            error(&request.request_id, "REQUEST_ID_CONFLICT")
++        };
++    }
++    if state.terminal_operations.borrow().len() >= 256 {
++        return error(&request.request_id, "RATE_LIMITED");
++    }
++    let Some((workspace, source, scenario, context)) =
++        configured_debug_scenarios(&state.project_root, cx)
++            .into_iter()
++            .find(|(_, source, scenario, _)| debug_scenario_id(source, scenario) == scenario_id)
++    else {
++        return error(&request.request_id, "DEBUGGER_UNAVAILABLE");
++    };
++    let worktree_id = match &source {
++        TaskSourceKind::Worktree { id, .. } => Some(*id),
++        _ => None,
++    };
++    let started = cx.with_window(workspace.entity_id(), |window, cx| {
++        workspace.update(cx, |workspace, cx| {
++            workspace.start_debug_session(
++                scenario,
++                SharedTaskContext::from(context),
++                None,
++                worktree_id,
++                window,
++                cx,
++            );
++        });
++    });
++    if started.is_none() {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    state
++        .terminal_operations
++        .borrow_mut()
++        .insert(request.request_id.clone(), digest);
++    success(
++        &request.request_id,
++        json!({"outcome": "requested", "duplicate": false}),
++    )
++}
++
 +fn debugger_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
 +    if !matches_instance(request, state) {
 +        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
@@ -4360,6 +4466,63 @@ index 0000000000..cac5f85d48
 +    tasks
 +}
 +
++fn configured_debug_scenarios(
++    project_root: &Path,
++    cx: &App,
++) -> Vec<(
++    Entity<workspace::Workspace>,
++    TaskSourceKind,
++    DebugScenario,
++    TaskContext,
++)> {
++    let mut scenarios = Vec::new();
++    for workspace in loaded_project_workspaces(project_root, cx) {
++        let project = workspace.read(cx).project().clone();
++        let project = project.read(cx);
++        let Some(worktree) = project
++            .visible_worktrees(cx)
++            .find(|worktree| worktree.read(cx).abs_path().as_ref() == project_root)
++        else {
++            continue;
++        };
++        let worktree_id = worktree.read(cx).id();
++        let mut task_variables = TaskVariables::default();
++        task_variables.insert(
++            VariableName::WorktreeRoot,
++            project_root.to_string_lossy().into_owned(),
++        );
++        let context = TaskContext {
++            cwd: Some(project_root.to_path_buf()),
++            task_variables,
++            project_env: project.cli_environment(cx).unwrap_or_default(),
++        };
++        let Some(inventory) = project.task_store().read(cx).task_inventory().cloned() else {
++            continue;
++        };
++        for (source, scenario) in inventory
++            .read(cx)
++            .configured_debug_scenarios_for_worktree(worktree_id)
++        {
++            scenarios.push((workspace.clone(), source, scenario, context.clone()));
++        }
++    }
++    scenarios.sort_by(|left, right| left.2.label.cmp(&right.2.label));
++    scenarios.dedup_by(|left, right| {
++        debug_scenario_id(&left.1, &left.2) == debug_scenario_id(&right.1, &right.2)
++    });
++    scenarios
++}
++
++fn debug_scenario_id(source: &TaskSourceKind, scenario: &DebugScenario) -> String {
++    let mut hasher = Sha256::new();
++    hasher.update(task_source_label(source).as_bytes());
++    hasher.update([0]);
++    if let Ok(bytes) = serde_json::to_vec(scenario) {
++        hasher.update(bytes);
++    }
++    format!("{:x}", hasher.finalize())
++}
++
 +fn task_source_label(source: &TaskSourceKind) -> &'static str {
 +    match source {
 +        TaskSourceKind::Worktree { .. } => "project",
@@ -4520,10 +4683,10 @@ index 35096898de..5a28e274b5 100644
  #[cfg(any(test, feature = "test-support"))]
  pub mod tests;
 diff --git a/crates/project/src/task_inventory.rs b/crates/project/src/task_inventory.rs
-index af48841b26..3cde088695 100644
+index af48841b26..2a784d4722 100644
 --- a/crates/project/src/task_inventory.rs
 +++ b/crates/project/src/task_inventory.rs
-@@ -305,6 +305,22 @@ impl Inventory {
+@@ -305,6 +305,31 @@ impl Inventory {
          })
      }
  
@@ -4543,6 +4706,15 @@ index af48841b26..3cde088695 100644
 +            .collect()
 +    }
 +
++    pub fn configured_debug_scenarios_for_worktree(
++        &self,
++        worktree: WorktreeId,
++    ) -> Vec<(TaskSourceKind, DebugScenario)> {
++        self.worktree_scenarios_from_settings(worktree)
++            .chain(self.global_debug_scenarios_from_settings())
++            .collect()
++    }
++
      pub fn scenario_scheduled(
          &mut self,
          scenario: DebugScenario,
@@ -4559,10 +4731,10 @@ index 0fe5162a14..9c1d127d41 100644
      }
  
 diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
-index 290a14c0d9..0a677a7b9d 100644
+index 290a14c0d9..c5dba31c42 100644
 --- a/crates/settings_content/src/settings_content.rs
 +++ b/crates/settings_content/src/settings_content.rs
-@@ -332,6 +332,189 @@ pub struct SettingsContent {
+@@ -332,6 +332,195 @@ pub struct SettingsContent {
      /// Settings for developer-oriented instrumentation tools (profilers,
      /// tracers, etc.) that can be toggled at runtime.
      pub instrumentation: Option<InstrumentationSettingsContent>,
@@ -4663,6 +4835,12 @@ index 290a14c0d9..0a677a7b9d 100644
 +    /// Default: false
 +    pub allow_debugger_read: Option<bool>,
 +
++    /// Allows paired devices to start debugger configurations already defined
++    /// for the configured project. Raw adapter configurations are never accepted.
++    ///
++    /// Default: false
++    pub allow_debugger_start: Option<bool>,
++
 +    /// Allows paired devices to pause, continue, step, restart, or stop
 +    /// debugger sessions already running in the configured project.
 +    ///
@@ -4752,7 +4930,7 @@ index 290a14c0d9..0a677a7b9d 100644
  }
  
  /// Configuration for developer-oriented instrumentation tools that collect
-@@ -409,7 +592,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
+@@ -409,7 +598,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
          journal, log, line_indicator_format, language_models, outline_panel, project_panel,
          node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
          title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
@@ -4774,7 +4952,7 @@ index 861b71e221..65db5266d8 100644
  telemetry.workspace = true
  theme.workspace = true
 diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
-index 972d401b68..363b6e5503 100644
+index 972d401b68..0c08391916 100644
 --- a/crates/settings_ui/src/page_data.rs
 +++ b/crates/settings_ui/src/page_data.rs
 @@ -1,8 +1,9 @@
@@ -4797,7 +4975,7 @@ index 972d401b68..363b6e5503 100644
  
  const DEFAULT_AUDIO_OUTPUT: AudioOutputDeviceName = AudioOutputDeviceName(None);
  const DEFAULT_EMPTY_AUDIO_OUTPUT: Option<&AudioOutputDeviceName> = Some(&DEFAULT_AUDIO_OUTPUT);
-@@ -77,11 +79,1069 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
+@@ -77,11 +79,1092 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
          version_control_page(),
          collaboration_page(),
          ai_page(cx),
@@ -5581,7 +5759,7 @@ index 972d401b68..363b6e5503 100644
 +        ]
 +    }
 +
-+    fn access_section() -> [SettingsPageItem; 13] {
++    fn access_section() -> [SettingsPageItem; 14] {
 +        [
 +            SettingsPageItem::SectionHeader("Remote Permissions"),
 +            SettingsPageItem::SettingItem(SettingItem {
@@ -5822,6 +6000,29 @@ index 972d401b68..363b6e5503 100644
 +                            .zedlink
 +                            .get_or_insert_default()
 +                            .allow_debugger_read = value
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Start Configured Debuggers",
++                description: "Allow paired devices to start debugger configurations already defined in Zed for this project. Raw adapter configurations are never accepted. Disabled by default.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("zedlink.allow_debugger_start"),
++                    pick: |settings_content| {
++                        settings_content
++                            .zedlink
++                            .as_ref()?
++                            .allow_debugger_start
++                            .as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content
++                            .zedlink
++                            .get_or_insert_default()
++                            .allow_debugger_start = value
 +                    },
 +                }),
 +                metadata: None,

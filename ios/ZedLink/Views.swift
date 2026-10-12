@@ -589,6 +589,20 @@ private struct NativeContextSheet: View {
                     }
                 }
                 Section("Debugger") {
+                    if !session.capabilities.contains("debugger.catalog") {
+                        Text("Enable Start Configured Debuggers in desktop ZedLink settings and restart patched Zed.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if session.debuggerCatalog.isEmpty {
+                        Text("No configured Zed debuggers are available for this project.").foregroundStyle(.secondary)
+                    }
+                    ForEach(session.debuggerCatalog) { scenario in
+                        Button {
+                            Task { await session.launchDebugger(scenario) }
+                        } label: {
+                            HStack { Text(scenario.label); Spacer(); Text(scenario.adapter.uppercased()).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                        }
+                        .disabled(!session.capabilities.contains("debugger.launch"))
+                    }
                     if !session.capabilities.contains("debugger.snapshot") {
                         Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.")
                             .font(.caption).foregroundStyle(.secondary)

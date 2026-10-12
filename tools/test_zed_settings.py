@@ -71,6 +71,7 @@ def main() -> None:
             "allow_task_control": False,
             "allow_task_start": False,
             "allow_debugger_read": False,
+            "allow_debugger_start": False,
             "allow_debugger_control": False,
             "connection_id": "fixture",
             "connection_label": "Fixture",
@@ -92,6 +93,7 @@ def main() -> None:
         saved["zedlink"]["allow_git_changes"] = False
         saved["zedlink"]["allow_task_start"] = True
         saved["zedlink"]["allow_debugger_read"] = True
+        saved["zedlink"]["allow_debugger_start"] = True
         saved["zedlink"]["allow_debugger_control"] = True
         settings_path.write_text(json.dumps(saved), encoding="utf-8")
         assert manager.has_native_zedlink_settings(data)
@@ -102,6 +104,7 @@ def main() -> None:
         assert repaired["allow_git_changes"] is False
         assert repaired["allow_task_start"] is True
         assert repaired["allow_debugger_read"] is True
+        assert repaired["allow_debugger_start"] is True
         assert repaired["allow_debugger_control"] is True
 
         connection_settings = {"zedlink": dict(repaired)}

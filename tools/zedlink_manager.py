@@ -98,6 +98,7 @@ def sync_zed_settings(data: dict) -> bool:
         "allow_task_control": existing_zedlink.get("allow_task_control", False),
         "allow_task_start": existing_zedlink.get("allow_task_start", False),
         "allow_debugger_read": existing_zedlink.get("allow_debugger_read", False),
+        "allow_debugger_start": existing_zedlink.get("allow_debugger_start", False),
         "allow_debugger_control": existing_zedlink.get("allow_debugger_control", False),
         "connection_id": active_route["id"],
         "connection_label": active_route["label"],
