@@ -363,12 +363,17 @@ class ProbeFixture:
                         else:
                             self.debugger_controls[request["request_id"]] = payload
                             result = {"outcome": "requested", "duplicate": duplicate}
-                elif method == "project.files":
+                elif method in ("project.files", "project.directory"):
                     result = {"entries": [
                         {"path": "src", "kind": "directory", "size": 0},
                         {"path": "src/main.rs", "kind": "file", "size": 31},
                         {"path": "README.md", "kind": "file", "size": 18},
                     ], "truncated": False}
+                    if method == "project.directory":
+                        directory = params.get("path", "")
+                        prefix = directory + "/" if directory else ""
+                        result["entries"] = [entry for entry in result["entries"] if entry["path"].startswith(prefix) and "/" not in entry["path"][len(prefix):]]
+                        result["directory"] = directory
                 elif method == "project.file":
                     files = {"src/main.rs": "fn main() { println!(\"ready\"); }\n",
                              "README.md": "# Fixture project\n"}
@@ -501,7 +506,7 @@ class ProbeFixture:
                                                "thread.subagents", "subagent.cancel",
                                                "thread.rewind_image",
                                                "thread.rewind",
-                                               "thread.approvals", "approval.respond", "project.files",
+                                               "thread.approvals", "approval.respond", "project.files", "project.directory",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
                                                "terminal.list", "terminal.snapshot", "terminal.input", "task.list", "task.stop",
                                                "task.catalog", "task.run", "debugger.catalog", "debugger.launch", "debugger.snapshot", "debugger.control",
@@ -915,7 +920,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.9"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.10"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1031,7 +1036,16 @@ def main():
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 browser.find_element(By.ID, "show-context").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "context-panel").is_displayed())
-                wait.until(lambda driver: "src/main.rs" in driver.find_element(By.ID, "file-list").text)
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src"]'))
+                assert not browser.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]')
+                browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src"]').click()
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]'))
+                assert "src" in browser.find_element(By.ID, "file-breadcrumbs").text
+                browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]').click()
+                wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
+                browser.save_screenshot("/tmp/zedlink-browser-file-browser.png")
+                browser.find_element(By.ID, "file-preview-back").click()
+                assert not browser.find_element(By.ID, "file-preview").is_displayed()
                 browser.find_element(By.ID, "project-search").send_keys("println")
                 browser.find_element(By.ID, "project-search-form").submit()
                 wait.until(lambda driver: "src/main.rs" in driver.find_element(By.ID, "project-search-results").text)
@@ -1052,7 +1066,7 @@ def main():
                 browser.save_screenshot("/tmp/zedlink-browser-code-review.png")
                 browser.find_element(By.ID, "close-code-review").click()
                 file_rows = browser.find_elements(By.CSS_SELECTOR, "#file-list .context-row:not(.directory)")
-                next(row for row in file_rows if "src/main.rs" in row.text).click()
+                next(row for row in file_rows if row.get_attribute("data-path") == "src/main.rs").click()
                 wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
                 browser.find_element(By.ID, "attach-preview").click()
                 assert "src/main.rs" in browser.find_element(By.ID, "attachment-strip").text
@@ -1381,6 +1395,16 @@ def main():
                 mobile_header = browser.execute_script("const title=document.getElementById('thread-title').getBoundingClientRect(); const context=document.getElementById('show-context').getBoundingClientRect(); return {titleWidth:title.width,titleHeight:title.height,contextWidth:context.width,pageWidth:document.documentElement.scrollWidth,viewport:innerWidth}")
                 assert mobile_header["titleWidth"] >= 150 and mobile_header["titleHeight"] <= 42 and mobile_header["contextWidth"] == 38, mobile_header
                 assert mobile_header["pageWidth"] <= mobile_header["viewport"] + 1, mobile_header
+                browser.execute_script("openContextPanel('files'); navigateProjectDirectory('src')")
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]'))
+                browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]').click()
+                wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
+                mobile_reader = browser.execute_script("const preview=document.getElementById('file-preview').getBoundingClientRect(); return {left:preview.left,right:preview.right,bottom:preview.bottom,width:innerWidth,height:innerHeight,browserHidden:getComputedStyle(document.getElementById('file-browser')).display==='none'}")
+                assert mobile_reader["browserHidden"] and mobile_reader["left"] >= 0 and mobile_reader["right"] <= mobile_reader["width"] + 1 and mobile_reader["bottom"] <= mobile_reader["height"] + 1, mobile_reader
+                browser.save_screenshot("/tmp/zedlink-browser-file-reader-mobile.png")
+                browser.find_element(By.ID, "file-preview-back").click()
+                assert browser.find_element(By.ID, "file-browser").is_displayed()
+                browser.find_element(By.ID, "close-context").click()
                 mobile_composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,viewport:innerWidth}")
                 assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and mobile_composer["height"] <= 54 and mobile_composer["radius"] == "13px", mobile_composer
                 browser.find_element(By.ID, "show-context").click()

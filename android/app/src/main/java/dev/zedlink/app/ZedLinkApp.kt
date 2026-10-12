@@ -305,6 +305,8 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
 private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
     var terminalInput by remember { mutableStateOf("") }
     var terminalMenu by remember { mutableStateOf(false) }
+    var fullFiles by remember { mutableStateOf(false) }
+    if (fullFiles) ProjectFileBrowser(state, model) { fullFiles = false }
     var fullTerminal by remember { mutableStateOf(false) }
     if (fullTerminal) TerminalScreen(state, model) { fullTerminal = false }
     LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
@@ -315,15 +317,12 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
     }
     AlertDialog(onDismissRequest = close, title = { Text("Project context") },
         text = { Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
-            if (state.previewContent.isNotEmpty()) {
+            if (state.previewTitle == "Working tree diff" && state.previewContent.isNotEmpty()) {
                 Text(state.previewTitle, fontWeight = FontWeight.SemiBold)
                 SelectionContainer { Text(state.previewContent, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
             }
             Text("PROJECT FILES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
-            state.projectFiles.filter { it.kind == "file" }.forEach { file -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { model.previewFile(file.id) }, modifier = Modifier.weight(1f)) { Text(file.id, maxLines = 1) }
-                TextButton(onClick = { model.toggleContextPath(file.id) }) { Text(if (file.id in state.contextPaths) "REMOVE" else "ATTACH") }
-            } }
+            TextButton(onClick = { fullFiles = true }) { Icon(Icons.Default.FolderOpen, null); Text("Browse files and folders") }
             Text("GIT CHANGES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
             TextButton(onClick = model::loadDiff) { Text("LOAD FULL DIFF") }
             state.changes.forEach { change -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -818,6 +817,7 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
 
 @Composable
 private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
+    val activity = LocalContext.current as? MainActivity
     var modelMenu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Header("Settings", "ZedLink for Android")
@@ -835,6 +835,10 @@ private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
             }
             if (settings.usedTokens != null && settings.maxTokens != null) SettingRow("Context", "${settings.usedTokens} / ${settings.maxTokens} tokens")
         }
+        TextButton(onClick = { if (state.notificationsEnabled) model.disableNotifications() else activity?.enableApprovalNotifications() }) {
+            Text(if (state.notificationsEnabled) "Disable approval notifications" else "Enable lock-screen and paired watch alerts")
+        }
+        Text("Local alerts require this app to receive updates. Background FCM is not configured. Use browser push while suspended; Wear OS may mirror phone alerts.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(16.dp))
         SettingRow("Appearance", "OLED dark")
         SettingRow("Runtime", "Native Zed Agent")
         SettingRow("Connection", state.profile?.endpoint ?: "Not paired")

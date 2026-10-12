@@ -136,7 +136,7 @@ struct NotificationTestRequest {
 #[derive(Clone, Default)]
 struct ThreadObservation {
     status: String,
-    approvals: usize,
+    approvals: HashSet<String>,
     had_error: bool,
 }
 
@@ -144,7 +144,11 @@ fn thread_notification(
     previous: &ThreadObservation,
     current: &ThreadObservation,
 ) -> Option<&'static str> {
-    if previous.approvals == 0 && current.approvals > 0 {
+    if current
+        .approvals
+        .iter()
+        .any(|id| !previous.approvals.contains(id))
+    {
         Some("A Zed Agent session needs your approval.")
     } else if !previous.had_error && current.had_error {
         Some("A Zed Agent session failed.")
@@ -153,6 +157,28 @@ fn thread_notification(
     } else {
         None
     }
+}
+
+fn pending_approval_keys(snapshot: &Value) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    let mut add = |rows: Option<&Vec<Value>>, child: &str| {
+        for row in rows.into_iter().flatten() {
+            if let Some(id) = row["approval_id"].as_str() {
+                keys.insert(format!(
+                    "{}:{child}:{}:{id}",
+                    snapshot["epoch"], row["turn_id"]
+                ));
+            }
+        }
+    };
+    add(snapshot["pending_approvals"].as_array(), "");
+    for child in snapshot["subagents"].as_array().into_iter().flatten() {
+        add(
+            child["pending_approvals"].as_array(),
+            child["session_id"].as_str().unwrap_or(""),
+        );
+    }
+    keys
 }
 
 enum PushOutcome {
@@ -924,6 +950,7 @@ impl Gateway {
             "tag": thread_id.map_or_else(|| "zedlink-test".to_owned(), |id| format!("zedlink-thread-{id}")),
             "thread_id": thread_id,
             "target_id": target_id,
+            "kind": if body == "A Zed Agent session needs your approval." { "approval" } else { "status" },
         });
         let encoded = match serde_json::to_vec(&payload) {
             Ok(encoded) => encoded,
@@ -932,7 +959,11 @@ impl Gateway {
         let mut builder = WebPushMessageBuilder::new(&record.subscription);
         builder.set_payload(ContentEncoding::Aes128Gcm, &encoded);
         builder.set_ttl(300);
-        builder.set_urgency(Urgency::Normal);
+        builder.set_urgency(if body == "A Zed Agent session needs your approval." {
+            Urgency::High
+        } else {
+            Urgency::Normal
+        });
         builder.set_vapid_signature(signature);
         let message = match builder.build() {
             Ok(message) => message,
@@ -979,7 +1010,7 @@ impl Gateway {
                 prior.clear();
                 continue;
             }
-            let mut current = HashMap::new();
+            let mut current = prior.clone();
             for target in &self.0.targets {
                 let request = json!({
                     "version": 1,
@@ -993,6 +1024,7 @@ impl Gateway {
                 let Some(threads) = response["result"]["threads"].as_array() else {
                     continue;
                 };
+                current.retain(|key, _| !key.starts_with(&format!("{}:", target.id)));
                 for thread in threads {
                     let (Some(thread_id), Some(status)) =
                         (thread["thread_id"].as_str(), thread["status"].as_str())
@@ -1005,24 +1037,35 @@ impl Gateway {
                         "method": "thread.snapshot",
                         "params": {"thread_id": thread_id},
                     });
-                    let approvals = self
-                        .probe(Some(&target.id), &snapshot_request)
-                        .await
-                        .ok()
-                        .and_then(|snapshot| {
-                            snapshot["result"]["pending_approvals"]
-                                .as_array()
-                                .map(Vec::len)
-                        })
-                        .unwrap_or(0);
+                    let key = format!("{}:{thread_id}", target.id);
+                    let approvals = match self.probe(Some(&target.id), &snapshot_request).await {
+                        Ok(snapshot) => {
+                            let Some(result) = snapshot
+                                .get("result")
+                                .filter(|result| result["pending_approvals"].is_array())
+                            else {
+                                if let Some(previous) = prior.get(&key) {
+                                    current.insert(key, previous.clone());
+                                }
+                                continue;
+                            };
+                            pending_approval_keys(result)
+                        }
+                        Err(_) => {
+                            if let Some(previous) = prior.get(&key) {
+                                current.insert(key, previous.clone());
+                            }
+                            continue;
+                        }
+                    };
                     let observation = ThreadObservation {
                         status: status.to_owned(),
                         approvals,
                         had_error: thread["had_error"].as_bool().unwrap_or(false),
                     };
-                    let key = format!("{}:{thread_id}", target.id);
-                    if let Some(previous) = prior.get(&key)
-                        && let Some(body) = thread_notification(previous, &observation)
+                    let initial = ThreadObservation::default();
+                    if let Some(body) =
+                        thread_notification(prior.get(&key).unwrap_or(&initial), &observation)
                     {
                         self.notify_all(body, &target.id, thread_id).await;
                     }
@@ -1506,6 +1549,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.approvals"
             | "approval.respond"
             | "project.files"
+            | "project.directory"
             | "project.file"
             | "project.search"
             | "changes.snapshot"
@@ -1731,15 +1775,39 @@ mod tests {
     }
 
     #[test]
+    fn detects_replaced_and_child_approvals_without_count_changes() {
+        let before = json!({"epoch":"a", "pending_approvals":[{"approval_id":"old","turn_id":1}]});
+        let after = json!({"epoch":"a", "subagents":[{"session_id":"child","pending_approvals":[{"approval_id":"new","turn_id":2}]}]});
+        let previous = ThreadObservation {
+            approvals: pending_approval_keys(&before),
+            ..Default::default()
+        };
+        let current = ThreadObservation {
+            approvals: pending_approval_keys(&after),
+            ..Default::default()
+        };
+        assert_eq!(previous.approvals.len(), current.approvals.len());
+        assert_eq!(
+            thread_notification(&previous, &current),
+            Some("A Zed Agent session needs your approval.")
+        );
+        assert_eq!(thread_notification(&current, &current), None);
+        assert_eq!(
+            thread_notification(&ThreadObservation::default(), &current),
+            Some("A Zed Agent session needs your approval.")
+        );
+    }
+
+    #[test]
     fn chooses_failure_notification_before_generic_completion() {
         let generating = ThreadObservation {
             status: "Generating".into(),
-            approvals: 0,
+            approvals: HashSet::new(),
             had_error: false,
         };
         let failed = ThreadObservation {
             status: "Idle".into(),
-            approvals: 0,
+            approvals: HashSet::new(),
             had_error: true,
         };
         assert_eq!(

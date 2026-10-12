@@ -24,6 +24,8 @@ cargo test --manifest-path "$project_root/protocol-core/Cargo.toml" --offline
 cargo fmt --manifest-path "$project_root/gateway/Cargo.toml" -- --check
 cargo check --manifest-path "$project_root/gateway/Cargo.toml" --offline
 node --check "$project_root/gateway/web/app.js"
+node --check "$project_root/gateway/web/service-worker.js"
+node "$project_root/tools/test_web_push_worker.js"
 python3 -m json.tool "$project_root/.zed/tasks.json" >/dev/null
 bash -n "$project_root/tools/install_linux.sh"
 bash -n "$project_root/tools/setup_zed_ide.sh"
@@ -31,6 +33,7 @@ python3 -m py_compile "$project_root/tools/zedlink_probe_client.py" \
   "$project_root/tools/zedlink_gateway_client.py" \
   "$project_root/tools/launch_patched_zed.py" \
   "$project_root/tools/test_gateway_transport.py" \
+  "$project_root/tools/test_native_agent_smoke.py" \
   "$project_root/tools/test_connection_routes.py" \
   "$project_root/tools/test_desktop_launcher.py" \
   "$project_root/tools/test_zed_settings.py" \

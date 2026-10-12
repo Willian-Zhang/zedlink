@@ -52,3 +52,10 @@ Still incomplete:
 - Git commit, branch, checkout, reset, push, pull, and hunk-level actions,
 - a simultaneous desktop-versus-remote approval race against live Zed (the paired two-device fixture and direct native approve/deny/stale tests pass),
 - broader physical-device and VPN-provider coverage.
+
+## File browsing and approval notification update (October 12, 2026)
+
+- Browser implements per-folder navigation, breadcrumbs, desktop split reading/mobile full reader, syntax colors, wrap/expand/search and attachment controls. Native SwiftUI/Compose sources include the same folder/reader flow.
+- `project.directory` is an opt-in, exposed-worktree-only read through native Zed; global listing bounds no longer prevent opening an independently fetched directory.
+- Browser push includes authenticated Review navigation; the monitor recognizes replacement and child approvals. Native local notification sources prepare one-time approval/denial with exact-state revalidation and OS authentication, plus phone notification mirroring to paired watches.
+- APNs/FCM background delivery, Live Activities and dedicated watch apps remain **not implemented/configured**. Native compilation, lock-screen/watch action round trips and physical-mobile rendering remain **not run**. See [Running and pairing](Running-and-Pairing.md#lock-screen-and-paired-watches) for the active delivery boundary.

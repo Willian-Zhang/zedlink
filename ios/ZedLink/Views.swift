@@ -521,16 +521,12 @@ private struct NativeContextSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if !session.previewContent.isEmpty {
+                if session.previewTitle == "Working tree diff", !session.previewContent.isEmpty {
                     Section(session.previewTitle) { Text(session.previewContent).font(.caption.monospaced()).textSelection(.enabled) }
                 }
                 Section("Project files") {
-                    ForEach(session.projectFiles.filter { $0.kind == "file" }) { file in
-                        HStack { Button(file.id) { Task { await session.previewFile(file.id) } }; Spacer()
-                            Button(session.contextPaths.contains(file.id) ? "Attached" : "Attach") {
-                                if session.contextPaths.contains(file.id) { session.contextPaths.remove(file.id) } else { session.contextPaths.insert(file.id) }
-                            }.disabled(session.contextPaths.contains(file.id))
-                        }
+                    NavigationLink { ProjectFileBrowser() } label: {
+                        Label("Browse files and folders", systemImage: "folder")
                     }
                 }
                 Section("Git changes") {
@@ -1318,6 +1314,14 @@ struct SettingsView: View {
                             LabeledContent("Context", value: "\(used.formatted()) / \(maximum.formatted()) tokens")
                         }
                     }
+                }
+                Section("Approval notifications") {
+                    Button("Enable lock-screen and paired watch alerts") {
+                        Task { _ = await ApprovalNotifications.shared.enable() }
+                    }
+                    Button("Disable approval alerts") { ApprovalNotifications.shared.disable() }
+                    Text("Local alerts are delivered while this app receives updates. Background push is not configured; use the installed browser app for background alerts. Watches may mirror phone notifications according to system settings.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Appearance") {
                     Picker("Theme", selection: $appearance) {

@@ -36,6 +36,11 @@ import SwiftUI
             .toolbarBackground(.visible, for: .navigationBar, .tabBar)
             .onChange(of: selectedTab) { _, _ in dismissZedLinkKeyboard() }
             .task {
+                ApprovalNotifications.shared.configure()
+                ApprovalNotifications.shared.handler = { data, action in
+                    selectedTab = 0
+                    await session.handleApprovalNotification(data, action: action)
+                }
                 if session.profile == nil, let profile = profiles.preferredProfile {
                     await session.connect(profile)
                     if session.state == .live { profiles.markUsed(profile) }

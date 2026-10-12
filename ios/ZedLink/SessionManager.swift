@@ -25,6 +25,14 @@ import Combine
     @Published private(set) var configuredTasks: [NativeConfiguredTask] = []
     @Published private(set) var debuggerCatalog: [NativeDebugScenario] = []
     @Published private(set) var debuggerSessions: [NativeDebuggerSession] = []
+    @Published private(set) var projectFolderEntries: [NativeProjectFile]?
+    @Published private(set) var projectFolderTruncated = false
+    private var directoryRequest = UUID()
+    @Published private(set) var projectFilesTruncated = false
+    @Published private(set) var previewReadable = false
+    @Published private(set) var previewLoading = false
+    @Published private(set) var previewTruncated = false
+    private var previewRequest = UUID()
     @Published private(set) var previewTitle = ""
     @Published private(set) var previewContent = ""
     @Published var contextPaths: Set<String> = []
@@ -79,6 +87,9 @@ import Combine
         queuedMessages = []
         editReview = nil
         threadSettings = nil
+        ApprovalNotifications.shared.clear()
+        previewRequest = UUID(); previewReadable = false; previewLoading = false; previewTruncated = false; projectFilesTruncated = false
+        projectFolderEntries = nil; directoryRequest = UUID()
         projectFiles = []; changes = []; changesRevision = nil; terminals = []; terminalSnapshot = nil; configuredTasks = []; debuggerCatalog = []; debuggerSessions = []; previewTitle = ""; previewContent = ""; contextPaths = []
         creatingThread = false
         pending = nil
@@ -235,6 +246,9 @@ import Combine
     func select(_ id: String) async {
         guard threads.contains(where: { $0.id == id }) else { return }
         selectedThreadID = id
+        previewRequest = UUID(); previewReadable = false; previewLoading = false; previewContent = ""; previewTitle = ""
+        projectFolderEntries = nil; directoryRequest = UUID()
+        projectFiles = []; projectFilesTruncated = false
         snapshot = nil
         commands = []
         if let profile {
@@ -397,6 +411,10 @@ import Combine
                                   truncated: result["truncated"] as? Bool ?? false,
                                   activityTruncated: result["activity_truncated"] as? Bool ?? false,
                                   pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: subagents)
+        if let profile, let targetID, let instanceID, let epoch {
+            ApprovalNotifications.shared.update(gateway: profile.gatewayID, target: targetID,
+                instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"))
+        }
         try await loadAuxiliaryState(id)
     }
 
@@ -529,13 +547,20 @@ import Combine
 
     func loadProjectContext() async {
         guard let client, let threadID = selectedThreadID else { return }
+        let scope = (profile?.id, targetID, instanceID, epoch, threadID)
+        func current() -> Bool {
+            scope.0 == profile?.id && scope.1 == targetID && scope.2 == instanceID && scope.3 == epoch && scope.4 == selectedThreadID
+        }
         do {
             let info = try await client.rpc("instance.info")
+            guard current() else { return }
             try checkIdentity(info)
             capabilities = Set(info["capabilities"] as? [String] ?? [])
             let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID]
             if capabilities.contains("project.files") {
                 let result = try await client.rpc("project.files", params: base)
+                guard current() else { return }
+                projectFilesTruncated = result["truncated"] as? Bool ?? false
                 projectFiles = (result["entries"] as? [[String: Any]] ?? []).compactMap { row in
                     guard let path = row["path"] as? String else { return nil }
                     return NativeProjectFile(id: path, kind: row["kind"] as? String ?? "file", size: row["size"] as? Int)
@@ -543,6 +568,7 @@ import Combine
             }
             if capabilities.contains("changes.snapshot") {
                 let result = try await client.rpc("changes.snapshot", params: base)
+                guard current() else { return }
                 changesRevision = (result["repository"] as? [String: Any])?["revision"] as? String
                 changes = (result["entries"] as? [[String: Any]] ?? []).compactMap { row in
                     guard let path = row["path"] as? String else { return nil }
@@ -551,6 +577,7 @@ import Combine
             }
             if capabilities.contains("terminal.list") {
                 let result = try await client.rpc("terminal.list", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                guard current() else { return }
                 terminals = (result["terminals"] as? [[String: Any]] ?? []).compactMap(Self.decodeTerminal)
                 if let selected = terminalSnapshot?.terminal.id, !terminals.contains(where: { $0.id == selected }) {
                     terminalSnapshot = nil
@@ -561,6 +588,7 @@ import Combine
             }
             if capabilities.contains("task.catalog") {
                 let result = try await client.rpc("task.catalog", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                guard current() else { return }
                 configuredTasks = (result["tasks"] as? [[String: Any]] ?? []).compactMap { row in
                     guard let id = row["task_id"] as? String, let label = row["label"] as? String else { return nil }
                     return NativeConfiguredTask(id: id, label: label, source: row["source"] as? String ?? "project")
@@ -568,6 +596,7 @@ import Combine
             } else { configuredTasks = [] }
             if capabilities.contains("debugger.catalog") {
                 let result = try await client.rpc("debugger.catalog", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                guard current() else { return }
                 debuggerCatalog = (result["scenarios"] as? [[String: Any]] ?? []).compactMap { row in
                     guard let id = row["scenario_id"] as? String, let label = row["label"] as? String else { return nil }
                     return NativeDebugScenario(id: id, label: label, adapter: row["adapter"] as? String ?? "DAP", source: row["source"] as? String ?? "project")
@@ -575,9 +604,10 @@ import Combine
             } else { debuggerCatalog = [] }
             if capabilities.contains("debugger.snapshot") {
                 let result = try await client.rpc("debugger.snapshot", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                guard current() else { return }
                 debuggerSessions = (result["sessions"] as? [[String: Any]] ?? []).compactMap(Self.decodeDebuggerSession)
             } else { debuggerSessions = [] }
-        } catch { issue = error.localizedDescription }
+        } catch { if current() { issue = error.localizedDescription } }
     }
 
     func runConfiguredTask(_ task: NativeConfiguredTask) async {
@@ -683,12 +713,43 @@ import Combine
                               taskLabel: task?["label"] as? String, taskState: status?["state"] as? String)
     }
 
+    func loadDirectory(_ path: String) async {
+        projectFolderEntries = nil; projectFolderTruncated = false
+        guard capabilities.contains("project.directory"), let client, let thread = selectedThreadID else { return }
+        let request = UUID(); directoryRequest = request
+        let scope = (profile?.id, targetID, instanceID, epoch)
+        do {
+            let result = try await client.rpc("project.directory", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": thread, "path": path])
+            guard request == directoryRequest, thread == selectedThreadID, scope.0 == profile?.id,
+                  scope.1 == targetID, scope.2 == instanceID, scope.3 == epoch else { return }
+            guard result["directory"] as? String == path, let rows = result["entries"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
+            projectFolderEntries = rows.compactMap { row in
+                guard let path = row["path"] as? String else { return nil }
+                return NativeProjectFile(id: path, kind: row["kind"] as? String ?? "file", size: row["size"] as? Int)
+            }
+            projectFolderTruncated = result["truncated"] as? Bool ?? false
+        } catch { if request == directoryRequest { issue = error.localizedDescription } }
+    }
+
     func previewFile(_ path: String) async {
         guard let client, let threadID = selectedThreadID else { return }
+        let request = UUID(); previewRequest = request
+        let scope = (profile?.id, targetID, instanceID, epoch, threadID)
+        previewTitle = path; previewContent = ""; previewReadable = false; previewLoading = true; previewTruncated = false
         do {
             let result = try await client.rpc("project.file", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "path": path])
-            previewTitle = path; previewContent = result["content"] as? String ?? ""
-        } catch { issue = error.localizedDescription }
+            guard request == previewRequest, scope.0 == profile?.id, scope.1 == targetID,
+                  scope.2 == instanceID, scope.3 == epoch, scope.4 == selectedThreadID else { return }
+            guard result["path"] as? String == path, let content = result["content"] as? String else {
+                throw NSError(domain: "ZedLink", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid file preview"])
+            }
+            previewReadable = true; previewContent = content; previewTruncated = result["truncated"] as? Bool ?? false
+            previewLoading = false
+        } catch {
+            guard request == previewRequest, scope.0 == profile?.id, scope.1 == targetID,
+                  scope.2 == instanceID, scope.3 == epoch, scope.4 == selectedThreadID else { return }
+            previewLoading = false; previewContent = "File unavailable: " + error.localizedDescription
+        }
     }
 
     func loadDiff() async {
@@ -850,6 +911,30 @@ import Combine
             issue = error.localizedDescription
             try? await loadSnapshot(threadID)
         }
+    }
+
+    func handleApprovalNotification(_ data: [String: String], action: String) async {
+        guard data["gateway"] == profile?.gatewayID, data["target"] == targetID,
+              data["instance"] == instanceID, data["epoch"] == epoch,
+              let thread = data["thread"], threads.contains(where: { $0.id == thread }) else {
+            issue = "This notification belongs to an older or different connection. Open the session to review current requests."
+            return
+        }
+        await select(thread)
+        guard data["gateway"] == profile?.gatewayID, data["target"] == targetID,
+              data["instance"] == instanceID, data["epoch"] == epoch, thread == selectedThreadID else { return }
+        guard action == "approve" || action == "deny" else { return }
+        guard let approval = snapshot?.pendingApprovals.first(where: {
+            $0.id == data["approval"] && String($0.turnID ?? -1) == data["turn"] && ($0.subagentID ?? "") == data["child"]
+        }), approval.authorizationKind == "permission_grant", !approval.detailsTruncated,
+        let decision = approval.decisions.first(where: {
+            $0.optionID == data[action] && $0.optionKind == (action == "approve" ? "allow_once" : "reject_once")
+                && $0.choiceIndex == nil && $0.selectedPatternIndices.isEmpty && $0.action == nil
+        }) else {
+            issue = "This approval changed or was already resolved. Review the current session."
+            return
+        }
+        await respond(to: approval, with: decision)
     }
 
     func respond(to approval: NativeApproval, with decision: NativeApprovalDecision) async {

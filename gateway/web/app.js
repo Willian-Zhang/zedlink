@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.9";
+const UI_BUILD = "2026.10.12.10";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -55,6 +55,11 @@ const state = {
   threadSettings: null,
   settingsBusy: false,
   notificationConfig: null,
+  projectFolderEntries: null,
+  fileListLimit: 250,
+  directoryRequest: 0,
+  projectDirectory: "",
+  previewRequest: 0,
   projectFiles: [],
   projectFilesTruncated: false,
   projectSearchMatches: [],
@@ -1407,6 +1412,11 @@ async function selectThread(threadId) {
   state.rewindingImage = false;
   renderAgentHealth();
   state.threadSettings = null;
+  state.projectFolderEntries = null;
+  state.directoryRequest += 1;
+  state.projectDirectory = "";
+  state.previewRequest += 1;
+  $("context-files").classList.remove("file-reading");
   state.projectFiles = [];
   state.projectSearchMatches = [];
   state.projectSearchTruncated = false;
@@ -1624,6 +1634,11 @@ function closeCodeReview() {
 
 async function loadProjectFiles() {
   if (!state.threadId || !state.capabilities.includes("project.files")) {
+    state.projectFolderEntries = null;
+    state.directoryRequest += 1;
+    state.projectDirectory = "";
+    state.previewRequest += 1;
+    $("context-files").classList.remove("file-reading");
     state.projectFiles = [];
     state.projectFilesTruncated = false;
     renderProjectFiles();
@@ -1634,13 +1649,35 @@ async function loadProjectFiles() {
   if (state.threadId !== threadId || !Array.isArray(result.entries)) return;
   state.projectFiles = result.entries.filter((entry) => typeof entry.path === "string");
   state.projectFilesTruncated = result.truncated === true;
+  await navigateProjectDirectory(state.projectDirectory);
+}
+
+async function navigateProjectDirectory(path) {
+  state.projectDirectory = path;
+  state.fileListLimit = 250;
+  $("file-search").value = "";
+  const request = ++state.directoryRequest;
+  const scope = JSON.stringify(baseThreadParams());
+  state.projectFolderEntries = null;
   renderProjectFiles();
+  if (!state.capabilities.includes("project.directory")) return;
+  try {
+    const result = await rpc("project.directory", { ...baseThreadParams(), path });
+    if (request !== state.directoryRequest || scope !== JSON.stringify(baseThreadParams())) return;
+    if (result.directory !== path || !Array.isArray(result.entries)) throw new Error("Invalid directory listing.");
+    state.projectFolderEntries = result.entries.filter((entry) => typeof entry.path === "string");
+    state.projectFolderTruncated = result.truncated === true;
+    renderProjectFiles();
+  } catch (error) {
+    if (request === state.directoryRequest && scope === JSON.stringify(baseThreadParams())) notice(error.message);
+  }
 }
 
 function renderProjectFiles() {
   const list = $("file-list");
-  list.replaceChildren();
   if (!state.capabilities.includes("project.files")) {
+    list.replaceChildren();
+    state.fileRenderSignature = null;
     const empty = document.createElement("p");
     empty.className = "muted";
     empty.textContent = "Restart the updated patched Zed build to browse project files.";
@@ -1648,18 +1685,47 @@ function renderProjectFiles() {
     return;
   }
   const query = $("file-search").value.trim().toLocaleLowerCase();
-  const entries = state.projectFiles.filter((entry) => !query || entry.path.toLocaleLowerCase().includes(query));
-  for (const entry of entries.slice(0, 250)) {
+  const prefix = state.projectDirectory ? `${state.projectDirectory}/` : "";
+  const entries = (query ? state.projectFiles : state.projectFolderEntries || state.projectFiles).filter((entry) => query
+    ? entry.path.toLocaleLowerCase().includes(query)
+    : entry.path.startsWith(prefix) && !entry.path.slice(prefix.length).includes("/"));
+  entries.sort((a, b) => Number(b.kind === "directory") - Number(a.kind === "directory") || a.path.localeCompare(b.path));
+  const truncated = query ? state.projectFilesTruncated : state.projectFolderEntries ? state.projectFolderTruncated : state.projectFilesTruncated;
+  const signature = JSON.stringify([baseThreadParams(), state.projectDirectory, query, state.fileListLimit, truncated, entries]);
+  if (signature === state.fileRenderSignature) return;
+  state.fileRenderSignature = signature;
+  list.replaceChildren();
+  const breadcrumbs = $("file-breadcrumbs");
+  breadcrumbs.replaceChildren();
+  const parts = state.projectDirectory.split("/").filter(Boolean);
+  for (let index = 0; index <= parts.length; index++) {
+    const path = parts.slice(0, index).join("/");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = index ? parts[index - 1] : "Project";
+    button.setAttribute("aria-current", index === parts.length ? "location" : "false");
+    button.addEventListener("click", () => navigateProjectDirectory(path));
+    breadcrumbs.append(button);
+  }
+  for (const entry of entries.slice(0, state.fileListLimit)) {
     const row = document.createElement("button");
     row.type = "button";
     row.className = `context-row ${entry.kind === "directory" ? "directory" : ""}`;
+    row.dataset.path = entry.path;
+    row.setAttribute("aria-label", `${entry.kind === "directory" ? "Open folder" : "Read file"} ${entry.path}`);
+    const icon = document.createElement("span");
+    icon.className = "file-entry-icon";
+    icon.textContent = entry.kind === "directory" ? "▸" : "≡";
+    icon.setAttribute("aria-hidden", "true");
     const name = document.createElement("span");
-    name.textContent = `${entry.kind === "directory" ? "▸ " : ""}${entry.path}`;
+    name.textContent = query ? entry.path : entry.path.slice(prefix.length);
     const detail = document.createElement("small");
-    detail.textContent = entry.kind === "directory" ? "DIR" : Number.isFinite(entry.size) ? `${entry.size} B` : "FILE";
-    row.append(name, detail);
-    if (entry.kind === "file") row.addEventListener("click", () => previewProjectFile(entry.path));
-    else row.disabled = true;
+    detail.textContent = entry.kind === "directory" ? "Folder" : Number.isFinite(entry.size) ? `${entry.size} B` : "File";
+    row.append(icon, name, detail);
+    row.addEventListener("click", () => {
+      if (entry.kind === "directory") navigateProjectDirectory(entry.path);
+      else previewProjectFile(entry.path);
+    });
     list.append(row);
   }
   if (!entries.length) {
@@ -1667,18 +1733,38 @@ function renderProjectFiles() {
     empty.className = "muted";
     empty.textContent = query ? "No project files match this search." : "No remotely readable project files.";
     list.append(empty);
-  } else if (state.projectFilesTruncated || entries.length > 250) {
+  }
+  if (entries.length > state.fileListLimit) {
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "quiet"; more.textContent = "Show more files";
+    more.addEventListener("click", () => { state.fileListLimit += 250; renderProjectFiles(); });
+    list.append(more);
+  }
+  if (query ? state.projectFilesTruncated : state.projectFolderEntries ? state.projectFolderTruncated : state.projectFilesTruncated) {
     const note = document.createElement("p");
     note.className = "muted";
-    note.textContent = "Showing a bounded project file list. Narrow the search to find a file.";
+    note.textContent = "Listing limited to 1,000 entries. Browse a folder to read its contents. Hidden, ignored and private files are excluded.";
     list.append(note);
   }
 }
 
 async function previewProjectFile(path, focusLine = null) {
+  $("file-search").blur();
+  $("project-search").blur();
+  const request = ++state.previewRequest;
+  const scope = JSON.stringify(baseThreadParams());
+  $("file-preview-name").textContent = path;
+  $("file-preview-content").textContent = "Loading file…";
+  $("file-preview-note").textContent = "";
+  $("attach-preview").disabled = true;
+  $("expand-file").disabled = true;
+  $("file-preview").classList.remove("hidden");
+  $("context-files").classList.add("file-reading");
   try {
     const result = await rpc("project.file", { ...baseThreadParams(), path });
+    if (request !== state.previewRequest || scope !== JSON.stringify(baseThreadParams())) return;
     if (result.path !== path || typeof result.content !== "string") throw new Error("Zed returned an invalid file preview.");
+    $("expand-file").disabled = false;
     state.previewPath = path;
     state.previewContent = result.content;
     state.previewFocusLine = focusLine;
@@ -1692,7 +1778,11 @@ async function previewProjectFile(path, focusLine = null) {
       : `${language.toUpperCase()} · ${lineCount} lines · Read-only preview from the exposed Zed project.`;
     $("attach-preview").disabled = result.truncated === true || state.contextPaths.includes(path);
     $("file-preview").classList.remove("hidden");
-  } catch (error) { notice(error.message); }
+  } catch (error) {
+    if (request !== state.previewRequest || scope !== JSON.stringify(baseThreadParams())) return;
+    $("file-preview-content").textContent = "File unavailable.";
+    $("file-preview-note").textContent = error.message;
+  }
 }
 
 function renderProjectSearchResults() {
@@ -2296,6 +2386,7 @@ function renderActivityIndex() {
 
 function switchContextTab(tab) {
   $("context-panel").classList.toggle("terminal-context", tab === "terminal");
+  $("context-panel").classList.toggle("files-context", tab === "files");
   for (const name of ["files", "changes", "terminal", "debug", "activity"]) {
     $(`context-${name}-tab`).setAttribute("aria-selected", String(name === tab));
     $(name === "activity" ? "context-activity-view" : `context-${name}`).classList.toggle("hidden", name !== tab);
@@ -3932,6 +4023,11 @@ async function signOut() {
   state.threadSettings = null;
   state.contextPaths = [];
   state.uploads = [];
+  state.projectFolderEntries = null;
+  state.directoryRequest += 1;
+  state.projectDirectory = "";
+  state.previewRequest += 1;
+  $("context-files").classList.remove("file-reading");
   state.projectFiles = [];
   state.projectSearchMatches = [];
   state.projectSearchTruncated = false;
@@ -4118,3 +4214,10 @@ window.addEventListener("keydown", (event) => {
 });
 updateSidebarToggle();
 loadGateway();
+
+$("file-preview-back").addEventListener("click", () => {
+  state.previewRequest += 1;
+  $("context-files").classList.remove("file-reading");
+  $("file-preview").classList.add("hidden");
+  $("file-search").focus();
+});

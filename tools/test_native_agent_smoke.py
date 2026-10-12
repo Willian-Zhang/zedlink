@@ -36,6 +36,14 @@ def main():
     fixture = Path(tempfile.mkdtemp(prefix='zedlink-native-agent-smoke-'))
     project, profile, probe = (fixture / name for name in ('project', 'profile', 'probe'))
     project.mkdir()
+    (project / 'aaa').mkdir()
+    for index in range(1005):
+        (project / 'aaa' / f'{index:04d}.txt').write_text('bounded listing fixture')
+    (project / 'zfolder').mkdir()
+    (project / 'zfolder' / 'example.rs').write_text('fn main() { println!("fixture"); }\n')
+    (project / '.env').write_text('excluded fixture')
+    (fixture / 'outside.txt').write_text('outside exposed root')
+    (project / 'escape.txt').symlink_to(fixture / 'outside.txt')
     (profile / 'config').mkdir(parents=True)
     probe.mkdir(mode=0o700)
     model.FIXTURE_ROOT = project
@@ -79,6 +87,30 @@ def main():
                     return None
                 return result.get('thread_id')
             thread_id = until(create)
+            identity = {**base, 'thread_id': thread_id}
+            root = until(lambda: (result if any(entry['path'] == 'zfolder' for entry in result['entries']) else None)
+                         if (result := rpc(socket_path, 'project.directory', {**identity, 'path': ''})) else None)
+            assert all('/' not in entry['path'] for entry in root['entries'])
+            flat = rpc(socket_path, 'project.files', identity)
+            assert flat['truncated'], 'Global fixture listing should exceed the limit'
+            folder = rpc(socket_path, 'project.directory', {**identity, 'path': 'zfolder'})
+            assert [entry['path'] for entry in folder['entries']] == ['zfolder/example.rs']
+            file = rpc(socket_path, 'project.file', {**identity, 'path': 'zfolder/example.rs'})
+            assert 'println!' in file['content'] and not file['truncated']
+            for path in ['../outside.txt', '.env', 'escape.txt']:
+                try:
+                    rpc(socket_path, 'project.file', {**identity, 'path': path})
+                except RuntimeError:
+                    pass
+                else:
+                    raise AssertionError('Unsafe file access was accepted')
+            try:
+                rpc(socket_path, 'project.directory', {**identity, 'path': '../'})
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('Unsafe directory access was accepted')
+            print('PASS: native per-folder browsing beyond global limit, file contents and hidden/traversal/symlink exclusions')
             for script in ['test_native_fixture.py', 'test_native_cancel.py']:
                 subprocess.run(['python3', str(ROOT / 'tools' / script), '--socket', socket_path,
                                 '--fixture-url', url], check=True, timeout=60)

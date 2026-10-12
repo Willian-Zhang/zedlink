@@ -1,6 +1,6 @@
 "use strict";
 
-const SHELL_CACHE = "zedlink-shell-v48";
+const SHELL_CACHE = "zedlink-shell-v49";
 const SHELL = [
   "/",
   "/style.css",
@@ -53,6 +53,10 @@ self.addEventListener("push", (event) => {
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
       data: { url },
+      ...(data.kind === "approval" ? {
+        requireInteraction: true,
+        actions: [{ action: "review", title: "Review request" }],
+      } : {}),
     }),
     "setAppBadge" in self.navigator ? self.navigator.setAppBadge(1) : Promise.resolve(),
   ]));
@@ -60,7 +64,8 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  const requested = new URL(event.notification.data?.url || "/", self.location.origin);
+  const target = requested.origin === self.location.origin ? requested.href : `${self.location.origin}/`;
   event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
     for (const client of clients) {
       if (new URL(client.url).origin === self.location.origin) {

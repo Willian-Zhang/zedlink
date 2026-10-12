@@ -678,3 +678,29 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .thread-item strong { margin-top: 6px; font-size: .85rem; }
   .thread-item small { margin-top: 5px; }
 }
+
+/* Project navigation and a reader with independent scrolling. */
+.context-panel.files-context { width: min(1100px, 100%); }
+#context-files { overflow: hidden; padding: 0; }
+.file-browser-layout { display: grid; grid-template-columns: 1fr; height: 100%; min-height: 0; }
+.file-browser { overflow: auto; min-width: 0; padding: 14px; }
+.file-browser input { margin-bottom: 10px; }
+.file-breadcrumbs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 10px; }
+.file-breadcrumbs button { min-height: 36px; padding: 5px 8px; border: 0; background: transparent; color: var(--muted); font-size: .8rem; }
+.file-breadcrumbs button[aria-current="location"] { color: var(--ink); }
+.file-breadcrumbs button + button::before { content: "/"; padding-right: 12px; color: var(--subtle); }
+#file-list .context-row { grid-template-columns: 22px minmax(0, 1fr) auto; min-height: 46px; }
+#file-list .file-entry-icon { color: #94bce6; font-size: 1rem; }
+#file-list .directory { color: var(--ink); }
+#context-files .file-preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; margin: 0; border: 0; }
+#context-files .file-preview header { flex-wrap: wrap; }
+#context-files .file-preview header strong { flex: 1; min-width: 100px; }
+#context-files .file-preview pre { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+#context-files.file-reading .file-browser-layout { grid-template-columns: minmax(230px, 30%) minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .context-panel.files-context { inset: 0 0 auto; height: var(--app-height, 100dvh); max-height: var(--app-height, 100dvh); padding-bottom: env(safe-area-inset-bottom); }
+  #context-files.file-reading .file-browser-layout { display: flex; }
+  #context-files.file-reading .file-browser { display: none; }
+  #context-files .file-preview { width: 100%; }
+  #context-files .preview-actions { width: 100%; justify-content: flex-end; }
+}

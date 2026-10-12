@@ -40,7 +40,7 @@ Zed keeps the configured model, provider credentials, tools, MCP servers, permis
 | New sessions | Create in the allowed project with the native Zed Agent or a configured ACP agent |
 | Session management | Rename an exposed session or stop remote exposure while the native desktop thread remains open |
 | Live activity | Indexed long-history paging plus real-time responses, inline thinking, tool calls, terminal output, failures, retries, approvals, and parallel agents |
-| Project context | Browse and search files, attach context, review syntax-highlighted code and diffs |
+| Project context | Navigate folders, read source files, search, attach context, and review syntax-highlighted code and diffs |
 | Zed terminals and tasks | Opt-in live terminal view/input, stop controls, and launch of named tasks from Zed's configured project/global inventory |
 | Zed debugger | Opt-in launch of saved `.zed/debug.json` configurations plus DAP session/thread status, pause, continue, stepping, restart, and stop through Zed's native debugger |
 | Private access | Device pairing over Tailscale, routed VPNs, or trusted HTTPS profiles |

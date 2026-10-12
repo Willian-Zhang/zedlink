@@ -49,6 +49,13 @@ data class AppState(
     val configuredTasks: List<NativeConfiguredTask> = emptyList(),
     val debuggerCatalog: List<NativeDebugScenario> = emptyList(),
     val debuggerSessions: List<NativeDebuggerSession> = emptyList(),
+    val notificationsEnabled: Boolean = false,
+    val projectFolderEntries: List<NativeProjectFile>? = null,
+    val projectFolderTruncated: Boolean = false,
+    val projectFilesTruncated: Boolean = false,
+    val previewReadable: Boolean = false,
+    val previewLoading: Boolean = false,
+    val previewTruncated: Boolean = false,
     val previewTitle: String = "",
     val previewContent: String = "",
     val contextPaths: Set<String> = emptySet(),
@@ -57,6 +64,11 @@ data class AppState(
 class ZedLinkViewModel(application: Application) : AndroidViewModel(application) {
     var state by mutableStateOf(AppState())
         private set
+    val approvalNotifications = ApprovalNotifications(application)
+    fun enableNotifications() { approvalNotifications.enable(); state = state.copy(notificationsEnabled = true); approvalNotifications.update(state) }
+    fun disableNotifications() { approvalNotifications.disable(); state = state.copy(notificationsEnabled = false) }
+    private var directoryRequest = 0
+    private var previewRequest = 0
     private var client: GatewayClient? = null
     private var pollJob: Job? = null
     private var eventSocket: WebSocket? = null
@@ -68,7 +80,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     init {
         val saved = loadProfiles()
         val preferred = loadProfile(saved)
-        state = state.copy(profile = preferred, profiles = saved)
+        state = state.copy(profile = preferred, profiles = saved, notificationsEnabled = approvalNotifications.enabled)
         preferred?.let { profile ->
             if (TokenVault.read(application, profile.gatewayId) != null) connect()
         }
@@ -109,6 +121,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun connect() {
+        approvalNotifications.clear()
         val profile = state.profile ?: return
         val token = TokenVault.read(getApplication(), profile.gatewayId) ?: run {
             state = state.copy(status = "Pair this device", live = false); return
@@ -191,12 +204,14 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectTarget(id: String) {
+        approvalNotifications.clear(); directoryRequest += 1; previewRequest += 1
         val target = state.targets.firstOrNull { it.id == id && it.available } ?: return
         val profile = state.profile ?: return
         pollJob?.cancel(); client = null; pendingId = null; pendingText = null
         preferences.edit().putString("target.${profile.gatewayId}", target.id).apply()
         state = state.copy(targetId = target.id, threads = emptyList(), selectedThreadId = null,
-            snapshot = null, commands = emptyList(), instanceId = null, epoch = null, live = false)
+            snapshot = null, commands = emptyList(), instanceId = null, epoch = null, live = false,
+            projectFiles = emptyList(), projectFolderEntries = null, previewLoading = false, previewReadable = false, previewTitle = "", previewContent = "")
         connect()
     }
 
@@ -205,7 +220,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             pollJob?.cancel(); client = null; pendingId = null; pendingText = null
             state = state.copy(profile = profile, threads = emptyList(), selectedThreadId = null,
                 snapshot = null, commands = emptyList(), capabilities = emptySet(), targets = emptyList(), targetId = null,
-                instanceId = null, epoch = null, issue = "", delivery = "")
+                instanceId = null, epoch = null, issue = "", delivery = "",
+                projectFiles = emptyList(), projectFolderEntries = null, previewLoading = false, previewReadable = false, previewTitle = "", previewContent = "")
         }
         preferences.edit().putString("active_gateway", profile.gatewayId).apply()
         connect()
@@ -214,13 +230,15 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     fun selectThread(id: String) = viewModelScope.launch {
         if (state.threads.none { it.id == id }) return@launch
         val draft = preferences.getString("draft.$id", "").orEmpty()
-        state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "")
+        previewRequest += 1; directoryRequest += 1
+        state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "",
+            projectFolderEntries = null, projectFiles = emptyList(), projectFilesTruncated = false, previewReadable = false, previewLoading = false, previewContent = "", previewTitle = "")
         runCatching { loadSnapshot(id); loadCommands(id) }
             .onFailure { state = state.copy(issue = it.message.orEmpty()) }
         startEventStream(id)
     }
 
-    fun closeThread() { eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
+    fun closeThread() { approvalNotifications.clear(); eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
 
     private fun startEventStream(threadId: String) {
         eventSocket?.cancel()
@@ -364,7 +382,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun forget() { state.profile?.let(::forget) }
+    fun forget() {
+        approvalNotifications.clear() state.profile?.let(::forget) }
 
     fun forget(profile: ConnectionProfile) {
         if (state.profile?.gatewayId == profile.gatewayId) { pollJob?.cancel(); client = null }
@@ -466,6 +485,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 if (sessionId.isBlank()) null else NativeSubagent(sessionId, row.optString("title", row.optString("label", "Parallel agent")),
                     row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"), row.optJSONArray("entries_markdown").strings())
             }))
+        approvalNotifications.update(state)
         loadAuxiliaryState(id)
     }
 
@@ -572,15 +592,23 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun loadProjectContext() = viewModelScope.launch {
         val threadId = state.selectedThreadId ?: return@launch
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, threadId)
+        fun current() = scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
         try {
             val info = client!!.rpc("instance.info")
+            if (!current()) return@launch
             checkIdentity(info)
             state = state.copy(capabilities = info.optJSONArray("capabilities").strings().toSet())
             val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)
             var files = state.projectFiles; var entries = state.changes; var revision = state.changesRevision
             var terminals = emptyList<NativeTerminal>(); var configuredTasks = state.configuredTasks; var debuggerCatalog = state.debuggerCatalog; var debuggerSessions = state.debuggerSessions
-            if ("project.files" in state.capabilities) files = client!!.rpc("project.files", JSONObject(base.toString())).optJSONArray("entries").objects().mapNotNull { row ->
-                val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
+            if ("project.files" in state.capabilities) {
+                val result = client!!.rpc("project.files", JSONObject(base.toString()))
+                if (!current()) return@launch
+                files = result.optJSONArray("entries").objects().mapNotNull { row ->
+                    val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
+                state = state.copy(projectFilesTruncated = result.optBoolean("truncated"))
+            }
             if ("changes.snapshot" in state.capabilities) {
                 val result = client!!.rpc("changes.snapshot", JSONObject(base.toString()))
                 revision = result.optJSONObject("repository")?.optString("revision")
@@ -608,10 +636,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 client!!.rpc("debugger.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch))
                     .optJSONArray("sessions").objects().mapNotNull(::decodeDebuggerSession)
             } else emptyList()
+            if (!current()) return@launch
             state = state.copy(projectFiles = files, changes = entries, changesRevision = revision, terminals = terminals,
                 terminalSnapshot = state.terminalSnapshot?.takeIf { snapshot -> terminals.any { it.id == snapshot.terminal.id } },
                 configuredTasks = configuredTasks, debuggerCatalog = debuggerCatalog, debuggerSessions = debuggerSessions)
-        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+        } catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty()) }
     }
     fun loadTerminal(terminal: NativeTerminal) = viewModelScope.launch { try {
         val result = client!!.rpc("terminal.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("terminal_id", terminal.id))
@@ -695,10 +724,38 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             row.optBoolean("terminated"), capabilities?.optBoolean("restart") ?: false,
             capabilities?.optBoolean("step_back") ?: false, threads)
     }
-    fun previewFile(path: String) = viewModelScope.launch { try {
-        val result = client!!.rpc("project.file", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId).put("path", path))
-        state = state.copy(previewTitle = path, previewContent = result.optString("content"))
-    } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
+    fun loadDirectory(path: String) = viewModelScope.launch {
+        state = state.copy(projectFolderEntries = null, projectFolderTruncated = false)
+        val request = ++directoryRequest
+        if ("project.directory" !in state.capabilities) return@launch
+        val transport = client ?: return@launch
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        try {
+            val result = transport.rpc("project.directory", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3]).put("thread_id", scope[4]).put("path", path))
+            if (request != directoryRequest || scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) return@launch
+            if (result.optString("directory") != path || !result.has("entries")) throw GatewayException("Invalid directory listing")
+            val files = result.optJSONArray("entries").objects().mapNotNull { row ->
+                val name = row.optString("path"); if (name.isBlank()) null else NativeProjectFile(name, row.optString("kind", "file"), row.optIntOrNull("size")) }
+            state = state.copy(projectFolderEntries = files, projectFolderTruncated = result.optBoolean("truncated"))
+        } catch (error: Exception) {
+            if (request == directoryRequest && scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) state = state.copy(issue = error.message.orEmpty())
+        }
+    }
+    fun previewFile(path: String) = viewModelScope.launch {
+        val transport = client ?: return@launch
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        val request = ++previewRequest
+        state = state.copy(previewTitle = path, previewContent = "", previewReadable = false, previewLoading = true, previewTruncated = false)
+        fun current() = request == previewRequest && scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        try {
+            val result = transport.rpc("project.file", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3]).put("thread_id", scope[4]).put("path", path))
+            if (!current()) return@launch
+            if (result.optString("path") != path || !result.has("content")) throw GatewayException("Invalid file preview")
+            state = state.copy(previewContent = result.getString("content"), previewReadable = true, previewLoading = false, previewTruncated = result.optBoolean("truncated"))
+        } catch (error: Exception) {
+            if (current()) state = state.copy(previewLoading = false, previewContent = "File unavailable: ${error.message.orEmpty()}")
+        }
+    }
     fun toggleContextPath(path: String) { state = state.copy(contextPaths = state.contextPaths.toMutableSet().apply { if (!add(path)) remove(path) }) }
     fun loadDiff() = viewModelScope.launch { try {
         val result = client!!.rpc("changes.diff", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId).put("revision", state.changesRevision))
@@ -727,6 +784,27 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         if (result.optString("instance_id") != state.instanceId || result.optString("epoch") != state.epoch) {
             throw GatewayException("Desktop Zed restarted. Reconnect before sending.")
         }
+    }
+
+    fun handleApprovalNotification(data: Map<String, String>, action: String) = viewModelScope.launch {
+        fun matches() = data["gateway"] == state.profile?.gatewayId && data["target"] == state.targetId &&
+            data["instance"] == state.instanceId && data["epoch"] == state.epoch
+        val thread = data["thread"] ?: return@launch
+        if (!matches() || state.threads.none { it.id == thread }) {
+            state = state.copy(issue = "This notification belongs to an older or different connection. Open the session to review current requests.")
+            return@launch
+        }
+        selectThread(thread).join()
+        if (!matches() || state.selectedThreadId != thread) return@launch
+        if (action != "approve" && action != "deny") return@launch
+        val approval = state.snapshot?.approvals?.firstOrNull { it.id == data["approval"] && it.turnId.toString() == data["turn"] && it.subagentId.orEmpty() == data["child"] }
+        val kind = if (action == "approve") "allow_once" else "reject_once"
+        val decision = approval?.decisions?.firstOrNull { it.optionId == data["option"] && it.optionKind == kind && it.choiceIndex == null && it.selectedPatternIndices.isEmpty() && it.action == null }
+        if (approval == null || decision == null || approval.detailsTruncated || approval.authorizationKind != "permission_grant") {
+            state = state.copy(issue = "This approval changed or was already resolved. Review the current session.")
+            return@launch
+        }
+        respondApproval(approval, decision).join()
     }
 
     fun respondApproval(approval: NativeApproval, decision: NativeApprovalDecision) = viewModelScope.launch {
