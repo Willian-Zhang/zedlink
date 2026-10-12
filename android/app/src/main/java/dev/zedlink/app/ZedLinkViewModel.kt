@@ -481,7 +481,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     val field = properties.optJSONObject(name) ?: return@mapNotNull null
                     val items = field.optJSONObject("items")
                     val choices = field.optJSONArray("enum").strings() + field.optJSONArray("oneOf").objects().mapNotNull { it.opt("const")?.toString() }
-                        + items?.optJSONArray("enum").strings() + items?.optJSONArray("oneOf").objects().mapNotNull { it.opt("const")?.toString() }
+                        + (items?.optJSONArray("enum")).strings() + (items?.optJSONArray("oneOf")).objects().mapNotNull { it.opt("const")?.toString() }
                     NativeElicitationField(name, field.optString("title", name), field.optString("type", "string"),
                         name in required, choices)
                 }?.sortedBy { it.id }?.toList().orEmpty()
