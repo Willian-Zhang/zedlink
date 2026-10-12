@@ -52,3 +52,16 @@ The pinned base is upstream `main` at `c66312b200d113694fca08c1d468669028a09a0e`
 `python3 tools/test_native_agent_smoke.py` launches patched Zed with a disposable profile/project and a deterministic loopback model. It checks native streaming/replay, exact-turn cancellation, and tool denial/approval; it does not contact the user's LLM. The Zed fork's repository Actions are disabled to protect the owner's limited remaining budget; ZedLink Android/macOS workflows remain manual-only.
 
 The merged upstream ACP v2 API also introduces standalone permission requests. ZedLink currently projects native tool-linked authorization choices; standalone ACP v2 permission requests are not yet exposed remotely. Use desktop Zed for those requests. Physical mobile validation must be repeated before treating this upstream update as release ready.
+
+## iOS session layout verification
+
+The current iOS source hides bottom navigation inside conversations and opens a five-view Workspace sheet (Files, Changes, Terminal, Debug, Activity). It removes the separate healthy Live header label, uses a single rounded composer, and collapses Agent edit review. These changes require rebuilding the iOS app; restarting Zed or the gateway does not update an installed app.
+
+Xcode/simulator and physical iPhone validation of this revision have not run on the Linux workstation. Before distributing a new build, use the existing `ZedLink` Xcode scheme to check:
+
+- Open an exposed session: bottom tabs disappear, title/back/Workspace remain accessible, and tabs return after Back.
+- Open every Workspace view against a paired gateway. Verify file contents, diffs, permitted stage/unstage, configured tasks, terminal input, debugger controls, and native activity. Disabled capabilities must remain unavailable.
+- Confirm a selected terminal survives leaving/reopening Workspace; voice/clipboard fill editable drafts and uncertain input is not automatically retried.
+- On iPhone 15 Pro, check keyboard show/hide, composer safe area, large text, VoiceOver, landscape, and busy/offline states. Approvals must stay visible and exact-turn Stop must target the active native turn.
+
+No hosted Actions build was dispatched for this layout change. Local syntax parsing cannot establish SwiftUI type checking or rendered layout correctness.

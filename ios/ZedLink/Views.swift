@@ -59,6 +59,7 @@ struct SessionsView: View {
             }
             .background(ZLTheme.background)
             .scrollDismissesKeyboard(.interactively)
+            .toolbar(.visible, for: .tabBar)
             .navigationTitle("ZedLink")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -229,6 +230,7 @@ struct ConversationView: View {
     @State private var showingRename = false
     @State private var showingUnexposeConfirmation = false
     @State private var showingContext = false
+    @State private var reviewExpanded = false
     @State private var proposedTitle = ""
     @State private var rewindPoint: NativeRewindPoint?
     @FocusState private var composerFocused: Bool
@@ -247,13 +249,27 @@ struct ConversationView: View {
         }
         .background(ZLTheme.background)
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        .navigationTitle(session.snapshot?.title ?? "Agent thread")
+        .toolbar(.hidden, for: .tabBar)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { ConnectionStatusView(state: session.state) }
-            ToolbarItem(placement: .topBarTrailing) { Button { showingContext = true } label: { Image(systemName: "doc.text.magnifyingglass") } }
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 2) {
+                    Text(session.snapshot?.title ?? "Agent thread")
+                        .font(.headline).lineLimit(2).multilineTextAlignment(.center)
+                    if session.state != .live {
+                        ConnectionStatusView(state: session.state)
+                    }
+                }.accessibilityIdentifier("conversation-title")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { composerFocused = false; showingContext = true } label: { Image(systemName: "square.grid.2x2") }
+                    .accessibilityLabel("Workspace").accessibilityIdentifier("open-workspace")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Text("Connection: \(session.state.label)")
+                    Text(session.snapshot?.title ?? "Agent thread")
                     Button("Rename session", systemImage: "pencil") {
                         proposedTitle = session.snapshot?.title ?? ""
                         showingRename = true
@@ -301,7 +317,6 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    threadMeta(snapshot)
                     ForEach(snapshot.subagents) { subagent in
                         DisclosureGroup("\(subagent.title) · \(subagent.status)") {
                             ForEach(Array(subagent.entries.enumerated()), id: \.offset) { _, entry in
@@ -347,21 +362,6 @@ struct ConversationView: View {
         }
     }
 
-    private func threadMeta(_ snapshot: ThreadSnapshot) -> some View {
-        HStack(spacing: 8) {
-            Circle().fill(snapshot.isBusy ? ZLTheme.focus : ZLTheme.healthy).frame(width: 7, height: 7)
-            Text(snapshot.isBusy ? "ZED IS WORKING" : "NATIVE THREAD READY")
-                .font(.caption2.monospaced().weight(.semibold)).tracking(0.8)
-            Spacer()
-            Text("\(snapshot.entries.count) / \(snapshot.totalEntries)")
-                .font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
-        }
-        .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.healthy)
-        .padding(.horizontal, 16).padding(.vertical, 9)
-        .background(ZLTheme.surface)
-        .overlay(alignment: .bottom) { Hairline() }
-    }
-
     private func approvalStack(_ approvals: [NativeApproval]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
@@ -386,7 +386,8 @@ struct ConversationView: View {
     private var nativeControls: some View {
         VStack(spacing: 8) {
             if let review = session.editReview {
-                HStack {
+                DisclosureGroup(isExpanded: $reviewExpanded) {
+                    HStack {
                     VStack(alignment: .leading) {
                         Text("Review Agent edits").font(.subheadline.weight(.semibold))
                         Text("\(review.changedFiles) files · +\(review.linesAdded) −\(review.linesRemoved)")
@@ -395,6 +396,10 @@ struct ConversationView: View {
                     Spacer()
                     Button("Reject all", role: .destructive) { Task { await session.resolveEditReview("reject_all") } }
                     Button("Keep all") { Task { await session.resolveEditReview("keep_all") } }
+                    }.disabled(session.state != .live)
+                } label: {
+                    Label("Edits · \(review.changedFiles) files · +\(review.linesAdded) −\(review.linesRemoved)", systemImage: "square.and.pencil")
+                        .font(.caption)
                 }
             }
             if !session.queuedMessages.isEmpty {
@@ -420,16 +425,13 @@ struct ConversationView: View {
             if session.pending != nil { uncertainDelivery }
             HStack(alignment: .bottom, spacing: 8) {
                 Button { showingCommands = true } label: {
-                    Image(systemName: "slash.circle").font(.title3).frame(width: 42, height: 42)
+                    Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
                 }
                 .foregroundStyle(.primary)
                 .accessibilityLabel("Zed Agent actions and commands")
 
                 TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
                     .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
-                    .background(ZLTheme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ZLTheme.line, lineWidth: 1))
                     .focused($composerFocused)
                     .submitLabel(.send)
                     .onSubmit { sendAndDismissKeyboard() }
@@ -454,6 +456,9 @@ struct ConversationView: View {
                     .accessibilityLabel("Send").accessibilityIdentifier("send-prompt")
                 }
             }
+            .padding(4)
+            .background(ZLTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(ZLTheme.line, lineWidth: 1))
         }
         .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
         .background(ZLTheme.background)
@@ -467,20 +472,12 @@ struct ConversationView: View {
     }
 
     private func agentProgress(_ snapshot: ThreadSnapshot) -> some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small).tint(ZLTheme.focus)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Zed Agent is working").font(.caption.weight(.semibold))
-                Text(progressDetail(snapshot.status)).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
-            }
-            Spacer(minLength: 8)
-            Text(session.canCancel ? "STOP AVAILABLE" : "LIVE")
-                .font(.caption2.monospaced().weight(.semibold)).foregroundStyle(ZLTheme.focus)
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.mini).tint(ZLTheme.focus)
+            Text(progressDetail(snapshot.status)).font(.caption).foregroundStyle(ZLTheme.muted)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 11).padding(.vertical, 8)
-        .background(ZLTheme.focus.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ZLTheme.focus.opacity(0.28), lineWidth: 1))
+        .padding(.horizontal, 8).padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("agent-working-indicator")
     }
@@ -514,116 +511,106 @@ struct ConversationView: View {
     }
 }
 
+private enum WorkspaceTab: String, CaseIterable, Identifiable {
+    case files = "Files", changes = "Changes", terminal = "Terminal", debug = "Debug", activity = "Activity"
+    var id: String { rawValue }
+}
+
 private struct NativeContextSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
-    @State private var terminalInput = ""
-    @State private var showingTerminal = false
+    @State private var tab: WorkspaceTab = .files
+    @State private var activityExpanded = true
+
     var body: some View {
         NavigationStack {
-            List {
+            VStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(WorkspaceTab.allCases) { item in
+                            Button {
+                                dismissZedLinkKeyboard()
+                                tab = item
+                            } label: {
+                                Text(item.rawValue).font(.caption.weight(tab == item ? .semibold : .regular))
+                                    .padding(.horizontal, 8).frame(minWidth: 44, minHeight: 44)
+                                    .background(tab == item ? ZLTheme.raised : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(tab == item ? .isSelected : [])
+                            .accessibilityIdentifier("workspace-" + item.rawValue.lowercased())
+                        }
+                    }.padding(.horizontal, 8)
+                }
+                Hairline()
+                Group {
+                    switch tab {
+                    case .files:
+                        if session.capabilities.contains("project.files") {
+                            ProjectFileBrowser()
+                        } else {
+                            ContentUnavailableView("Files unavailable", systemImage: "folder", description: Text("Enable project file access in desktop ZedLink settings."))
+                        }
+                    case .changes:
+                        changes
+                    case .terminal:
+                        NativeTerminalScreen(embedded: true)
+                    case .debug:
+                        debugger
+                    case .activity:
+                        ScrollView {
+                            if let snapshot = session.snapshot {
+                                ActivityPanel(snapshot: snapshot, expanded: $activityExpanded).padding(12)
+                            } else {
+                                ContentUnavailableView("No activity", systemImage: "clock")
+                            }
+                        }
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(ZLTheme.background)
+            .navigationTitle("Workspace").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismissZedLinkKeyboard(); dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Close workspace").accessibilityIdentifier("close-workspace")
+                }
+            }
+            .task(id: tab) { await session.loadProjectContext() }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var changes: some View {
+        List {
                 if session.previewTitle == "Working tree diff", !session.previewContent.isEmpty {
                     Section(session.previewTitle) { Text(session.previewContent).font(.caption.monospaced()).textSelection(.enabled) }
                 }
-                Section("Project files") {
-                    NavigationLink { ProjectFileBrowser() } label: {
-                        Label("Browse files and folders", systemImage: "folder")
-                    }
-                }
                 Section("Git changes") {
                     Button("Load full diff") { Task { await session.loadDiff() } }
+                        .disabled(!session.capabilities.contains("changes.diff") || session.changesRevision == nil)
+                    if !session.capabilities.contains("changes.snapshot") {
+                        Text("Changes are not available from this Zed target.").foregroundStyle(.secondary)
+                    } else if session.changes.isEmpty {
+                        Text("No working tree changes.").foregroundStyle(.secondary)
+                    }
                     ForEach(session.changes) { change in
                         HStack { VStack(alignment: .leading) { Text(change.id); Text("\(change.status) · \(change.staging)").font(.caption) }; Spacer()
                             Button(change.staging == "staged" ? "Unstage" : "Stage") { Task { await session.mutateChange(change) } }
+                                .disabled(session.state != .live || !session.capabilities.contains(change.staging == "staged" ? "changes.unstage" : "changes.stage"))
                         }
                     }
                 }
-                if session.capabilities.contains("task.catalog") {
-                    Section("Run configured task") {
-                    if session.configuredTasks.isEmpty {
-                        Text("No configured Zed tasks are available for this project.").foregroundStyle(.secondary)
-                    }
-                    ForEach(session.configuredTasks) { task in
-                        Button {
-                            Task { await session.runConfiguredTask(task) }
-                        } label: {
-                            HStack { Text(task.label); Spacer(); Text(task.source.uppercased()).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                        }
-                        .disabled(!session.capabilities.contains("task.run"))
-                    }
-                    }
-                }
-                Section("Zed terminals") {
-                    if session.terminalSnapshot != nil { Button("Open full-screen terminal", systemImage: "arrow.up.left.and.arrow.down.right") { showingTerminal = true } }
-                    if !session.capabilities.contains("terminal.list") {
-                        Text("Enable View Project Terminals in ZedLink settings. Changes apply without restarting Zed.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else if session.terminals.isEmpty {
-                        Text("No terminal is open for this project in Zed.").foregroundStyle(.secondary)
-                    }
-                    if !session.terminals.isEmpty {
-                        Menu {
-                            ForEach(session.terminals) { terminal in
-                                Button(terminal.title) { Task { await session.loadTerminal(terminal) } }
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: "terminal")
-                                Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal")
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(session.capabilities.contains("terminal.input") ? "Interactive" : "Read only")
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(session.capabilities.contains("terminal.input") ? ZLTheme.healthy : ZLTheme.warning)
-                            }
-                        }
-                    }
-                    if let snapshot = session.terminalSnapshot {
-                        VStack(spacing: 0) {
-                            HStack(spacing: 8) {
-                                Circle().fill(ZLTheme.healthy).frame(width: 7, height: 7)
-                                Text(snapshot.terminal.title).font(.caption.monospaced()).lineLimit(1)
-                                Spacer()
-                                if snapshot.terminal.taskState == "running" && session.capabilities.contains("task.stop") {
-                                    Button("Stop", role: .destructive) { Task { await session.stopTerminalTask() } }
-                                        .font(.caption)
-                                }
-                            }
-                            .padding(.horizontal, 11).frame(minHeight: 40)
-                            .background(Color(red: 0.03, green: 0.035, blue: 0.04))
-                            ScrollView(.vertical) {
-                                terminalText(snapshot)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(Color(red: 0.85, green: 0.88, blue: 0.86))
-                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
-                                    .padding(13)
-                            }
-                            .frame(height: 300)
-                            .background(Color(red: 0.005, green: 0.008, blue: 0.008))
-                        }
-                        .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
-                        if session.capabilities.contains("terminal.input") {
-                            HStack {
-                                Text("›").font(.body.monospaced()).foregroundStyle(ZLTheme.healthy)
-                                TextField("Type into this Zed terminal", text: $terminalInput)
-                                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                                    .font(.callout.monospaced()).textFieldStyle(.plain)
-                                    .onSubmit { sendTerminalInput() }
-                                Button { sendTerminalInput() } label: { Image(systemName: "arrow.up") }
-                                    .buttonStyle(.borderedProminent).disabled(terminalInput.isEmpty)
-                            }
-                            .padding(9).background(Color(red: 0.03, green: 0.035, blue: 0.04))
-                            .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
-                        } else {
-                            Label("Read only · Enable Send Terminal Input in ZedLink settings to type here.", systemImage: "lock")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
+        }.scrollContentBackground(.hidden)
+            .refreshable { await session.loadProjectContext() }
+    }
+
+    private var debugger: some View {
+        List {
                 Section("Debugger") {
                     if !session.capabilities.contains("debugger.catalog") {
-                        Text("Enable Start Configured Debuggers in desktop ZedLink settings and restart patched Zed.")
+                        Text("Enable Start Configured Debuggers in desktop ZedLink settings.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if session.debuggerCatalog.isEmpty {
                         Text("No configured Zed debuggers are available for this project.").foregroundStyle(.secondary)
@@ -637,7 +624,7 @@ private struct NativeContextSheet: View {
                         .disabled(!session.capabilities.contains("debugger.launch"))
                     }
                     if !session.capabilities.contains("debugger.snapshot") {
-                        Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.")
+                        Text("Enable View Debugger Sessions in desktop ZedLink settings.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if session.debuggerSessions.isEmpty {
                         Text("No debugger session is running in this Zed project.").foregroundStyle(.secondary)
@@ -684,24 +671,8 @@ private struct NativeContextSheet: View {
                         }
                     }
                 }
-            }
-            .navigationTitle("Project context").toolbar { Button("Done") { dismiss() } }
-            .sheet(isPresented: $showingTerminal) { NativeTerminalScreen() }
-            .task {
-                await session.loadProjectContext()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .milliseconds(1500))
-                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal, refresh: true) }
-                }
-            }
-        }
-    }
-
-    private func sendTerminalInput() {
-        let value = terminalInput
-        guard !value.isEmpty else { return }
-        terminalInput = ""
-        Task { await session.sendTerminalInput(value) }
+        }.scrollContentBackground(.hidden)
+            .refreshable { await session.loadProjectContext() }
     }
 }
 
@@ -1353,6 +1324,7 @@ struct SettingsView: View {
 
 
 private struct NativeTerminalScreen: View {
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
     @State private var input = ""
@@ -1366,7 +1338,13 @@ private struct NativeTerminalScreen: View {
     private var recoveryKey: String { "zedlink.terminalDraft.\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.terminalSnapshot?.terminal.id ?? "")" }
 
     var body: some View {
-        NavigationStack {
+        Group {
+            if embedded { content }
+            else { NavigationStack { content } }
+        }.presentationDetents([.large])
+    }
+
+    private var content: some View {
             VStack(spacing: 0) {
                 HStack {
                     Menu {
@@ -1376,6 +1354,14 @@ private struct NativeTerminalScreen: View {
                     } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }.disabled(sending)
                     Menu {
                         Toggle("Wrap output", isOn: $wrapOutput)
+                        if session.capabilities.contains("task.catalog") {
+                            Menu("Run configured task") {
+                                ForEach(session.configuredTasks) { task in
+                                    Button(task.label) { Task { await session.runConfiguredTask(task) } }
+                                        .disabled(!session.capabilities.contains("task.run"))
+                                }
+                            }
+                        }
                         Button("Remote clipboard") { showingClipboard = true }
                         Button("Recover session") { Task { await session.refresh(); await session.loadProjectContext() } }
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
@@ -1389,6 +1375,9 @@ private struct NativeTerminalScreen: View {
                 ScrollViewReader { reader in
                 ScrollView(wrapOutput ? .vertical : [.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 0) {
+                    if session.terminalSnapshot == nil {
+                        ContentUnavailableView("No terminal selected", systemImage: "terminal", description: Text(session.capabilities.contains("terminal.list") ? "Open a terminal in desktop Zed or select one above." : "Enable View Project Terminals in desktop ZedLink settings."))
+                    }
                     terminalText(session.terminalSnapshot)
                         .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                         .fixedSize(horizontal: !wrapOutput, vertical: true)
@@ -1414,7 +1403,7 @@ private struct NativeTerminalScreen: View {
                                         await session.sendTerminalInput(key.1, appendReturn: false)
                                     }
                                 }.font(.system(size: 13, design: .monospaced)).frame(minWidth: 44, minHeight: 44)
-                                    .background(Color(red: 0.08, green: 0.09, blue: 0.10), in: RoundedRectangle(cornerRadius: 7)).disabled(sending)
+                                    .background(Color(red: 0.08, green: 0.09, blue: 0.10), in: RoundedRectangle(cornerRadius: 7)).disabled(sending || session.state != .live || session.terminalSnapshot == nil)
                             }
                         }.padding(6)
                     }
@@ -1424,29 +1413,34 @@ private struct NativeTerminalScreen: View {
                             .textInputAutocapitalization(.never).autocorrectionDisabled().font(.body.monospaced())
                             .submitLabel(.send).onSubmit { send() }
                         VoiceDraftButton(text: $input, scope: recoveryKey)
-                        Button { send() } label: { Image(systemName: "return") }.frame(width: 44, height: 44).disabled(sending)
+                        Button { send() } label: { Image(systemName: "return") }.frame(width: 44, height: 44).disabled(sending || session.state != .live || session.terminalSnapshot == nil)
                     }.padding(.horizontal, 10)
                 } else { Text("Enable Send Terminal Input in desktop ZedLink settings.").font(.caption).padding(10) }
             }
             .task(id: recoveryKey) { input = UserDefaults.standard.string(forKey: recoveryKey) ?? "" }
             .onChange(of: input) { _, value in if session.terminalSnapshot != nil { UserDefaults.standard.set(value, forKey: recoveryKey) } }
             .sheet(isPresented: $showingClipboard) { RemoteClipboardView { input = $0 } }
-            .navigationTitle("Terminal").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(embedded ? "Workspace" : "Terminal").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { keyboardFocused = false; dismiss() } }
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button("Done") { keyboardFocused = false; dismiss() } }
+                }
                 ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Hide keyboard") { keyboardFocused = false } }
             }
             .task {
+                await session.loadProjectContext()
+                if session.terminalSnapshot == nil, let terminal = session.terminals.first {
+                    await session.loadTerminal(terminal)
+                }
                 while !Task.isCancelled {
                     if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal, refresh: true) }
                     do { try await Task.sleep(for: .milliseconds(1000)) } catch { return }
                 }
             }
-        }.presentationDetents([.large])
     }
 
     private func send() {
-        guard !sending else { return }
+        guard !sending, session.state == .live, session.terminalSnapshot != nil else { return }
         let value = input; sending = true
         Task {
             defer { sending = false }
