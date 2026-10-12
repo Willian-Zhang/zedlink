@@ -39,6 +39,7 @@ python3 -m py_compile "$project_root/tools/zedlink_probe_client.py" \
   "$project_root/tools/test_native_fixture.py" \
   "$project_root/tools/test_native_cancel.py" \
   "$project_root/tools/test_native_gateway_cancel.py" \
+  "$project_root/tools/test_native_debugger.py" \
   "$project_root/tools/test_real_browser_cancel.py" \
   "$project_root/tools/test_native_browser_commands.py" \
   "$project_root/tools/pair_phone.py" \

@@ -4,6 +4,8 @@
 
 ## Build and test from a terminal
 
+After building patched Zed, run `python3 tools/test_native_debugger.py` from a graphical Linux session to create an isolated project/profile and exercise saved debugger launch, DAP state, replay, pause, continue, stepping, restart, and stop. The script uses a deterministic local DAP fixture, removes its temporary files after success, and does not open or modify your normal Zed profile.
+
 The IDE tasks call these same scripts:
 
 ```sh
