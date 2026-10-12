@@ -488,10 +488,10 @@ index bfefb986bd..de394bf31d 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..22469ab01b
+index 0000000000..c7d26a4de5
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,4179 @@
+@@ -0,0 +1,4201 @@
 +use std::{
 +    cell::{Cell, RefCell},
 +    collections::{HashMap, HashSet, VecDeque},
@@ -533,6 +533,7 @@ index 0000000000..22469ab01b
 +};
 +use terminal::TaskStatus;
 +use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
++use theme::ActiveTheme;
 +use util::rel_path::RelPath;
 +
 +use crate::agent_panel::{AgentPanel, CreateThreadOptions};
@@ -3910,6 +3911,25 @@ index 0000000000..22469ab01b
 +    while !content.is_char_boundary(start) {
 +        start += 1;
 +    }
++    let mut runs = terminal.get_styled_content(MAX_TERMINAL_SNAPSHOT_BYTES);
++    let styles_truncated = runs.len() > 2048;
++    if styles_truncated {
++        let prefix = runs
++            .drain(..runs.len() - 2047)
++            .map(|(text, _)| text)
++            .collect::<String>();
++        runs.insert(0, (prefix, terminal::Cell::default()));
++    }
++    let colored_runs = runs.into_iter().map(|(text, cell)| {
++            let mut fg = cell.foreground();
++            let mut bg = cell.background();
++            if cell.is_inverse() { std::mem::swap(&mut fg, &mut bg); }
++            let hex = |color| {
++                let rgba: gpui::Rgba = terminal_view::terminal_element::convert_color(&color, cx.theme()).into();
++                format!("#{:02x}{:02x}{:02x}", (rgba.r * 255.0).round() as u8, (rgba.g * 255.0).round() as u8, (rgba.b * 255.0).round() as u8)
++            };
++            json!({"text": text, "foreground": hex(fg), "background": hex(bg), "bold": cell.is_bold(), "italic": cell.is_italic(), "underline": cell.has_underline(), "dim": cell.is_dim()})
++        }).collect::<Vec<_>>();
 +    success(
 +        &request.request_id,
 +        json!({
@@ -3917,6 +3937,8 @@ index 0000000000..22469ab01b
 +            "epoch": state.epoch,
 +            "terminal": metadata,
 +            "content": &content[start..],
++            "styled_runs": colored_runs,
++            "styles_truncated": styles_truncated,
 +            "truncated": start > 0,
 +            "total_lines": terminal.total_lines(),
 +            "viewport_lines": terminal.viewport_lines(),
@@ -6494,3 +6516,106 @@ index e139245a56..6113d100c5 100644
          .add_basic_renderer::<settings::ImageFileSizeUnit>(render_dropdown)
          .add_basic_renderer::<settings::StatusStyle>(render_dropdown)
          .add_basic_renderer::<settings::GitPanelClickBehavior>(render_dropdown)
+diff --git a/crates/terminal/src/alacritty.rs b/crates/terminal/src/alacritty.rs
+index b94e42f12e..316ce8ab97 100644
+--- a/crates/terminal/src/alacritty.rs
++++ b/crates/terminal/src/alacritty.rs
+@@ -18,7 +18,7 @@ use alacritty_terminal::{
+     sync::FairMutex,
+     term::{
+         Config, Osc52, RenderableCursor, SEMANTIC_ESCAPE_CHARS, Term, TermMode,
+-        cell::{Cell as AlacCell, Flags, Hyperlink as AlacHyperlink},
++        cell::{Cell as AlacCell, Flags, Hyperlink as AlacHyperlink, LineLength},
+         search::{Match, RegexIter, RegexSearch},
+     },
+     tty,
+@@ -929,6 +929,73 @@ pub(super) fn make_content(term: &Term<ZedListener>, last_content: &Content) ->
+     }
+ }
+ 
++pub(super) fn styled_content(term: &Term<ZedListener>, max_bytes: usize) -> Vec<(String, Cell)> {
++    let grid = term.grid();
++    let mut rows = Vec::new();
++    let mut bytes = 0;
++    for line in (term.topmost_line().0..=term.bottommost_line().0)
++        .rev()
++        .map(Line::from)
++    {
++        let row = &grid[line];
++        let length = row.line_length().0;
++        let mut runs: Vec<(String, Cell)> = Vec::new();
++        for column in 0..length {
++            let cell = &row[Column(column)];
++            if cell
++                .flags
++                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
++            {
++                continue;
++            }
++            let mut text = if cell.c == '\t' {
++                " ".to_owned()
++            } else {
++                cell.c.to_string()
++            };
++            text.extend(cell.zerowidth().into_iter().flatten());
++            bytes += text.len();
++            if let Some((previous, style)) = runs.last_mut()
++                && style.cell.fg == cell.fg
++                && style.cell.bg == cell.bg
++                && style.cell.flags == cell.flags
++            {
++                previous.push_str(&text);
++            } else {
++                runs.push((text, terminal_cell_from_alacritty(cell)));
++            }
++        }
++        if length == 0 || !row[Column(length - 1)].flags.contains(Flags::WRAPLINE) {
++            runs.push(("\n".to_owned(), Cell::default()));
++            bytes += 1;
++        }
++        rows.push(runs);
++        if bytes >= max_bytes {
++            break;
++        }
++    }
++    let mut runs = rows.into_iter().rev().flatten().collect::<Vec<_>>();
++    let mut discard = bytes.saturating_sub(max_bytes);
++    for (text, _) in &mut runs {
++        if discard == 0 {
++            break;
++        }
++        let mut end = discard.min(text.len());
++        while !text.is_char_boundary(end) {
++            end += 1;
++        }
++        discard = discard.saturating_sub(end);
++        text.drain(..end);
++    }
++    runs.retain(|(text, _)| !text.is_empty());
++    if let Some((text, _)) = runs.last_mut()
++        && text.ends_with('\n')
++    {
++        text.pop();
++    }
++    runs
++}
++
+ pub(super) fn content_text(term: &Term<ZedListener>) -> String {
+     let start = AlacPoint::new(term.topmost_line(), Column(0));
+     let end = AlacPoint::new(term.bottommost_line(), term.last_column());
+diff --git a/crates/terminal/src/terminal.rs b/crates/terminal/src/terminal.rs
+index 6bbd5fadda..ef65983e19 100644
+--- a/crates/terminal/src/terminal.rs
++++ b/crates/terminal/src/terminal.rs
+@@ -2446,6 +2446,11 @@ impl Terminal {
+         f(RenderableCells::new(content.display_iter))
+     }
+ 
++    pub fn get_styled_content(&self, max_bytes: usize) -> Vec<(String, Cell)> {
++        let term = self.term.lock_unfair();
++        crate::alacritty::styled_content(&term, max_bytes)
++    }
++
+     pub fn get_content(&self) -> String {
+         let term = self.term.lock_unfair();
+         content_text(&term)

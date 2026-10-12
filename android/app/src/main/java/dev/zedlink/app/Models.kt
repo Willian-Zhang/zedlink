@@ -94,7 +94,8 @@ data class NativeTerminal(
     val taskLabel: String?,
     val taskState: String?,
 )
-data class NativeTerminalSnapshot(val terminal: NativeTerminal, val content: String, val truncated: Boolean)
+data class NativeTerminalRun(val text: String, val foreground: String, val background: String, val bold: Boolean, val italic: Boolean, val underline: Boolean, val dim: Boolean)
+data class NativeTerminalSnapshot(val terminal: NativeTerminal, val content: String, val truncated: Boolean, val styledRuns: List<NativeTerminalRun> = emptyList())
 data class NativeConfiguredTask(val id: String, val label: String, val source: String)
 data class NativeDebugScenario(val id: String, val label: String, val adapter: String, val source: String)
 data class NativeDebuggerThread(val id: Long, val name: String, val status: String)

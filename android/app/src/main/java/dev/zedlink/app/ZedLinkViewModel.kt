@@ -616,7 +616,12 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     fun loadTerminal(terminal: NativeTerminal) = viewModelScope.launch { try {
         val result = client!!.rpc("terminal.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("terminal_id", terminal.id))
         val decoded = result.optJSONObject("terminal")?.let(::decodeTerminal) ?: throw GatewayException("Zed returned an invalid terminal snapshot.")
-        state = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated")))
+        val runs = result.optJSONArray("styled_runs") ?: JSONArray()
+        val styles = (0 until minOf(runs.length(), 2048)).mapNotNull { index ->
+            val row = runs.optJSONObject(index) ?: return@mapNotNull null
+            NativeTerminalRun(row.optString("text"), row.optString("foreground"), row.optString("background"), row.optBoolean("bold"), row.optBoolean("italic"), row.optBoolean("underline"), row.optBoolean("dim"))
+        }
+        state = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated"), styles))
     } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
     private val terminalInputMutex = Mutex()
     private var terminalInputGeneration = 0

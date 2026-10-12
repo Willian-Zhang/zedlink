@@ -658,3 +658,6 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
 .terminal-live-hint { position: absolute; left: 89px; top: 50%; transform: translateY(-50%); color: var(--subtle); font: 14px ui-monospace, monospace; pointer-events: none; }
 .terminal-keyboard-done { display: none; }
 .terminal-preview:focus-within .terminal-keyboard-done { display: block; }
+
+@font-face { font-family: "ZedLink Terminal Icons"; src: url("/fonts/terminal-icons.woff2") format("woff2"); font-display: swap; unicode-range: U+E5FA-E6B7, U+F000-F2E0; }
+.terminal-preview pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "ZedLink Terminal Icons", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace; }

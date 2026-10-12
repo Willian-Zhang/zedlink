@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import CoreText
 import UIKit
 import VisionKit
 
@@ -594,7 +595,7 @@ private struct NativeContextSheet: View {
                             .padding(.horizontal, 11).frame(minHeight: 40)
                             .background(Color(red: 0.03, green: 0.035, blue: 0.04))
                             ScrollView([.horizontal, .vertical]) {
-                                Text(snapshot.content.isEmpty ? " " : snapshot.content)
+                                terminalText(snapshot)
                                     .font(.system(size: 12, design: .monospaced))
                                     .foregroundStyle(Color(red: 0.85, green: 0.88, blue: 0.86))
                                     .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
@@ -1370,7 +1371,7 @@ private struct NativeTerminalScreen: View {
                 ScrollViewReader { reader in
                 ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 0) {
-                    Text(session.terminalSnapshot?.content ?? "")
+                    terminalText(session.terminalSnapshot)
                         .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                         .fixedSize(horizontal: true, vertical: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(10)
@@ -1430,4 +1431,43 @@ private struct NativeTerminalScreen: View {
             if await session.sendTerminalInput(value.isEmpty ? "\r" : value + "\n", appendReturn: false) { if input == value { input = "" } }
         }
     }
+}
+
+
+private let terminalFontRegistered: Bool = {
+    guard let url = Bundle.main.url(forResource: "terminal-icons", withExtension: "ttf") else { return false }
+    return CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+}()
+
+private func terminalColor(_ hex: String) -> Color? {
+    guard hex.count == 7, hex.first == "#", let value = UInt32(hex.dropFirst(), radix: 16) else { return nil }
+    return Color(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255, blue: Double(value & 255) / 255)
+}
+
+private func terminalText(_ snapshot: NativeTerminalSnapshot?) -> Text {
+    guard let snapshot else { return Text("") }
+    var text = AttributedString()
+    let runs = snapshot.styledRuns.isEmpty ? [NativeTerminalRun(text: snapshot.content, foreground: "", background: "", bold: false, italic: false, underline: false, dim: false)] : snapshot.styledRuns
+    for run in runs {
+        var segments: [(String, Bool)] = []
+        for character in run.text {
+            let scalar = character.unicodeScalars.first?.value ?? 0
+            let icon = (0xe5fa...0xe6b7).contains(scalar) || (0xf000...0xf2e0).contains(scalar)
+            if segments.last?.1 == icon {
+                segments[segments.count - 1].0.append(character)
+            } else { segments.append((String(character), icon)) }
+        }
+        for (segment, icon) in segments {
+            var part = AttributedString(segment)
+            var font = icon && terminalFontRegistered ? Font.custom("SymbolsNFM", size: 12) : Font.system(size: 12, design: .monospaced)
+            if run.bold { font = font.bold() }
+            if run.italic { font = font.italic() }
+            part.font = font
+            if let color = terminalColor(run.foreground) { part.foregroundColor = run.dim ? color.opacity(0.7) : color }
+            if let color = terminalColor(run.background) { part.backgroundColor = color }
+            if run.underline { part.underlineStyle = Text.LineStyle(pattern: .solid) }
+            text += part
+        }
+    }
+    return Text(text)
 }

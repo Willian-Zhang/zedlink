@@ -152,10 +152,20 @@ struct NativeTerminal: Identifiable, Equatable {
     let taskLabel: String?
     let taskState: String?
 }
+struct NativeTerminalRun: Equatable {
+    let text: String
+    let foreground: String
+    let background: String
+    let bold: Bool
+    let italic: Bool
+    let underline: Bool
+    let dim: Bool
+}
 struct NativeTerminalSnapshot: Equatable {
     let terminal: NativeTerminal
     let content: String
     let truncated: Bool
+    var styledRuns: [NativeTerminalRun] = []
 }
 struct NativeConfiguredTask: Identifiable, Equatable {
     let id: String

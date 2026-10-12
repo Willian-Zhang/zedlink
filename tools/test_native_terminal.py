@@ -48,7 +48,15 @@ def main():
                 raise AssertionError("Isolated Zed bridge did not start")
             base = {"instance_id": info["instance_id"], "epoch": info["epoch"]}
             for _ in range(100):
-                tasks = rpc(socket_path, "task.catalog", base)["tasks"]
+                try:
+                    tasks = rpc(socket_path, "task.catalog", base)["tasks"]
+                except RuntimeError as error:
+                    if "INSTANCE_UNAVAILABLE" not in str(error):
+                        raise
+                    info = rpc(socket_path, "instance.info", {})
+                    base = {"instance_id": info["instance_id"], "epoch": info["epoch"]}
+                    time.sleep(0.1)
+                    continue
                 if tasks:
                     break
                 time.sleep(0.1)
@@ -98,8 +106,16 @@ def main():
             replay = send("printf 'ONCE_%s\\n' OK\r", request_id)
             assert not first["duplicate"] and replay["duplicate"]
             assert wait_output("ONCE_OK").count("ONCE_OK") == 1
+            send("printf '\\033[1;31mCOLOR_%s\\033[0m 📁 \uf07b e\u0301 界\\n' OK\r")
+            wait_output("COLOR_OK")
+            styled = rpc(socket_path, "terminal.snapshot", params)
+            color_runs = [run for run in styled["styled_runs"] if "COLOR_OK" in run["text"]]
+            assert color_runs and color_runs[0]["bold"] and color_runs[0]["foreground"].startswith("#"), color_runs
+            styled_text = "".join(run["text"] for run in styled["styled_runs"])
+            assert "📁" in styled_text and "\uf07b" in styled_text and "e\u0301" in styled_text and "界" in styled_text
+            assert not styled["styles_truncated"]
             send("exit\r")
-            print("PASS: real isolated Zed terminal Enter, Tab completion, history, Ctrl C, and input replay")
+            print("PASS: real isolated Zed terminal Enter, Tab completion, history, Ctrl C, input replay, colors, wide Unicode and shell icons")
         finally:
             process.terminate()
             try:

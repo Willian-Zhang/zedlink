@@ -636,7 +636,11 @@ import Combine
                 "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
             ])
             guard let row = result["terminal"] as? [String: Any], let decoded = Self.decodeTerminal(row) else { throw GatewayFailure.invalidResponse }
-            terminalSnapshot = NativeTerminalSnapshot(terminal: decoded, content: result["content"] as? String ?? "", truncated: result["truncated"] as? Bool ?? false)
+            let runs = (result["styled_runs"] as? [[String: Any]] ?? []).prefix(2048).compactMap { row -> NativeTerminalRun? in
+                guard let text = row["text"] as? String else { return nil }
+                return NativeTerminalRun(text: text, foreground: row["foreground"] as? String ?? "", background: row["background"] as? String ?? "", bold: row["bold"] as? Bool ?? false, italic: row["italic"] as? Bool ?? false, underline: row["underline"] as? Bool ?? false, dim: row["dim"] as? Bool ?? false)
+            }
+            terminalSnapshot = NativeTerminalSnapshot(terminal: decoded, content: result["content"] as? String ?? "", truncated: result["truncated"] as? Bool ?? false, styledRuns: Array(runs))
         } catch { issue = error.localizedDescription }
     }
 

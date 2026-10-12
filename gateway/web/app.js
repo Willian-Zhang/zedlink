@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.5";
+const UI_BUILD = "2026.10.12.6";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -2154,7 +2154,22 @@ function renderTerminalSnapshot() {
   $("terminal-title").textContent = snapshot.terminal.title || "Terminal";
   const output = $("terminal-output");
   const followOutput = !output.textContent || output.scrollHeight - output.scrollTop - output.clientHeight < 36;
-  output.textContent = snapshot.content || "";
+  const runs = snapshot.styled_runs;
+  if (Array.isArray(runs) && runs.length > 0 && runs.length <= 2048 && runs.every(run => typeof run.text === "string")) {
+    const fragment = document.createDocumentFragment();
+    for (const run of runs) {
+      const span = document.createElement("span");
+      span.textContent = run.text;
+      if (/^#[0-9a-f]{6}$/i.test(run.foreground)) span.style.color = run.foreground;
+      if (/^#[0-9a-f]{6}$/i.test(run.background)) span.style.backgroundColor = run.background;
+      if (run.bold) span.style.fontWeight = "700";
+      if (run.italic) span.style.fontStyle = "italic";
+      if (run.underline) span.style.textDecoration = "underline";
+      if (run.dim) span.style.opacity = "0.7";
+      fragment.append(span);
+    }
+    output.replaceChildren(fragment);
+  } else output.textContent = snapshot.content || "";
   if (followOutput) output.scrollTop = output.scrollHeight;
   const canInput = state.capabilities.includes("terminal.input");
   $("terminal-input-form").classList.toggle("hidden", !canInput);

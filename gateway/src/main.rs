@@ -197,6 +197,7 @@ fn application(state: Gateway) -> Router {
         .route("/style.css", get(browser_style))
         .route("/manifest.webmanifest", get(browser_manifest))
         .route("/service-worker.js", get(browser_service_worker))
+        .route("/fonts/terminal-icons.woff2", get(browser_terminal_font))
         .route("/icons/icon-192.png", get(browser_icon_192))
         .route("/icons/icon-512.png", get(browser_icon_512))
         .route("/v1/gateway", get(info))
@@ -498,6 +499,13 @@ fn static_bytes(content_type: &'static str, body: &'static [u8]) -> Response {
     );
     response
 }
+async fn browser_terminal_font() -> Response {
+    static_bytes(
+        "font/woff2",
+        include_bytes!("../web/fonts/terminal-icons.woff2"),
+    )
+}
+
 async fn browser_icon_192() -> Response {
     static_bytes("image/png", include_bytes!("../web/icons/icon-192.png"))
 }

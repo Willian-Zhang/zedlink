@@ -284,6 +284,9 @@ class ProbeFixture:
                                            "task": {"id": "fixture-task", "label": "Fixture task",
                                                     "status": {"state": "running"}}},
                               "content": "$ printf ready\\nready\\n", "truncated": False,
+                              "styled_runs": [{"text": "$ printf ready\\n", "foreground": "#d9dedb", "background": "#020303"},
+                                              {"text": "ready\\n", "foreground": "#ff5555", "background": "#020303", "bold": True},
+                                              {"text": "📁 \uf07b e\u0301 界 <script>fixture</script>", "foreground": "#55ff55", "background": "#020303"}],
                               "total_lines": 2, "viewport_lines": 24}
                 elif method == "terminal.input":
                     payload = json.dumps(params, sort_keys=True)
@@ -912,7 +915,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.5"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.6"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1079,6 +1082,13 @@ def main():
                 browser.find_element(By.ID, "run-task").click()
                 wait.until(lambda driver: len(probe.task_runs) >= 1)
                 assert "ready" in browser.find_element(By.ID, "terminal-output").text
+                color_run = browser.find_element(By.CSS_SELECTOR, "#terminal-output span:nth-child(2)")
+                assert color_run.value_of_css_property("color") == "rgb(255, 85, 85)"
+                assert color_run.value_of_css_property("font-weight") == "700"
+                assert "📁" in browser.find_element(By.ID, "terminal-output").text
+                assert not browser.find_elements(By.CSS_SELECTOR, "#terminal-output script")
+                assert browser.execute_async_script("const done=arguments[0]; document.fonts.load('12px \"ZedLink Terminal Icons\"', '\uf07b').then(fonts => done(fonts.length > 0), () => done(false))")
+
                 browser.find_element(By.CSS_SELECTOR, "#task-launcher > summary").click()
                 terminal_input = browser.find_element(By.ID, "terminal-input")
                 terminal_input.send_keys("echo terminal-ui")

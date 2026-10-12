@@ -1,10 +1,11 @@
 "use strict";
 
-const SHELL_CACHE = "zedlink-shell-v44";
+const SHELL_CACHE = "zedlink-shell-v45";
 const SHELL = [
   "/",
   "/style.css",
   "/app.js",
+  "/fonts/terminal-icons.woff2",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",

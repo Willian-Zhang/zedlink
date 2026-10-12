@@ -27,6 +27,11 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -375,7 +380,7 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                     val verticalTerminalScroll = rememberScrollState()
                     val horizontalTerminalScroll = rememberScrollState()
                     SelectionContainer {
-                        Text(snapshot.content.ifEmpty { " " }, color = Color(0xFFD9DEDB), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                        Text(terminalText(snapshot), color = Color(0xFFD9DEDB), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
                             modifier = Modifier.fillMaxWidth().height(280.dp).verticalScroll(verticalTerminalScroll).horizontalScroll(horizontalTerminalScroll).padding(13.dp))
                     }
                 }
@@ -895,7 +900,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                     IconButton(onClick = { scrollScope.launch { terminalScroll.scrollTo(terminalScroll.maxValue) } }) { Icon(Icons.Default.ArrowDownward, "Latest output") }
                 }
                 SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
-                    Text(state.terminalSnapshot?.content.orEmpty(), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                    Text(terminalText(state.terminalSnapshot), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
                         modifier = Modifier.fillMaxSize().verticalScroll(terminalScroll).horizontalScroll(horizontalScroll).padding(10.dp))
                 }
                 if ("terminal.input" in state.capabilities) {
@@ -918,6 +923,28 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                         IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
                     }
                 } else { Text("Enable Send Terminal Input in desktop ZedLink settings.", color = Muted, modifier = Modifier.padding(12.dp)) }
+            }
+        }
+    }
+}
+
+
+private fun terminalColor(hex: String): Color? = if (Regex("#[0-9a-fA-F]{6}").matches(hex)) Color(0xff000000L or hex.drop(1).toLong(16)) else null
+private fun terminalText(snapshot: NativeTerminalSnapshot?): AnnotatedString = buildAnnotatedString {
+    if (snapshot == null) return@buildAnnotatedString
+    val runs = snapshot.styledRuns.ifEmpty { listOf(NativeTerminalRun(snapshot.content, "", "", false, false, false, false)) }
+    runs.forEach { run ->
+        val start = length
+        append(run.text)
+        val foreground = terminalColor(run.foreground) ?: Ink
+        addStyle(SpanStyle(color = if (run.dim) foreground.copy(alpha = 0.7f) else foreground,
+            background = terminalColor(run.background) ?: Color.Unspecified,
+            fontWeight = if (run.bold) FontWeight.Bold else FontWeight.Normal,
+            fontStyle = if (run.italic) FontStyle.Italic else FontStyle.Normal,
+            textDecoration = if (run.underline) TextDecoration.Underline else TextDecoration.None), start, length)
+        run.text.forEachIndexed { index, character ->
+            if (character.code in 0xe5fa..0xe6b7 || character.code in 0xf000..0xf2e0) {
+                addStyle(SpanStyle(fontFamily = FontFamily(Font(R.font.terminal_icons))), start + index, start + index + 1)
             }
         }
     }

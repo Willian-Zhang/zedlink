@@ -37,3 +37,10 @@ The stock extension API at that revision cannot enumerate or control an existing
 The nested checkout follows [`tjnull/zed:zedlink/native-agent-remote-control`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control), based on the exact pinned revision above. Its commits separate cancellation correctness, the opt-in local Agent bridge, native failure reporting, project and Git context, search, and native ZedLink settings. The fork is the checkout's `origin`; the official [`zed-industries/zed`](https://github.com/zed-industries/zed) repository is retained as `upstream` for revision comparison and future rebases.
 
 Zed's contribution policy requires feature work of this size to start as a GitHub Discussion unless a staff-confirmed issue already exists. It also requires the human author to understand and review all AI-assisted code, manually test Zed, retain tests and evidence, sign the CLA, and write the maintainer communication. The checkout deliberately retains Zed's README review marker until that human review is complete. Do not remove it automatically.
+
+
+## GitHub Actions budget
+
+Android and macOS workflows run **only on manual dispatch**. Pushes do not launch hosted builds. Do not dispatch either workflow without the repository owner's approval while the Actions allowance is nearly exhausted. Use local Linux static checks, browser fixtures, and isolated native terminal checks by default. SwiftUI and Compose source changes that cannot be built locally must be labeled uncompiled, rather than silently running a cloud build.
+
+Terminal icon fonts are bundled and self-hosted. Source, subset ranges, and upstream notices live in `gateway/web/fonts/`; copies of the notices accompany the native app resources.
