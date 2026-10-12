@@ -104,6 +104,10 @@ def zedlink_tasks() -> list:
     ]
     for label, action in (
         ("Configure", "configure"),
+        ("Set up / renew Tailscale HTTPS", "tailscale-setup"),
+        ("Enable automatic certificate renewal", "install-renewal"),
+        ("Certificate renewal status", "renewal-status"),
+        ("Check certificate renewal now", "renew-certificates"),
         ("Diagnose setup", "diagnose"),
         ("Repair setup", "repair"),
         ("Install patched Zed launcher", "install-launcher"),
@@ -115,16 +119,18 @@ def zedlink_tasks() -> list:
         ("Manage Zed targets", "manage-targets"),
         ("Check connections", "check-routes"),
         ("Pair a device", "pair"),
+        ("Pair in browser", "pair-browser"),
+        ("Pair in terminal", "pair-terminal"),
         ("Status", "status"),
         ("Paired devices", "devices"),
         ("Revoke device", "revoke"),
     ):
         task = {"label": f"ZedLink: {label}", "command": "python3",
                 "args": [manager, action], **common}
-        if action == "pair":
+        if action in ("pair", "pair-terminal"):
             task.update({
-                "reveal": "never",
-                "hide": "on_success",
+                "reveal": "always",
+                "hide": "never",
                 "show_summary": False,
                 "show_command": False,
             })

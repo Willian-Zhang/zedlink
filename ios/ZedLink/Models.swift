@@ -89,6 +89,63 @@ struct NativeApprovalDecision: Identifiable, Equatable {
     }
 }
 
+struct NativeElicitationField: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let type: String
+    let required: Bool
+    let choices: [String]
+}
+
+struct NativeElicitation: Identifiable, Equatable {
+    let id: String
+    let message: String
+    let url: String?
+    let fields: [NativeElicitationField]
+}
+
+struct NativeQueueEntry: Identifiable, Equatable {
+    let id: Int
+    let preview: String
+    let steer: Bool
+}
+
+struct NativeEditReview: Equatable {
+    let changedFiles: Int
+    let linesAdded: Int
+    let linesRemoved: Int
+}
+
+struct NativeModelOption: Identifiable, Equatable {
+    let id: String
+    let providerID: String
+    let name: String
+}
+
+struct NativeThreadSettings: Equatable {
+    let modelID: String?
+    let providerID: String?
+    let models: [NativeModelOption]
+    let usedTokens: Int?
+    let maxTokens: Int?
+}
+
+struct NativeRewindPoint: Identifiable, Equatable {
+    let id: String
+    let entryIndex: Int
+    let entriesRemoved: Int
+}
+
+struct NativeSubagent: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let status: String
+    let currentTurnID: Int?
+    let entries: [String]
+}
+struct NativeProjectFile: Identifiable, Equatable { let id: String; let kind: String; let size: Int? }
+struct NativeChange: Identifiable, Equatable { let id: String; let status: String; let staging: String }
+
 struct ThreadSnapshot {
     let threadID: String
     let title: String
@@ -105,6 +162,8 @@ struct ThreadSnapshot {
     let truncated: Bool
     let activityTruncated: Bool
     let pendingApprovals: [NativeApproval]
+    let rewindPoints: [NativeRewindPoint]
+    let subagents: [NativeSubagent]
 
     var isBusy: Bool { status != "Idle" }
 }

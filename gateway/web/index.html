@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -87,7 +87,8 @@
           <div class="settings-group-head"><div><p id="settings-agent-kind" class="eyebrow">ZED AGENT</p><h2 id="native-settings-heading">Selected session</h2></div><span id="zed-settings-state">No session</span></div>
           <p id="zed-settings-thread" class="muted">Select an exposed session to manage its native Zed options.</p>
           <form id="native-settings-form">
-            <div class="setting-field"><label id="zed-model-label" for="zed-model">Current model</label><input id="zed-model" type="text" value="No session selected" readonly></div>
+            <div class="setting-field"><label id="zed-model-label" for="zed-model">Current model</label><select id="zed-model" disabled><option>No session selected</option></select></div>
+            <div class="settings-row"><span>Context usage</span><strong id="zed-context-usage">Unavailable</strong></div>
             <div id="zed-profile-field" class="setting-field"><label for="zed-profile">Agent profile</label><select id="zed-profile" disabled><option>Select a session</option></select><small>Changes the native Agent profile and its configured tools for this thread.</small></div>
             <label id="zed-thinking-row" class="settings-switch" for="zed-thinking"><span><strong>Model thinking</strong><small>Uses the model’s native thinking control when supported.</small></span><input id="zed-thinking" type="checkbox" disabled></label>
             <button id="save-zed-settings" class="primary" type="submit" disabled>Apply to Zed</button>
@@ -106,7 +107,7 @@
           <p id="notification-help" class="note">ZedLink can notify this device when a session finishes or needs approval. Notification text never includes prompts, replies, or tool details.</p>
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Zed hosted agent</strong></div>
-          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.08.2</code></div>
+          <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.09.5</code></div>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>
@@ -115,17 +116,14 @@
       </section>
     </aside>
     <section class="workspace" aria-label="Native Zed conversation">
-      <div class="conversation-toolbar"><div class="conversation-head"><div class="conversation-title"><p id="thread-agent-kind" class="eyebrow">ZED AGENT</p><h2 id="thread-title">Agent session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p></div><span id="thread-state" class="state-pill">No session</span><button id="show-context" class="toolbar-action" type="button" aria-label="Open project context" aria-expanded="false">Context</button></div></div>
+      <div class="conversation-toolbar"><div class="conversation-head"><button id="back-sessions" class="conversation-back" type="button" aria-label="Back to sessions" title="Back to sessions">←</button><div class="conversation-title"><p id="thread-agent-kind" class="eyebrow">ZED AGENT</p><h2 id="thread-title">Agent session</h2><p id="thread-meta" class="muted">The thread stays in desktop Zed.</p><p id="mobile-session-meta" class="mobile-session-meta" aria-live="polite">Model · checking</p></div><button id="thread-state" class="state-pill" type="button" aria-label="Agent status">No session</button><details id="edit-review" class="edit-review-control hidden"><summary aria-label="Review agent edits" title="Review agent edits"><span class="edit-review-icon" aria-hidden="true">±</span><span id="edit-review-count" class="edit-review-count"></span></summary><div class="edit-review-menu" aria-label="Agent edit review"></div></details><button id="show-context" class="toolbar-action" type="button" aria-label="Open project context" aria-expanded="false"><span class="context-icon" aria-hidden="true">@</span><span class="context-label">Context</span></button></div></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <section id="approvals" class="approvals hidden" aria-label="Pending Zed approvals"></section>
+      <section id="elicitations" class="approvals hidden" aria-label="Agent input requests"></section>
+      <section id="queue-review" class="approvals hidden" aria-label="Queued messages"></section>
       <div id="messages" class="messages" aria-live="off"><section id="empty-state" class="empty empty-session"><p class="eyebrow">NO REMOTE SESSIONS</p><span class="empty-icon" aria-hidden="true">Z</span><h3>Connect your first Agent thread</h3><p id="empty-description">ZedLink is waiting for an exposed agent session.</p><div class="empty-actions"><button id="empty-create" class="primary" type="button">Start a new Zed Agent session</button><button id="empty-refresh" class="quiet" type="button">Refresh sessions</button></div><details id="empty-help" class="empty-help"><summary>Expose an existing Zed thread</summary><ol><li>Open the Agent panel in the patched <strong>Zed Dev</strong> window.</li><li>Open a Zed Agent, Codex, Claude Code, or other ACP conversation.</li><li>Type <code>/remote-control</code> and select <strong>Remote Control</strong>.</li></ol></details><p class="empty-foot">The agent, model, tools, MCP connections, project context, and credentials remain in desktop Zed.</p></section><button id="load-history" class="load-history hidden" type="button">Load earlier conversation</button><div id="transcript-entries" class="transcript-entries"></div><section id="agent-health" class="agent-health hidden" role="alert" aria-live="assertive"><div><strong id="agent-health-title">Agent request failed</strong><p id="agent-health-message"></p></div><div class="agent-health-actions"><span id="agent-health-recovery"></span><button id="rewind-image" class="hidden" type="button">Rewind before image</button></div></section><section id="subagents" class="subagents hidden" aria-label="Parallel Zed agents"></section><section id="activity" class="activity hidden" aria-label="Live Zed activity"><div class="activity-head"><span class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">Turn activity</strong><span id="activity-state">Complete</span><button id="activity-toggle" type="button" aria-expanded="false">View</button></div><div id="activity-content" class="activity-content" aria-live="polite" aria-atomic="false"></div></section></div>
       <button id="jump-latest" class="jump-latest hidden" type="button">↓ Latest messages</button>
       <div class="composer-wrap">
-        <button id="turn-progress" class="turn-progress hidden" type="button" aria-live="polite" aria-label="View live Zed Agent activity">
-          <span class="turn-progress-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-          <span class="turn-progress-copy"><strong>Zed Agent is working</strong><small id="turn-progress-detail">Waiting for native activity…</small></span>
-          <span id="turn-progress-action">View activity</span>
-        </button>
         <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
         <div id="attachment-strip" class="attachment-strip hidden" aria-label="Prompt attachments"></div>
         <div id="action-menu" class="action-menu hidden" aria-label="Agent actions and context"><button id="action-delegate" type="button"><strong>⇉</strong><span>Delegate task</span></button><button id="action-commands" type="button"><strong>/</strong><span>Commands</span></button><button id="action-file" type="button"><strong>@</strong><span>Project file</span></button><button id="action-upload" type="button"><strong>↑</strong><span>Upload file</span></button></div>

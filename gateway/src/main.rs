@@ -31,7 +31,7 @@ use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, Notify, Semaphore},
+    sync::{Mutex, Notify, Semaphore, broadcast},
     task::JoinSet,
 };
 use uuid::Uuid;
@@ -44,6 +44,7 @@ const MAX_RPC: usize = 2 * 1024 * 1024;
 const MAX_PROBE_RESPONSE: u64 = 4 * 1024 * 1024;
 const PAIR_TTL: Duration = Duration::from_secs(300);
 const MAX_DEVICES: usize = 32;
+const MAX_WEBSOCKETS: usize = 64;
 const NOTIFICATION_POLL: Duration = Duration::from_secs(2);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -53,11 +54,21 @@ struct Inner {
     directory: PathBuf,
     targets: Vec<ProbeTarget>,
     route_origins: Vec<String>,
+    tls_identities: Vec<TlsIdentity>,
     persisted: Mutex<Persisted>,
     pairing: Mutex<Option<Pairing>>,
+    pairing_updates: broadcast::Sender<PairingUpdate>,
     probe_limit: Arc<Semaphore>,
+    websocket_limit: Arc<Semaphore>,
     shutdown: Arc<Notify>,
     push_client: IsahcWebPushClient,
+}
+#[derive(Clone)]
+struct TlsIdentity {
+    id: String,
+    cert: PathBuf,
+    key: PathBuf,
+    config: RustlsConfig,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Persisted {
@@ -80,10 +91,18 @@ struct PushSubscription {
     subscription: SubscriptionInfo,
 }
 struct Pairing {
+    id: Uuid,
     digest: [u8; 32],
+    watch_digest: [u8; 32],
     kind: PairingKind,
     expires: Instant,
     attempts: u8,
+}
+#[derive(Clone, Serialize)]
+struct PairingUpdate {
+    pairing_id: Uuid,
+    status: &'static str,
+    attempts_remaining: u8,
 }
 #[derive(Clone, Copy)]
 enum PairingKind {
@@ -100,6 +119,10 @@ struct EventQuery {
     thread_id: String,
     after_sequence: Option<u64>,
     target_id: Option<String>,
+}
+#[derive(Deserialize)]
+struct PairingEventQuery {
+    pairing_id: String,
 }
 #[derive(Deserialize)]
 struct UnsubscribeRequest {
@@ -178,6 +201,7 @@ fn application(state: Gateway) -> Router {
         .route("/icons/icon-512.png", get(browser_icon_512))
         .route("/v1/gateway", get(info))
         .route("/v1/pair", post(pair))
+        .route("/v1/pairing-events", get(pairing_events))
         .route("/v1/rpc", post(rpc))
         .route("/v1/events", get(events))
         .route("/v1/notifications/config", get(notification_config))
@@ -262,7 +286,21 @@ async fn run_gateway(
         .collect::<Vec<_>>();
     route_origins.sort();
     route_origins.dedup();
-    let state = Gateway::load(directory, targets, route_origins)?;
+    let mut servers_to_start = Vec::with_capacity(listeners.len());
+    let mut tls_identities = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let tls = RustlsConfig::from_pem_file(&listener.cert, &listener.key)
+            .await
+            .with_context(|| format!("load TLS identity for listener {}", listener.id))?;
+        tls_identities.push(TlsIdentity {
+            id: listener.id.clone(),
+            cert: listener.cert.clone(),
+            key: listener.key.clone(),
+            config: tls.clone(),
+        });
+        servers_to_start.push((listener, tls));
+    }
+    let state = Gateway::load(directory, targets, route_origins, tls_identities)?;
     let admin = state.clone();
     tokio::spawn(async move {
         if let Err(error) = admin.admin_server().await {
@@ -273,10 +311,7 @@ async fn run_gateway(
     tokio::spawn(async move { notifications.notification_monitor().await });
 
     let mut servers = JoinSet::new();
-    for listener in listeners {
-        let tls = RustlsConfig::from_pem_file(&listener.cert, &listener.key)
-            .await
-            .with_context(|| format!("load TLS identity for listener {}", listener.id))?;
+    for (listener, tls) in servers_to_start {
         let app = application(state.clone());
         eprintln!(
             "ZedLink route {} listening on https://{}",
@@ -378,10 +413,11 @@ async fn main() -> Result<()> {
                 "pair-code" if args.len() == 3 => json!({"method":"pair-code"}),
                 "pair-short-code" if args.len() == 3 => json!({"method":"pair-short-code"}),
                 "devices" if args.len() == 3 => json!({"method":"devices"}),
+                "reload-tls" if args.len() == 3 => json!({"method":"reload-tls"}),
                 "shutdown" if args.len() == 3 => json!({"method":"shutdown"}),
                 "revoke" if args.len() == 4 => json!({"method":"revoke","device_id":args[3]}),
                 _ => bail!(
-                    "admin STATE_DIR pair-code|pair-short-code|devices|shutdown|revoke DEVICE_ID"
+                    "admin STATE_DIR pair-code|pair-short-code|devices|reload-tls|shutdown|revoke DEVICE_ID"
                 ),
             };
             let mut stream = UnixStream::connect(Path::new(&args[1]).join("admin.sock")).await?;
@@ -395,7 +431,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | serve-routes LISTENERS_JSON PROBE_SOCKET STATE_DIR | serve-targets LISTENERS_JSON TARGETS_JSON STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|shutdown|revoke DEVICE_ID"
+            "serve PRIVATE_IP:PORT CERT_PEM KEY_PEM PROBE_SOCKET STATE_DIR | serve-routes LISTENERS_JSON PROBE_SOCKET STATE_DIR | serve-targets LISTENERS_JSON TARGETS_JSON STATE_DIR | admin STATE_DIR pair-code|pair-short-code|devices|reload-tls|shutdown|revoke DEVICE_ID"
         ),
     }
 }
@@ -540,6 +576,7 @@ impl Gateway {
         directory: PathBuf,
         targets: Vec<ProbeTarget>,
         route_origins: Vec<String>,
+        tls_identities: Vec<TlsIdentity>,
     ) -> Result<Self> {
         if targets.is_empty() || targets.len() > 16 {
             bail!("configure between 1 and 16 Zed targets");
@@ -602,13 +639,17 @@ impl Gateway {
         }
         VapidSignatureBuilder::from_base64_no_sub(&persisted.vapid_private_key)
             .context("invalid saved Web Push key")?;
+        let (pairing_updates, _) = broadcast::channel(16);
         Ok(Self(Arc::new(Inner {
             directory,
             targets,
             route_origins,
+            tls_identities,
             persisted: Mutex::new(persisted),
             pairing: Mutex::new(None),
+            pairing_updates,
             probe_limit: Arc::new(Semaphore::new(16)),
+            websocket_limit: Arc::new(Semaphore::new(MAX_WEBSOCKETS)),
             shutdown: Arc::new(Notify::new()),
             push_client: IsahcWebPushClient::new().context("Web Push client unavailable")?,
         })))
@@ -751,23 +792,49 @@ impl Gateway {
         let response = match request["method"].as_str() {
             Some("pair-code") => {
                 let code: [u8; 32] = rand::random();
-                *self.0.pairing.lock().await = Some(Pairing {
+                let watch_token: [u8; 32] = rand::random();
+                let id = Uuid::new_v4();
+                let mut pairing = self.0.pairing.lock().await;
+                if let Some(previous) = pairing.as_ref() {
+                    drop(self.0.pairing_updates.send(PairingUpdate {
+                        pairing_id: previous.id,
+                        status: "replaced",
+                        attempts_remaining: 0,
+                    }));
+                }
+                *pairing = Some(Pairing {
+                    id,
                     digest: digest(&code),
+                    watch_digest: digest(&watch_token),
                     kind: PairingKind::Hex,
                     expires: Instant::now() + PAIR_TTL,
                     attempts: 0,
                 });
-                json!({"code":hex::encode(code),"expires_seconds":PAIR_TTL.as_secs()})
+                json!({"code":hex::encode(code),"pairing_id":id,
+                    "watch_token":hex::encode(watch_token),"expires_seconds":PAIR_TTL.as_secs()})
             }
             Some("pair-short-code") => {
                 let code = format!("{:010}", rand::random_range(0..10_000_000_000_u64));
-                *self.0.pairing.lock().await = Some(Pairing {
+                let watch_token: [u8; 32] = rand::random();
+                let id = Uuid::new_v4();
+                let mut pairing = self.0.pairing.lock().await;
+                if let Some(previous) = pairing.as_ref() {
+                    drop(self.0.pairing_updates.send(PairingUpdate {
+                        pairing_id: previous.id,
+                        status: "replaced",
+                        attempts_remaining: 0,
+                    }));
+                }
+                *pairing = Some(Pairing {
+                    id,
                     digest: digest(code.as_bytes()),
+                    watch_digest: digest(&watch_token),
                     kind: PairingKind::Decimal,
                     expires: Instant::now() + PAIR_TTL,
                     attempts: 0,
                 });
-                json!({"code":code,"expires_seconds":PAIR_TTL.as_secs()})
+                json!({"code":code,"pairing_id":id,
+                    "watch_token":hex::encode(watch_token),"expires_seconds":PAIR_TTL.as_secs()})
             }
             Some("devices") => {
                 let persisted = self.0.persisted.lock().await;
@@ -779,6 +846,23 @@ impl Gateway {
                     })).collect::<Vec<_>>()})
             }
             Some("shutdown") => json!({"stopping":true}),
+            Some("reload-tls") => {
+                let mut replacements = Vec::with_capacity(self.0.tls_identities.len());
+                for identity in &self.0.tls_identities {
+                    let replacement = RustlsConfig::from_pem_file(&identity.cert, &identity.key)
+                        .await
+                        .with_context(|| {
+                            format!("reload TLS identity for listener {}", identity.id)
+                        })?;
+                    replacements.push(replacement);
+                }
+                let mut listeners = Vec::with_capacity(replacements.len());
+                for (identity, replacement) in self.0.tls_identities.iter().zip(replacements) {
+                    identity.config.reload_from_config(replacement.get_inner());
+                    listeners.push(identity.id.clone());
+                }
+                json!({"reloaded":true,"listeners":listeners})
+            }
             Some("revoke") => {
                 let id =
                     Uuid::parse_str(request["device_id"].as_str().context("device ID missing")?)?;
@@ -976,6 +1060,11 @@ async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) ->
         );
     };
     if Instant::now() >= active.expires || active.attempts >= 5 {
+        drop(state.0.pairing_updates.send(PairingUpdate {
+            pairing_id: active.id,
+            status: "expired",
+            attempts_remaining: 0,
+        }));
         *pairing = None;
         return (
             StatusCode::FORBIDDEN,
@@ -995,6 +1084,11 @@ async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) ->
         }
     };
     if !valid {
+        drop(state.0.pairing_updates.send(PairingUpdate {
+            pairing_id: active.id,
+            status: "attempt_failed",
+            attempts_remaining: 5_u8.saturating_sub(active.attempts),
+        }));
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error":"PAIRING_INVALID"})),
@@ -1022,11 +1116,142 @@ async fn pair(State(state): State<Gateway>, Json(request): Json<PairRequest>) ->
         );
     }
     *persisted = next;
+    drop(state.0.pairing_updates.send(PairingUpdate {
+        pairing_id: active.id,
+        status: "paired",
+        attempts_remaining: 5_u8.saturating_sub(active.attempts),
+    }));
     *pairing = None;
     (
         StatusCode::OK,
         Json(json!({"device_id":id,"token":hex::encode(token),"gateway_id":persisted.gateway_id})),
     )
+}
+
+async fn pairing_events(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+    Query(query): Query<PairingEventQuery>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let Ok(pairing_id) = Uuid::parse_str(&query.pairing_id) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let watch_token = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(',').map(str::trim).find_map(|protocol| {
+                protocol
+                    .strip_prefix("zedlink-pairing-token-")
+                    .map(str::to_owned)
+            })
+        })
+        .and_then(|token| hex::decode(token).ok());
+    let Some(watch_token) = watch_token.filter(|token| token.len() == 32) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let watch_digest = digest(&watch_token);
+    let receiver = state.0.pairing_updates.subscribe();
+    let mut pairing = state.0.pairing.lock().await;
+    let Some(active) = pairing.as_ref() else {
+        return StatusCode::GONE.into_response();
+    };
+    if active.id != pairing_id || !bool::from(active.watch_digest.ct_eq(&watch_digest)) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if Instant::now() >= active.expires {
+        drop(state.0.pairing_updates.send(PairingUpdate {
+            pairing_id,
+            status: "expired",
+            attempts_remaining: 0,
+        }));
+        *pairing = None;
+        return StatusCode::GONE.into_response();
+    }
+    drop(pairing);
+    let Ok(permit) = state.0.websocket_limit.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    upgrade
+        .protocols(["zedlink-pairing-v1"])
+        .on_upgrade(move |socket| pairing_event_stream(socket, state, pairing_id, receiver, permit))
+        .into_response()
+}
+
+async fn send_pairing_event(socket: &mut WebSocket, event: Value) -> bool {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        socket.send(Message::Text(event.to_string().into())),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
+async fn pairing_event_stream(
+    mut socket: WebSocket,
+    state: Gateway,
+    pairing_id: Uuid,
+    mut receiver: broadcast::Receiver<PairingUpdate>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            update = receiver.recv() => {
+                match update {
+                    Ok(update) if update.pairing_id == pairing_id => {
+                        let terminal = matches!(update.status, "paired" | "expired" | "replaced");
+                        if !send_pairing_event(&mut socket, json!({
+                            "pairing_id": update.pairing_id,
+                            "status": update.status,
+                            "attempts_remaining": update.attempts_remaining,
+                        })).await || terminal {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = interval.tick() => {
+                let (status, expires_seconds, attempts_remaining) = {
+                    let mut pairing = state.0.pairing.lock().await;
+                    match pairing.as_ref() {
+                        Some(active) if active.id == pairing_id && Instant::now() < active.expires => (
+                            "active",
+                            active.expires.saturating_duration_since(Instant::now()).as_secs(),
+                            5_u8.saturating_sub(active.attempts),
+                        ),
+                        Some(active) if active.id == pairing_id => {
+                            *pairing = None;
+                            ("expired", 0, 0)
+                        }
+                        _ => ("replaced", 0, 0),
+                    }
+                };
+                if status == "expired" {
+                    drop(state.0.pairing_updates.send(PairingUpdate {
+                        pairing_id,
+                        status,
+                        attempts_remaining,
+                    }));
+                }
+                if !send_pairing_event(&mut socket, json!({
+                    "pairing_id": pairing_id,
+                    "status": status,
+                    "expires_seconds": expires_seconds,
+                    "attempts_remaining": attempts_remaining,
+                })).await || status != "active" {
+                    break;
+                }
+            }
+        }
+    }
+    if let Err(error) = socket.close().await {
+        eprintln!("pairing event stream close failed: {error}");
+    }
 }
 
 async fn notification_config(
@@ -1253,6 +1478,12 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.commands"
             | "thread.settings"
             | "thread.settings.update"
+            | "thread.elicitations"
+            | "elicitation.respond"
+            | "thread.queue"
+            | "thread.queue.clear"
+            | "thread.edit_review"
+            | "thread.edit_review.respond"
             | "thread.approvals"
             | "approval.respond"
             | "project.files"
@@ -1266,6 +1497,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.cancel"
             | "subagent.cancel"
             | "thread.rewind_image"
+            | "thread.rewind"
             | "request.status"
     ) {
         return (
@@ -1370,12 +1602,21 @@ async fn events(
     if state.target(query.target_id.as_deref()).is_err() {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let Ok(permit) = state.0.websocket_limit.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     upgrade
         .protocols(["zedlink-v1"])
-        .on_upgrade(move |socket| event_stream(socket, state, device_id, query))
+        .on_upgrade(move |socket| event_stream(socket, state, device_id, query, permit))
         .into_response()
 }
-async fn event_stream(mut socket: WebSocket, state: Gateway, device_id: Uuid, query: EventQuery) {
+async fn event_stream(
+    mut socket: WebSocket,
+    state: Gateway,
+    device_id: Uuid,
+    query: EventQuery,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let mut sequence = query.after_sequence.unwrap_or(0);
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     loop {

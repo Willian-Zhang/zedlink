@@ -42,7 +42,11 @@ Use that address for **Gateway bind address**, followed by port `44679`.
 
 The client URL must use a hostname covered by a certificate trusted by the browser. Do not use the raw Tailscale IP as the HTTPS URL. Tailscale documents certificate creation in [Set up HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates). Certificate issuance publishes the hostname in public Certificate Transparency logs, and file certificates must be renewed.
 
-When the wizard detects Tailscale and the suggested certificate files do not exist, it explains that public-log consequence and asks whether it should run `tailscale cert` for you. Answering **yes** creates the certificate and private key under `~/.config/zedlink/tls/`; answering **no** leaves certificate management to you and stops configuration without saving partial settings.
+When the wizard detects Tailscale, it manages the suggested certificate paths instead of asking a new user to type them. If the files do not exist, it explains the public-log consequence and asks whether it should run `tailscale cert` for you. Answering **yes** stages and validates the certificate and private key under `~/.config/zedlink/tls/`; answering **no** leaves certificate management to you and stops configuration without saving partial settings.
+
+Run **ZedLink: Set up / renew Tailscale HTTPS** at any time for a focused preflight. It distinguishes an uninstalled client, stopped daemon, signed-out client, missing MagicDNS name, disabled HTTPS certificates, Linux operator permissions, and certificate-authority rate limiting. It also validates the saved certificate hostname, key pair, permissions, and expiration. The task requests at least 30 days of remaining validity when creating or renewing a certificate.
+
+ZedLink's automatic renewal timer performs the same checks every 12 hours. It does not contact Tailscale while a healthy certificate has more than 30 days remaining. When renewal is due, it requires the detected MagicDNS hostname to match the saved profile, stages and validates the new pair, then asks the gateway to reload all TLS listeners. The gateway validates every configured replacement before switching any listener, so an invalid file cannot partially reload a multi-route gateway.
 
 On the iPhone:
 

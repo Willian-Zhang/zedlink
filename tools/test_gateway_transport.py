@@ -31,6 +31,14 @@ ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "gateway/target/debug/zedlink-gateway"
 
 
+def receive_pairing_status(websocket, expected: str) -> dict:
+    for _ in range(10):
+        event = json.loads(websocket.recv(timeout=5))
+        if event.get("status") == expected:
+            return event
+    raise AssertionError(f"pairing WebSocket did not report {expected}")
+
+
 class ProbeFixture:
     def __init__(self, path):
         self.path = path
@@ -55,6 +63,11 @@ class ProbeFixture:
         self.profile_id = "write"
         self.thinking_enabled = True
         self.settings_updates = 0
+        self.elicitations = []
+        self.elicitation_responses = []
+        self.queued_messages = []
+        self.edit_review = None
+        self.edit_review_responses = []
         self.approvals = []
         self.approval_decisions = 0
         self.approval_responses = []
@@ -178,6 +191,7 @@ class ProbeFixture:
                               "had_error": self.agent_error is not None,
                               "agent_error": self.agent_error, "retry_status": self.retry_status,
                               "image_recovery": self.image_recovery,
+                              "rewind_points": [],
                               "entries_markdown": page,
                               "entry_start_index": page_start,
                               "entry_end_index": len(self.entries),
@@ -224,6 +238,8 @@ class ProbeFixture:
                                   if external else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
                         "status": "Generating" if self.active_turn_id is not None else "Idle",
                         "model": None if external else {"id": "glm-local", "name": "Local GLM fixture", "provider_id": "openai-compatible"},
+                        "models": [] if external else [{"id": "glm-local", "name": "Local GLM fixture", "provider_id": "openai-compatible", "supports_images": False, "supports_thinking": True}],
+                        "context_usage": None if external else {"used_tokens": 1200, "max_tokens": 131072, "input_tokens": 1100, "output_tokens": 100, "remaining_tokens": 129872},
                         "profile_id": None if external else self.profile_id,
                         "profiles": [] if external else [{"id": "write", "name": "Write"}, {"id": "ask", "name": "Ask"}],
                         "thinking_enabled": None if external else self.thinking_enabled,
@@ -233,6 +249,22 @@ class ProbeFixture:
                         "editable": not external,
                         "configuration_owner": "external_agent" if external else "zed",
                     }
+                elif method == "thread.elicitations":
+                    result = {"thread_id": params["thread_id"], "elicitations": list(self.elicitations)}
+                elif method == "elicitation.respond":
+                    self.elicitation_responses.append(dict(params)); self.elicitations = []
+                    result = {"thread_id": params["thread_id"], "outcome": "resolved"}
+                elif method == "thread.queue":
+                    result = {"thread_id": params["thread_id"], "entries": list(self.queued_messages), "count": len(self.queued_messages)}
+                elif method == "thread.queue.clear":
+                    removed = len(self.queued_messages); self.queued_messages = []
+                    result = {"thread_id": params["thread_id"], "outcome": "cleared", "removed": removed}
+                elif method == "thread.edit_review":
+                    result = {"thread_id": params["thread_id"], "pending": self.edit_review is not None,
+                              **(self.edit_review or {"changed_files": 0, "lines_added": 0, "lines_removed": 0})}
+                elif method == "thread.edit_review.respond":
+                    self.edit_review_responses.append(params["action"]); self.edit_review = None
+                    result = {"thread_id": params["thread_id"], "outcome": "requested", "action": params["action"]}
                 elif method == "project.files":
                     result = {"entries": [
                         {"path": "src", "kind": "directory", "size": 0},
@@ -358,14 +390,19 @@ class ProbeFixture:
                         self.agent_error = None
                         self.sequence += 1
                         result = {"outcome": "succeeded", "provisional": False}
+                elif method == "thread.rewind":
+                    result = {"outcome": "succeeded", "provisional": False}
                 elif method == "instance.info":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "project": "fixture-project",
                               "capabilities": ["thread.list", "thread.create", "thread.create.options", "thread.rename", "thread.unexpose", "thread.snapshot", "thread.history", "thread.events",
                                                "thread.commands", "thread.settings", "thread.settings.update",
+                                               "thread.elicitations", "elicitation.respond", "thread.queue", "thread.queue.clear",
+                                               "thread.edit_review", "thread.edit_review.respond",
                                                "thread.send", "thread.attachments", "thread.cancel",
                                                "thread.subagents", "subagent.cancel",
                                                "thread.rewind_image",
+                                               "thread.rewind",
                                                "thread.approvals", "approval.respond", "project.files",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
                                                "changes.stage", "changes.unstage", "request.status"]}
@@ -490,6 +527,51 @@ def main():
             request = {"version": 1, "request_id": "same-id", "method": "thread.list", "params": {}}
             status, _ = http(base, context, "/v1/rpc", "POST", request)
             assert status == 401
+            replaced_challenge = admin(state, "pair-short-code")
+            pairing_websocket_url = (
+                f"wss://localhost:{port}/v1/pairing-events?pairing_id="
+                + replaced_challenge["pairing_id"]
+            )
+            with connect(
+                pairing_websocket_url,
+                ssl=context,
+                subprotocols=["zedlink-pairing-v1",
+                              "zedlink-pairing-token-" + replaced_challenge["watch_token"]],
+                open_timeout=5,
+                close_timeout=2,
+            ) as pairing_websocket:
+                active = receive_pairing_status(pairing_websocket, "active")
+                assert active["status"] == "active" and active["expires_seconds"] <= 300
+                live_challenge = admin(state, "pair-short-code")
+                replaced = receive_pairing_status(pairing_websocket, "replaced")
+                assert replaced["status"] == "replaced"
+            live_pairing_url = (
+                f"wss://localhost:{port}/v1/pairing-events?pairing_id="
+                + live_challenge["pairing_id"]
+            )
+            with connect(
+                live_pairing_url,
+                ssl=context,
+                subprotocols=["zedlink-pairing-v1",
+                              "zedlink-pairing-token-" + live_challenge["watch_token"]],
+                open_timeout=5,
+                close_timeout=2,
+            ) as pairing_websocket:
+                assert receive_pairing_status(pairing_websocket, "active")["status"] == "active"
+                wrong_live_code = ("0" * 10 if live_challenge["code"] != "0" * 10 else "1" * 10)
+                status, _ = http(base, context, "/v1/pair", "POST",
+                                 {"code": wrong_live_code, "device_name": "wrong live code"})
+                assert status == 403
+                failed = receive_pairing_status(pairing_websocket, "attempt_failed")
+                assert failed["status"] == "attempt_failed" and failed["attempts_remaining"] == 4
+                status, watched_device = http(
+                    base, context, "/v1/pair", "POST",
+                    {"code": live_challenge["code"], "device_name": "live pairing fixture"},
+                )
+                assert status == 200
+                paired = receive_pairing_status(pairing_websocket, "paired")
+                assert paired["status"] == "paired"
+            assert admin(state, "revoke", watched_device["device_id"])["revoked"]
             blocked_code = admin(state, "pair-code")["code"]
             for _ in range(5):
                 status, _ = http(base, context, "/v1/pair", "POST",
@@ -664,7 +746,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.08.2"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.09.5"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -709,7 +791,7 @@ def main():
                 search.send_keys(Keys.CONTROL, "a", Keys.DELETE)
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
                 assert browser.find_element(By.CSS_SELECTOR, ".thread-badge").text == "ZED AGENT"
-                browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
+                browser.execute_script("document.querySelector('.thread-item').click()")
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 wait.until(lambda driver: "Zed connected · live updates" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 browser.find_element(By.ID, "show-actions").click()
@@ -731,9 +813,32 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-stop").click()
                 wait.until(lambda driver: probe.subagent_cancellations == 1)
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".subagent.active"))
+                probe.elicitations = [{"elicitation_id": "fixture-input", "status": "pending", "request": {
+                    "message": "Choose a release channel", "mode": "form",
+                    "requestedSchema": {"type": "object", "required": ["channel"],
+                                        "properties": {"channel": {"type": "string", "title": "Channel"}}}}}]
+                probe.queued_messages = [{"index": 0, "preview": "Run the follow-up checks", "steer": False}]
+                probe.edit_review = {"changed_files": 2, "lines_added": 12, "lines_removed": 3}
+                wait.until(lambda driver: driver.find_element(By.ID, "elicitations").is_displayed())
+                field = browser.find_element(By.CSS_SELECTOR, "#elicitations input")
+                field.send_keys("stable")
+                browser.find_element(By.CSS_SELECTOR, "#elicitations button.primary").click()
+                wait.until(lambda driver: len(probe.elicitation_responses) == 1)
+                assert probe.elicitation_responses[-1]["content"]["channel"] == "stable"
+                wait.until(lambda driver: driver.find_element(By.ID, "edit-review").is_displayed())
+                assert not browser.find_element(By.CSS_SELECTOR, "#edit-review .edit-review-menu").is_displayed()
+                assert browser.find_element(By.ID, "edit-review-count").text == "2"
+                browser.find_element(By.CSS_SELECTOR, "#edit-review > summary").click()
+                wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, "#edit-review .edit-review-menu").is_displayed())
+                browser.find_element(By.CSS_SELECTOR, "#edit-review button.primary").click()
+                wait.until(lambda driver: probe.edit_review_responses == ["keep_all"])
+                wait.until(lambda driver: driver.find_element(By.ID, "queue-review").is_displayed())
+                browser.find_element(By.CSS_SELECTOR, "#queue-review button").click()
+                wait.until(lambda driver: not probe.queued_messages)
                 browser.find_element(By.ID, "open-settings").click()
-                wait.until(lambda driver: "Local GLM fixture" in driver.find_element(By.ID, "zed-model").get_attribute("value"))
+                wait.until(lambda driver: "Local GLM fixture" in Select(driver.find_element(By.ID, "zed-model")).first_selected_option.text)
                 assert "Local GLM fixture" in browser.find_element(By.ID, "header-model").text
+                assert "1,200 / 131,072" in browser.find_element(By.ID, "zed-context-usage").text
                 assert Select(browser.find_element(By.ID, "zed-profile")).first_selected_option.get_attribute("value") == "write"
                 Select(browser.find_element(By.ID, "zed-profile")).select_by_value("ask")
                 browser.find_element(By.ID, "zed-thinking").click()
@@ -841,14 +946,16 @@ def main():
                 probe.entries[-1] = "## Assistant\n\n<thinking>\nChecking the fixture stream\n</thinking>\n\n**Synthetic fixture reply.**\n\n"
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.running .thread-progress"))
-                assert "Working" in browser.find_element(By.CSS_SELECTOR, ".thread-status.busy").text
+                wait.until(lambda driver: "Working" in driver.execute_script(
+                    "return document.querySelector('.thread-status.busy')?.textContent || ''"))
                 browser.save_screenshot("/tmp/zedlink-browser-active-session.png")
                 wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "transcript-entries").text)
-                progress = browser.find_element(By.ID, "turn-progress")
+                progress = browser.find_element(By.ID, "thread-state")
                 assert progress.is_displayed()
-                assert "Zed Agent is working" in progress.text
-                assert "Generating a response in desktop Zed" in progress.text
-                assert "Stop available" in progress.text
+                wait.until(lambda driver: "working" in driver.find_element(By.ID, "thread-state").get_attribute("class"))
+                progress = browser.find_element(By.ID, "thread-state")
+                assert progress.text == "GENERATING"
+                assert "Generating a response in desktop Zed" in progress.get_attribute("title")
                 assert browser.find_element(By.ID, "send").get_attribute("data-mode") == "stop"
                 assert not browser.find_element(By.ID, "activity").is_displayed()
                 assert browser.find_element(By.CSS_SELECTOR, ".message.assistant details.thinking-block").get_attribute("open") == "true"
@@ -930,7 +1037,7 @@ def main():
                 probe.active_turn_id = None
                 probe.sequence += 1
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".thread-item.running"))
-                wait.until(lambda driver: not driver.find_element(By.ID, "turn-progress").is_displayed())
+                wait.until(lambda driver: "working" not in driver.find_element(By.ID, "thread-state").get_attribute("class"))
                 assert browser.find_element(By.ID, "send").get_attribute("data-mode") == "send"
                 probe.agent_error = {"kind": "other", "title": "Agent request failed",
                                      "message": "image input requires a supported vision checkpoint served with --vision",
@@ -1021,18 +1128,44 @@ def main():
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "show-sessions").get_attribute("aria-label") == "Hide sessions"
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-wide.png")
-                browser.set_window_size(390, 844)
-                layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
+                browser.set_window_size(393, 852)
+                wait.until(lambda driver: driver.execute_script("return Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-height')) - Math.min(innerHeight, visualViewport.height + visualViewport.offsetTop)) <= 1"))
+                offset_viewport_height = browser.execute_script("syncVisualViewport({height: 700, offsetTop: 59}); const value=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-height')); syncVisualViewport(); return value")
+                assert offset_viewport_height == 759, offset_viewport_height
+                standalone_heights = browser.execute_script("return {resting:appViewportHeight({height:700,offsetTop:59},true,false,852),keyboard:appViewportHeight({height:700,offsetTop:59},true,true,852),browser:appViewportHeight({height:700,offsetTop:59},false,false,852)}")
+                assert standalone_heights == {"resting": 852, "keyboard": 759, "browser": 759}, standalone_heights
+                layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, visibleBottom:visualViewport.height + visualViewport.offsetTop, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")
                 assert layout["pageWidth"] <= layout["width"] + 1
-                assert layout["composerBottom"] <= layout["height"]
+                assert layout["composerBottom"] <= layout["visibleBottom"] + 1
                 assert not browser.find_element(By.ID, "tab-sessions").is_displayed()
-                assert browser.find_element(By.CSS_SELECTOR, ".topbar").is_displayed()
+                assert not browser.find_element(By.CSS_SELECTOR, ".topbar").is_displayed()
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-mobile.png")
                 assert layout["messagesHeight"] >= 390 and layout["sidebarHidden"], layout
                 assert browser.find_element(By.ID, "prompt").is_displayed()
                 assert browser.find_element(By.ID, "send").is_displayed()
+                back = browser.find_element(By.ID, "back-sessions")
+                assert back.is_displayed() and back.get_attribute("aria-label") == "Back to sessions"
+                assert not browser.find_element(By.ID, "thread-state").is_displayed()
+                assert browser.find_element(By.ID, "mobile-session-meta").text == "Local GLM fixture · Live"
+                assert browser.find_element(By.ID, "show-context").get_attribute("aria-label") == "Open project context"
+                mobile_header = browser.execute_script("const title=document.getElementById('thread-title').getBoundingClientRect(); const context=document.getElementById('show-context').getBoundingClientRect(); return {titleWidth:title.width,titleHeight:title.height,contextWidth:context.width,pageWidth:document.documentElement.scrollWidth,viewport:innerWidth}")
+                assert mobile_header["titleWidth"] >= 150 and mobile_header["titleHeight"] <= 42 and mobile_header["contextWidth"] == 38, mobile_header
+                assert mobile_header["pageWidth"] <= mobile_header["viewport"] + 1, mobile_header
                 mobile_composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,viewport:innerWidth}")
                 assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and mobile_composer["height"] <= 54 and mobile_composer["radius"] == "13px", mobile_composer
+                probe.edit_review = {"changed_files": 3, "lines_added": 18, "lines_removed": 4}
+                probe.sequence += 1
+                wait.until(lambda driver: driver.find_element(By.ID, "edit-review").is_displayed())
+                collapsed_review = browser.execute_script("const review=document.getElementById('edit-review'); const control=review.getBoundingClientRect(); const composer=document.getElementById('composer-form').getBoundingClientRect(); return {controlWidth:control.width, controlHeight:control.height, composerBottom:composer.bottom, visibleBottom:visualViewport.height + visualViewport.offsetTop, menuVisible:review.open}")
+                assert collapsed_review["controlWidth"] <= 38 and collapsed_review["controlHeight"] <= 38, collapsed_review
+                assert not collapsed_review["menuVisible"] and collapsed_review["composerBottom"] <= collapsed_review["visibleBottom"] + 1, collapsed_review
+                browser.find_element(By.CSS_SELECTOR, "#edit-review > summary").click()
+                wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, "#edit-review .edit-review-menu").is_displayed())
+                open_review = browser.execute_script("const menu=document.querySelector('.edit-review-menu').getBoundingClientRect(); const composer=document.getElementById('composer-form').getBoundingClientRect(); return {left:menu.left,right:menu.right,bottom:menu.bottom,width:innerWidth,composerBottom:composer.bottom,visibleBottom:visualViewport.height + visualViewport.offsetTop}")
+                assert open_review["left"] >= 0 and open_review["right"] <= open_review["width"] + 1 and open_review["bottom"] <= open_review["visibleBottom"] + 1, open_review
+                assert open_review["composerBottom"] <= open_review["visibleBottom"] + 1, open_review
+                browser.find_element(By.CSS_SELECTOR, "#edit-review button.primary").click()
+                wait.until(lambda driver: len(probe.edit_review_responses) == 2)
                 assert not browser.find_elements(By.ID, "toggle-compose")
                 assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.execute_script("openCodeReview('src/main.rs', 'fn main() { println!(\\\"ready\\\"); }\\n', 'rust', 1)")
@@ -1043,16 +1176,17 @@ def main():
                 assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .syntax-keyword")
                 browser.save_screenshot("/tmp/zedlink-browser-code-review-mobile.png")
                 browser.find_element(By.ID, "close-code-review").click()
-                browser.find_element(By.ID, "show-sessions").click()
+                browser.find_element(By.ID, "back-sessions").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                assert browser.find_element(By.CSS_SELECTOR, ".topbar").is_displayed()
                 assert browser.find_element(By.ID, "tab-sessions").is_displayed()
                 mobile_icons = browser.execute_script("return [...document.querySelectorAll('.mobile-tab-icon')].map(icon => { const box=icon.getBoundingClientRect(); const style=getComputedStyle(icon); return {width:box.width,height:box.height,fontSize:style.fontSize,lineHeight:style.lineHeight}; })")
                 assert len(mobile_icons) == 3 and len({tuple(icon.values()) for icon in mobile_icons}) == 1, mobile_icons
                 assert "\ufe0e" in browser.find_element(By.CSS_SELECTOR, "#tab-settings .mobile-tab-icon").get_attribute("textContent")
-                browser.find_element(By.CSS_SELECTOR, ".thread-item").click()
+                browser.execute_script("document.querySelector('.thread-item').click()")
                 wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
                 assert not browser.find_element(By.ID, "activity-content").is_displayed()
-                browser.find_element(By.ID, "show-sessions").click()
+                browser.find_element(By.ID, "back-sessions").click()
                 browser.find_element(By.ID, "tab-connections").click()
                 assert browser.find_element(By.ID, "connection-panel").is_displayed()
                 assert browser.find_element(By.ID, "device-network-state").text.casefold() == "online"
@@ -1073,9 +1207,9 @@ def main():
                 assert browser.find_element(By.ID, "thread-agent-kind").get_attribute("textContent") == "EXTERNAL ACP AGENT"
                 assert browser.find_element(By.ID, "prompt").get_attribute("placeholder") == "Message Codex…"
                 assert browser.find_element(By.CSS_SELECTOR, ".message.assistant .message-label").get_attribute("textContent") == "Codex"
-                browser.find_element(By.ID, "show-sessions").click()
+                browser.find_element(By.ID, "back-sessions").click()
                 browser.find_element(By.ID, "tab-settings").click()
-                wait.until(lambda driver: driver.find_element(By.ID, "zed-model").get_attribute("value") == "Managed by Codex")
+                wait.until(lambda driver: Select(driver.find_element(By.ID, "zed-model")).first_selected_option.text == "Managed by Codex")
                 assert browser.find_element(By.ID, "settings-agent-kind").get_attribute("textContent") == "EXTERNAL ACP AGENT"
                 assert not browser.find_element(By.ID, "save-zed-settings").is_enabled()
                 assert "owns its model" in browser.find_element(By.ID, "zed-settings-help").text
@@ -1186,7 +1320,16 @@ def main():
                 WebDriverWait(browser, 15).until(
                     lambda driver: driver.find_element(By.ID, "pair-panel").is_displayed()
                 )
-                helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base, str(state), "--no-open"],
+                terminal_helper = subprocess.run(
+                    ["python3", str(ROOT / "tools/pair_phone.py"), base, str(state),
+                     "--mode", "terminal"],
+                    capture_output=True, text=True, check=True, timeout=5,
+                )
+                assert "ZedLink private device pairing" in terminal_helper.stdout
+                assert "\x1b[40m" in terminal_helper.stdout and "\x1b[47m" in terminal_helper.stdout
+                assert "One-time code:" in terminal_helper.stdout and "Gateway ID:" in terminal_helper.stdout
+                helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base,
+                                         str(state), "--mode", "browser", "--no-open"],
                                         capture_output=True, text=True, check=True, timeout=5)
                 pairing_page = Path(helper.stdout.splitlines()[0].split(": ", 1)[1])
                 assert pairing_page.stat().st_mode & 0o077 == 0
@@ -1197,9 +1340,15 @@ def main():
                 expected_link = base + "/#" + urllib.parse.urlencode(
                     {"v": "1", "gateway": info["gateway_id"], "pair": quick_code})
                 assert qr_svg(expected_link) in pairing_html
-                assert '<title>Pair a ZedLink device</title>' in pairing_html
-                assert "Already using the iPhone home-screen app?" in pairing_html
-                assert f"Gateway ID <code>{info['gateway_id']}</code>" in pairing_html
+                assert '<title>Pair a device · ZedLink</title>' in pairing_html
+                assert "/v1/pairing-events" in pairing_html
+                assert "zedlink-pairing-token-" in pairing_html
+                assert 'id="live-status"' in pairing_html
+                assert 'class="topbar"' in pairing_html and 'class="mark"' in pairing_html
+                assert "Using the iPhone home-screen app?" in pairing_html
+                assert "--panel:#0d0e10" in pairing_html and "border-radius:0" in pairing_html
+                assert (f'<span>Gateway ID</span><code>{info["gateway_id"]}</code>'
+                        in pairing_html)
                 assert f'href="{html.escape(expected_link, quote=True)}"' in pairing_html
                 browser.get(base + "/?pair-test=wrong#v=1&gateway=wrong-gateway&pair=" + quick_code)
                 wait.until(lambda driver: "gateway identity differs" in

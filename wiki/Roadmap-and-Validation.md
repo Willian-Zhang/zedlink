@@ -45,7 +45,7 @@ Still incomplete:
 - stock Zed Gallery packaging, which is blocked by the missing native-thread extension API and the current prohibition on new slash-command and agent-server submissions,
 - a real Codex or Claude Code prompt round trip through the newly built ACP exposure path (the browser fixture passes; a real external thread has not yet been exposed),
 - a physical-device test that switches between two simultaneously running patched Zed instances,
-- supervised background startup and certificate renewal,
+- supervised background gateway startup and a real Tailscale renewal/live-reload exercise when the saved certificate enters its renewal window,
 - physical Web Push delivery on an installed iPhone/Android web app and native APNs/FCM delivery,
 - paged, structured transcript/tool output and native image output,
 - Git commit, branch, checkout, reset, push, pull, and hunk-level actions,

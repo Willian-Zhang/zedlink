@@ -32,6 +32,38 @@
     "use_new_terminal": true
   },
   {
+    "label": "ZedLink: Set up / renew Tailscale HTTPS",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "tailscale-setup"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Enable automatic certificate renewal",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "install-renewal"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Certificate renewal status",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "renewal-status"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Check certificate renewal now",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "renew-certificates"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
     "label": "ZedLink: Diagnose setup",
     "command": "python3",
     "args": ["tools/zedlink_manager.py", "diagnose"],
@@ -110,10 +142,28 @@
     "cwd": "$ZED_WORKTREE_ROOT",
     "shell": { "program": "/bin/sh" },
     "use_new_terminal": true,
-    "reveal": "never",
-    "hide": "on_success",
+    "reveal": "always",
+    "hide": "never",
     "show_summary": false,
     "show_command": false
+  },
+  {
+    "label": "ZedLink: Pair in browser",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "pair-browser"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Pair in terminal",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "pair-terminal"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true,
+    "reveal": "always",
+    "hide": "never"
   },
   {
     "label": "ZedLink: Status",

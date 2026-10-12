@@ -143,4 +143,36 @@ struct GatewayClient {
         guard let result = object["result"] as? [String: Any] else { throw GatewayFailure.invalidResponse }
         return result
     }
+
+    func eventStream(threadID: String, afterSequence: Int) throws -> AsyncThrowingStream<[String: Any], Error> {
+        guard let token else { throw GatewayFailure.native("Pair this device first.") }
+        guard var components = URLComponents(string: profile.endpoint), components.scheme == "https" else {
+            throw GatewayFailure.native("ZedLink requires trusted HTTPS.")
+        }
+        components.scheme = "wss"
+        components.path = "/v1/events"
+        components.queryItems = [
+            URLQueryItem(name: "thread_id", value: threadID),
+            URLQueryItem(name: "after_sequence", value: String(afterSequence)),
+        ] + (targetID.map { [URLQueryItem(name: "target_id", value: $0)] } ?? [])
+        guard let url = components.url else { throw GatewayFailure.invalidResponse }
+        let task = URLSession.shared.webSocketTask(with: url, protocols: ["zedlink-v1", "zedlink-token-\(token)"])
+        return AsyncThrowingStream { continuation in
+            task.resume()
+            let receiver = Task {
+                do {
+                    while !Task.isCancelled {
+                        let message = try await task.receive()
+                        let data: Data
+                        switch message { case .data(let value): data = value; case .string(let value): data = Data(value.utf8); @unknown default: continue }
+                        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw GatewayFailure.invalidResponse }
+                        if let error = envelope["error"] as? [String: Any], let code = error["code"] as? String { throw GatewayFailure.native(code) }
+                        guard let result = envelope["result"] as? [String: Any] else { throw GatewayFailure.invalidResponse }
+                        continuation.yield(result)
+                    }
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in receiver.cancel(); task.cancel(with: .goingAway, reason: nil) }
+        }
+    }
 }

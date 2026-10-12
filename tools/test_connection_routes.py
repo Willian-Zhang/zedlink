@@ -119,6 +119,11 @@ def main() -> None:
                 [str(BINARY), "admin", str(state / "gateway"), "devices"],
                 text=True, timeout=5)
             assert json.loads(admin)["gateway_id"] == first_identity
+            reloaded = subprocess.check_output(
+                [str(BINARY), "admin", str(state / "gateway"), "reload-tls"],
+                text=True, timeout=5)
+            assert json.loads(reloaded) == {
+                "reloaded": True, "listeners": ["primary", "loopback-two"]}
             stopped = subprocess.check_output(
                 [str(BINARY), "admin", str(state / "gateway"), "shutdown"],
                 text=True, timeout=5)
@@ -147,7 +152,7 @@ def main() -> None:
         else:
             raise AssertionError("public frontend origin accepted a non-loopback bind")
 
-    print("PASS: migration, two listeners, multi-target manifest, duplicate guard, graceful stop, and safe frontend templates")
+    print("PASS: migration, two listeners, live TLS reload, multi-target manifest, duplicate guard, graceful stop, and safe frontend templates")
 
 
 if __name__ == "__main__":

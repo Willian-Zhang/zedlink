@@ -5,9 +5,9 @@ final class NativeContentTests: XCTestCase {
     @MainActor
     func testProfileStoreKeepsIdentityForTheSameGatewayAddress() {
         let original = ConnectionProfile(name: "Zed", route: .tailscale,
-            endpoint: "https://old.example", gatewayID: "A415D217-C1C0-42DA-9CC8-887D4305A73E")
+            endpoint: "https://old.example", gatewayID: "FIXTURE-GATEWAY")
         let updated = ProfileStore.profileForSave(ConnectionProfile(name: "Zed renamed", route: .tailscale,
-            endpoint: "https://old.example/", gatewayID: "a415d217-c1c0-42da-9cc8-887d4305a73e"),
+            endpoint: "https://old.example/", gatewayID: "fixture-gateway"),
             among: [original])
         XCTAssertEqual(updated.id, original.id)
         XCTAssertEqual(updated.name, "Zed renamed")
@@ -16,9 +16,9 @@ final class NativeContentTests: XCTestCase {
     @MainActor
     func testProfileStoreKeepsAnotherRouteToTheSameGateway() {
         let original = ConnectionProfile(name: "Tailscale", route: .tailscale,
-            endpoint: "https://zed.tailnet.example", gatewayID: "A415D217-C1C0-42DA-9CC8-887D4305A73E")
+            endpoint: "https://zed.tailnet.example", gatewayID: "FIXTURE-GATEWAY")
         let alternate = ConnectionProfile(name: "Local", route: .local,
-            endpoint: "https://zed.lan.example", gatewayID: "a415d217-c1c0-42da-9cc8-887d4305a73e")
+            endpoint: "https://zed.lan.example", gatewayID: "fixture-gateway")
         let saved = ProfileStore.profileForSave(alternate, among: [original])
         XCTAssertNotEqual(saved.id, original.id)
         XCTAssertEqual(saved.endpoint, alternate.endpoint)

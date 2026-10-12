@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.08.2";
+const UI_BUILD = "2026.10.09.5";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -73,6 +73,10 @@ const state = {
   subagents: [],
   subagentsSignature: null,
   stoppingSubagent: null,
+  elicitations: [],
+  editReview: null,
+  queue: null,
+  rewindPoints: [],
 };
 const safeStore = {
   read(key) {
@@ -169,6 +173,7 @@ function renderConnectionHealth() {
         : state.threadId ? ["Idle · model not probed", ""] : ["No session", ""];
   setHealthText("agent-connection-state", agent[0], agent[1]);
   $("last-live-update").textContent = relativeLiveTime();
+  renderMobileSessionMeta();
 }
 function pairingStatus() {
   return matchMedia("(display-mode: standalone)").matches ? "Pair this app" : "Pair this browser";
@@ -320,6 +325,22 @@ function renderHeaderModel() {
   } else {
     setHeaderRuntime("header-model", "Model unavailable", "error", "Desktop Zed did not return model identity for this session.");
   }
+  renderMobileSessionMeta();
+}
+
+function renderMobileSessionMeta() {
+  if (!$("mobile-session-meta")) return;
+  const agent = selectedAgent();
+  const model = agent.kind === "external_acp"
+    ? agent.name
+    : state.threadSettings?.model?.name || "Local model";
+  const activity = state.retryStatus ? "Retrying"
+    : state.threadError ? "Request failed"
+      : state.threadStatus && state.threadStatus !== "Idle"
+        ? (/tool|execut|run/i.test(state.threadStatus) ? "Running tools" : /wait|pending|queue/i.test(state.threadStatus) ? "Waiting" : "Generating")
+        : state.desktopReachable === false ? "Zed unavailable"
+          : state.live ? "Live" : "Reconnecting";
+  $("mobile-session-meta").textContent = `${model} · ${activity}`;
 }
 
 function renderNotificationState(status) {
@@ -604,15 +625,21 @@ function workingStatusLabel(status) {
   return `${value} in desktop Zed`;
 }
 function renderTurnProgress() {
-  const progress = $("turn-progress");
   const busy = !!state.threadId && !!state.threadStatus && state.threadStatus !== "Idle";
-  progress.classList.toggle("hidden", !busy);
-  progress.classList.toggle("cancellable", busy && canStopTurn());
-  if (!busy) return;
-  const agent = selectedAgent();
-  progress.querySelector("strong").textContent = `${agent.name} is working`;
-  $("turn-progress-detail").textContent = workingStatusLabel(state.threadStatus);
-  $("turn-progress-action").textContent = canStopTurn() ? "Live · Stop available" : "View activity";
+  const status = $("thread-state");
+  status.classList.toggle("working", busy);
+  status.disabled = !busy;
+  if (!busy) {
+    status.removeAttribute("title");
+    status.setAttribute("aria-label", state.threadId ? "Agent is idle" : "No selected agent session");
+    renderMobileSessionMeta();
+    return;
+  }
+  const detail = state.retryStatus ? "Retrying the model request in desktop Zed" : workingStatusLabel(state.threadStatus);
+  status.textContent = state.retryStatus ? "Retrying" : /tool|execut|run/i.test(state.threadStatus) ? "Running tools" : /wait|pending|queue/i.test(state.threadStatus) ? "Waiting" : "Generating";
+  status.title = `${detail}. Select to view live activity.`;
+  status.setAttribute("aria-label", `${selectedAgent().name} is working. ${detail}. View live activity.`);
+  renderMobileSessionMeta();
 }
 function updateComposerAction() {
   const button = $("send");
@@ -2061,6 +2088,157 @@ async function respondApproval(approval, decision, selectedPatternIndices = []) 
   await refreshSnapshot().catch((error) => notice(error.message));
 }
 
+function renderElicitations(items) {
+  state.elicitations = Array.isArray(items) ? items : [];
+  const panel = $("elicitations");
+  panel.replaceChildren();
+  const pending = state.elicitations.filter((item) => item.status === "pending");
+  panel.classList.toggle("hidden", !pending.length || !state.capabilities.includes("elicitation.respond"));
+  for (const item of pending) {
+    const card = document.createElement("article");
+    card.className = "approval-card";
+    const form = document.createElement("form");
+    const title = document.createElement("strong");
+    title.textContent = item.request?.message || "Agent needs more information";
+    form.append(title);
+    const schema = item.request?.requestedSchema;
+    const values = {};
+    if (schema?.properties && typeof schema.properties === "object") {
+      for (const [name, field] of Object.entries(schema.properties)) {
+        const label = document.createElement("label");
+        label.className = "setting-field";
+        const caption = document.createElement("span");
+        caption.textContent = field.title || name;
+        let input;
+        const choices = Array.isArray(field.enum) ? field.enum
+          : Array.isArray(field.oneOf) ? field.oneOf.map((option) => option.const)
+          : Array.isArray(field.items?.enum) ? field.items.enum
+          : Array.isArray(field.items?.oneOf) ? field.items.oneOf.map((option) => option.const) : [];
+        if (field.type === "array") {
+          input = document.createElement("fieldset");
+          values[name] = [];
+          for (const option of choices) {
+            const row = document.createElement("label");
+            const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.value = String(option);
+            checkbox.addEventListener("change", () => { values[name] = [...input.querySelectorAll("input:checked")].map((item) => item.value); });
+            row.append(checkbox, document.createTextNode(String(option))); input.append(row);
+          }
+        } else if (choices.length) {
+          input = document.createElement("select");
+          for (const option of choices) input.add(new Option(String(option), String(option)));
+        } else {
+          input = document.createElement("input");
+          input.type = field.type === "boolean" ? "checkbox" : field.type === "number" || field.type === "integer" ? "number" : "text";
+        }
+        if (Array.isArray(schema.required) && schema.required.includes(name)) input.required = true;
+        if (field.type !== "array") {
+          input.addEventListener("input", () => {
+            values[name] = input.type === "checkbox" ? input.checked
+              : field.type === "integer" ? Number.parseInt(input.value, 10)
+              : field.type === "number" ? Number(input.value) : input.value;
+          });
+          input.dispatchEvent(new Event("input"));
+        }
+        label.append(caption, input);
+        form.append(label);
+      }
+    } else if (typeof item.request?.url === "string") {
+      const link = document.createElement("a");
+      link.href = item.request.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open secure input page";
+      form.append(link);
+    }
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+    const decline = document.createElement("button");
+    decline.type = "button"; decline.className = "quiet"; decline.textContent = "Decline";
+    decline.addEventListener("click", () => respondElicitation(item, "decline"));
+    const accept = document.createElement("button");
+    accept.type = "submit"; accept.className = "primary"; accept.textContent = schema ? "Submit" : "Continue";
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      respondElicitation(item, "accept", values);
+    });
+    actions.append(decline, accept);
+    form.append(actions);
+    card.append(form);
+    panel.append(card);
+  }
+}
+
+async function respondElicitation(item, action, content = {}) {
+  try {
+    await rpc("elicitation.respond", { ...baseThreadParams(), elicitation_id: item.elicitation_id, action, content });
+    notice(action === "accept" ? "Input sent to the Agent." : "Input request declined.");
+    await refreshAuxiliaryState();
+  } catch (error) { notice(error.message); }
+}
+
+function renderEditReview(review) {
+  state.editReview = review;
+  const control = $("edit-review");
+  const panel = control.querySelector(".edit-review-menu");
+  panel.replaceChildren();
+  const visible = !!review?.pending && state.capabilities.includes("thread.edit_review.respond");
+  control.classList.toggle("hidden", !visible);
+  if (!visible) {
+    control.open = false;
+    return;
+  }
+  $("edit-review-count").textContent = String(review.changed_files);
+  control.querySelector("summary").setAttribute("aria-label", `Review edits in ${review.changed_files} file${review.changed_files === 1 ? "" : "s"}`);
+  const card = document.createElement("article");
+  card.className = "approval-card";
+  const summary = document.createElement("div");
+  const title = document.createElement("strong"); title.textContent = "Review Agent edits";
+  const detail = document.createElement("small");
+  detail.textContent = `${review.changed_files} file${review.changed_files === 1 ? "" : "s"} · +${review.lines_added} −${review.lines_removed}`;
+  summary.append(title, detail);
+  const actions = document.createElement("div"); actions.className = "approval-actions";
+  for (const [action, label, className] of [["reject_all", "Reject all", "quiet"], ["keep_all", "Keep all", "primary"]]) {
+    const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.className = className;
+    button.addEventListener("click", async () => {
+      if (action === "reject_all" && !confirm("Reject every unreviewed Agent edit in this session?")) return;
+      try { await rpc("thread.edit_review.respond", { ...baseThreadParams(), action, expected_last_sequence: state.sequence }); control.open = false; await refreshAuxiliaryState(); }
+      catch (error) { notice(error.message); }
+    });
+    actions.append(button);
+  }
+  card.append(summary, actions); panel.append(card);
+}
+
+function renderQueue(queue) {
+  state.queue = queue;
+  const panel = $("queue-review");
+  panel.replaceChildren();
+  panel.classList.toggle("hidden", !queue?.count);
+  if (!queue?.count) return;
+  const card = document.createElement("article"); card.className = "approval-card";
+  const body = document.createElement("div");
+  const title = document.createElement("strong"); title.textContent = `${queue.count} queued message${queue.count === 1 ? "" : "s"}`;
+  body.append(title);
+  for (const entry of queue.entries || []) { const text = document.createElement("small"); text.textContent = entry.preview || "Attachment"; body.append(text); }
+  const clear = document.createElement("button"); clear.type = "button"; clear.className = "quiet"; clear.textContent = "Clear queue";
+  clear.disabled = !state.capabilities.includes("thread.queue.clear");
+  clear.addEventListener("click", async () => { try { await rpc("thread.queue.clear", baseThreadParams()); await refreshAuxiliaryState(); } catch (error) { notice(error.message); } });
+  card.append(body, clear); panel.append(card);
+}
+
+async function refreshAuxiliaryState() {
+  if (!state.threadId) return;
+  const requests = [
+    state.capabilities.includes("thread.elicitations") ? rpc("thread.elicitations", baseThreadParams()) : Promise.resolve({ elicitations: [] }),
+    state.capabilities.includes("thread.edit_review") ? rpc("thread.edit_review", baseThreadParams()) : Promise.resolve(null),
+    state.capabilities.includes("thread.queue") ? rpc("thread.queue", baseThreadParams()) : Promise.resolve(null),
+  ];
+  const [elicitations, edits, queue] = await Promise.all(requests);
+  renderElicitations(elicitations?.elicitations);
+  renderEditReview(edits);
+  renderQueue(queue);
+}
+
 function validSubagents(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((agent) => agent && typeof agent.session_id === "string"
@@ -2223,9 +2401,19 @@ function renderThreadSettings() {
   renderHeaderModel();
   const stateLabel = $("zed-settings-state");
   $("zed-settings-thread").textContent = selected?.title || "Select an exposed session to manage its native Zed options.";
-  $("zed-model").value = settings?.model
-    ? `${settings.model.name} · ${settings.model.provider_id}`
-    : external ? `Managed by ${agent.name}` : state.threadId ? "Model identity unavailable" : "No session selected";
+  const model = $("zed-model");
+  model.replaceChildren();
+  for (const item of settings?.models || []) {
+    if (typeof item.id !== "string" || typeof item.provider_id !== "string") continue;
+    const option = new Option(`${item.name || item.id} · ${item.provider_id}`, `${item.provider_id}\n${item.id}`);
+    option.selected = item.id === settings?.model?.id && item.provider_id === settings?.model?.provider_id;
+    model.add(option);
+  }
+  if (!model.options.length) model.add(new Option(external ? `Managed by ${agent.name}` : state.threadId ? "Model identity unavailable" : "No session selected", ""));
+  const usage = settings?.context_usage;
+  $("zed-context-usage").textContent = usage
+    ? `${Number(usage.used_tokens).toLocaleString()} / ${Number(usage.max_tokens).toLocaleString()} tokens`
+    : "Unavailable";
   const profile = $("zed-profile");
   profile.replaceChildren();
   for (const item of settings?.profiles || []) {
@@ -2245,6 +2433,7 @@ function renderThreadSettings() {
   thinking.checked = settings?.thinking_enabled === true;
   const thinkingEditable = !!settings?.thinking_supported && !!settings?.thinking_can_disable;
   const editable = supported && !!settings && settings.editable !== false && !external && !busy && !state.settingsBusy;
+  model.disabled = !editable || !settings?.models?.length;
   profile.disabled = !editable;
   thinking.disabled = !editable || !thinkingEditable;
   $("save-zed-settings").disabled = !editable || (!profile.options.length && !thinkingEditable);
@@ -2277,12 +2466,14 @@ async function saveThreadSettings(event) {
   const threadId = state.threadId;
   const profileId = $("zed-profile").value;
   const thinkingEnabled = $("zed-thinking").checked;
+  const [providerId, modelId] = $("zed-model").value.split("\n", 2);
   state.settingsBusy = true;
   renderThreadSettings();
   try {
     const params = {
       instance_id: state.instanceId, epoch: state.epoch, thread_id: threadId,
       profile_id: profileId,
+      ...(providerId && modelId ? { provider_id: providerId, model_id: modelId } : {}),
     };
     if (state.threadSettings.thinking_supported && state.threadSettings.thinking_can_disable) {
       params.thinking_enabled = thinkingEnabled;
@@ -2738,6 +2929,13 @@ function renderTranscript() {
     if (previous?.dataset.entryIndex === String(absoluteIndex)
         && previous._zedlinkMarkdown === markdown) continue;
     const article = makeEntry(markdown, absoluteIndex);
+    const rewind = state.rewindPoints.find((item) => item.entry_index === absoluteIndex);
+    if (rewind && state.capabilities.includes("thread.rewind") && state.threadStatus === "Idle") {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "message-copy"; button.textContent = "Rewind here";
+      button.addEventListener("click", () => rewindConversation(rewind));
+      article.prepend(button);
+    }
     article._zedlinkMarkdown = markdown;
     if (previous) {
       const oldDetails = previous.querySelector("details");
@@ -2803,6 +3001,7 @@ async function snapshot() {
     throw new Error("Snapshot belongs to another thread.");
   }
   state.sequence = result.last_sequence;
+  state.rewindPoints = Array.isArray(result.rewind_points) ? result.rewind_points : [];
   state.lastSnapshotAt = Date.now();
   const scroller = $("messages");
   const container = $("transcript-entries");
@@ -2847,6 +3046,7 @@ async function snapshot() {
     assistants[assistants.length - 1]?.querySelectorAll("details.thinking-block").forEach((details) => { details.open = true; });
   }
   $("thread-title").textContent = result.title || "Untitled Agent thread";
+  $("thread-title").title = result.title || "Untitled Agent thread";
   $("thread-meta").textContent = state.renderedEntryStart > 0
     ? `Showing ${state.renderedEntries.length} of ${state.totalEntries} entries · Earlier history available`
     : `${state.totalEntries} conversation entries · Thread ${result.thread_id.slice(0, 12)}…`;
@@ -2860,6 +3060,7 @@ async function snapshot() {
   renderSubagents(result.subagents);
   const childApprovals = state.subagents.flatMap((agent) => Array.isArray(agent.pending_approvals) ? agent.pending_approvals : []);
   renderApprovals([...(Array.isArray(result.pending_approvals) ? result.pending_approvals : []), ...childApprovals]);
+  await refreshAuxiliaryState();
   if (document.body.classList.contains("context-open")) renderActivityIndex();
   if (follow) {
     scroller.scrollTop = scroller.scrollHeight;
@@ -2883,6 +3084,15 @@ async function snapshot() {
     renderThreadSettings();
   }
   updateComposerAction();
+}
+
+async function rewindConversation(point) {
+  if (!confirm(`Rewind this conversation and remove ${point.entries_removed} entries after this message? Agent edits after this point may also be rejected.`)) return;
+  try {
+    await rpc("thread.rewind", { ...baseThreadParams(), client_user_message_id: point.client_user_message_id, expected_last_sequence: state.sequence });
+    state.renderedEntries = []; state.renderedEntryStart = 0; state.totalEntries = 0;
+    await refreshSnapshot();
+  } catch (error) { notice(error.message); }
 }
 
 async function rewindImage() {
@@ -3196,6 +3406,7 @@ $("action-upload").addEventListener("click", () => {
 });
 $("upload-file").addEventListener("change", (event) => addUploads(event.target.files).catch((error) => notice(error.message)));
 $("show-context").addEventListener("click", () => document.body.classList.contains("context-open") ? closeContextPanel() : openContextPanel("files"));
+$("back-sessions").addEventListener("click", () => showMobileView("sessions"));
 $("close-context").addEventListener("click", closeContextPanel);
 $("context-files-tab").addEventListener("click", () => switchContextTab("files"));
 $("context-changes-tab").addEventListener("click", () => switchContextTab("changes"));
@@ -3318,7 +3529,9 @@ $("settings-back").addEventListener("click", () => {
   }
 });
 $("composer-form").addEventListener("submit", sendPrompt);
-$("turn-progress").addEventListener("click", focusLiveActivity);
+$("thread-state").addEventListener("click", () => {
+  if (state.threadStatus && state.threadStatus !== "Idle") focusLiveActivity();
+});
 $("rewind-image").addEventListener("click", rewindImage);
 $("activity-toggle").addEventListener("click", () => {
   state.activityCollapsed = !state.activityCollapsed;
@@ -3430,6 +3643,26 @@ window.addEventListener("resize", () => {
   updateSidebarToggle();
   renderConnectionHealth();
 });
+function appViewportHeight(viewport, standalone, keyboardOpen, fullHeight) {
+  const visibleBottom = viewport ? viewport.height + viewport.offsetTop : window.innerHeight;
+  if (standalone && !keyboardOpen) return fullHeight;
+  return Math.min(fullHeight, visibleBottom);
+}
+function syncVisualViewport(viewport = window.visualViewport) {
+  // A Home Screen app owns the full screen. Its safe-area padding keeps controls
+  // clear of the home indicator, so do not shorten the app to innerHeight.
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const fullHeight = Math.max(window.innerHeight, document.documentElement.clientHeight, window.screen?.height || 0);
+  const active = document.activeElement;
+  const acceptsKeyboard = active?.matches?.("input:not([type=button]):not([type=checkbox]):not([type=radio]), textarea, [contenteditable=true]") === true;
+  const keyboardOpen = acceptsKeyboard && viewport && viewport.height < fullHeight - 120;
+  const height = appViewportHeight(viewport, standalone, keyboardOpen, fullHeight);
+  document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+}
+syncVisualViewport();
+window.visualViewport?.addEventListener("resize", () => syncVisualViewport());
+window.visualViewport?.addEventListener("scroll", () => syncVisualViewport());
+window.addEventListener("orientationchange", () => syncVisualViewport());
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("code-review").classList.contains("hidden")) closeCodeReview();
 });

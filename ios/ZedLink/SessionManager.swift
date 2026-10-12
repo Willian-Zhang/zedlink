@@ -13,6 +13,16 @@ import Combine
     @Published private(set) var capabilities: Set<String> = []
     @Published private(set) var commands: [NativeCommand] = []
     @Published private(set) var createAgents: [AgentOption] = []
+    @Published private(set) var elicitations: [NativeElicitation] = []
+    @Published private(set) var queuedMessages: [NativeQueueEntry] = []
+    @Published private(set) var editReview: NativeEditReview?
+    @Published private(set) var threadSettings: NativeThreadSettings?
+    @Published private(set) var projectFiles: [NativeProjectFile] = []
+    @Published private(set) var changes: [NativeChange] = []
+    @Published private(set) var changesRevision: String?
+    @Published private(set) var previewTitle = ""
+    @Published private(set) var previewContent = ""
+    @Published var contextPaths: Set<String> = []
     @Published private(set) var creatingThread = false
     @Published private(set) var selectedThreadID: String?
     @Published private(set) var delivery = ""
@@ -29,6 +39,8 @@ import Combine
 
     private var client: GatewayClient?
     private var pollTask: Task<Void, Never>?
+    private var eventTask: Task<Void, Never>?
+    private var eventStreamLive = false
     private var generation = UUID()
     private let threadExposureIssue = "The selected thread is no longer exposed in desktop Zed."
 
@@ -41,7 +53,10 @@ import Combine
     func disconnect() {
         generation = UUID()
         pollTask?.cancel()
+        eventTask?.cancel()
         pollTask = nil
+        eventTask = nil
+        eventStreamLive = false
         client = nil
         profile = nil
         targets = []
@@ -55,6 +70,11 @@ import Combine
         capabilities = []
         commands = []
         createAgents = []
+        elicitations = []
+        queuedMessages = []
+        editReview = nil
+        threadSettings = nil
+        projectFiles = []; changes = []; changesRevision = nil; previewTitle = ""; previewContent = ""; contextPaths = []
         creatingThread = false
         pending = nil
         delivery = ""
@@ -120,6 +140,7 @@ import Combine
                 guard let self else { return }
                 await self.pollLoop(current)
             }
+            startEventStream(current)
         } catch {
             guard current == generation else { return }
             state = .offline
@@ -218,8 +239,38 @@ import Combine
             try await loadSnapshot(id)
             try await loadCommands(id)
             issue = ""
+            startEventStream(generation)
         }
         catch { issue = error.localizedDescription; state = .stale }
+    }
+
+    private func startEventStream(_ current: UUID) {
+        eventTask?.cancel()
+        eventStreamLive = false
+        guard let client, let threadID = selectedThreadID else { return }
+        eventTask = Task { [weak self] in
+            guard let self else { return }
+            var delay = 1
+            while !Task.isCancelled && current == generation && selectedThreadID == threadID {
+                do {
+                    let stream = try client.eventStream(threadID: threadID, afterSequence: snapshot?.lastSequence ?? 0)
+                    eventStreamLive = true
+                    delay = 1
+                    for try await result in stream {
+                        try checkIdentity(result)
+                        guard current == generation, selectedThreadID == threadID else { return }
+                        if !(result["events"] as? [[String: Any]] ?? []).isEmpty || snapshot?.isBusy == true {
+                            try await loadSnapshot(threadID)
+                        }
+                    }
+                } catch {
+                    eventStreamLive = false
+                    if Task.isCancelled { return }
+                    try? await Task.sleep(for: .seconds(delay))
+                    delay = min(10, delay * 2)
+                }
+            }
+        }
     }
 
     func renameSelectedThread(to proposedTitle: String) async -> Bool {
@@ -316,6 +367,19 @@ import Combine
                                   authorizationKind: row["authorization_kind"] as? String ?? "permission_grant",
                                   decisions: decisions)
         }
+        let rewindPoints = (result["rewind_points"] as? [[String: Any]] ?? []).compactMap { row -> NativeRewindPoint? in
+            guard let clientID = row["client_user_message_id"] as? String,
+                  let entryIndex = row["entry_index"] as? Int else { return nil }
+            return NativeRewindPoint(id: clientID, entryIndex: entryIndex,
+                                     entriesRemoved: row["entries_removed"] as? Int ?? 0)
+        }
+        let subagents = (result["subagents"] as? [[String: Any]] ?? []).compactMap { row -> NativeSubagent? in
+            guard let id = row["session_id"] as? String else { return nil }
+            return NativeSubagent(id: id, title: row["title"] as? String ?? row["label"] as? String ?? "Parallel agent",
+                                  status: row["status"] as? String ?? "Unknown",
+                                  currentTurnID: row["current_turn_id"] as? Int,
+                                  entries: row["entries_markdown"] as? [String] ?? [])
+        }
         snapshot = ThreadSnapshot(threadID: id,
                                   title: result["title"] as? String ?? "Untitled Agent thread",
                                   status: result["status"] as? String ?? "Unknown",
@@ -327,7 +391,176 @@ import Combine
                                   activityEntries: result["activity_entries_markdown"] as? [String] ?? entries,
                                   truncated: result["truncated"] as? Bool ?? false,
                                   activityTruncated: result["activity_truncated"] as? Bool ?? false,
-                                  pendingApprovals: approvals)
+                                  pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: subagents)
+        try await loadAuxiliaryState(id)
+    }
+
+    private func loadAuxiliaryState(_ id: String) async throws {
+        guard let client, id == selectedThreadID else { return }
+        let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": id]
+        if capabilities.contains("thread.elicitations") {
+            let result = try await client.rpc("thread.elicitations", params: base)
+            elicitations = (result["elicitations"] as? [[String: Any]] ?? []).compactMap { row in
+                guard row["status"] as? String == "pending", let elicitationID = row["elicitation_id"] as? String,
+                      let request = row["request"] as? [String: Any] else { return nil }
+                let schema = request["requestedSchema"] as? [String: Any]
+                let required = Set(schema?["required"] as? [String] ?? [])
+                let properties = schema?["properties"] as? [String: [String: Any]] ?? [:]
+                let fields = properties.map { name, value in
+                    let oneOf = (value["oneOf"] as? [[String: Any]] ?? []).compactMap { option in option["const"].map { String(describing: $0) } }
+                    let items = value["items"] as? [String: Any]
+                    let itemOneOf = (items?["oneOf"] as? [[String: Any]] ?? []).compactMap { option in option["const"].map { String(describing: $0) } }
+                    let choices = (value["enum"] as? [Any] ?? []).map { String(describing: $0) }
+                        + oneOf + (items?["enum"] as? [Any] ?? []).map { String(describing: $0) } + itemOneOf
+                    NativeElicitationField(id: name, title: value["title"] as? String ?? name,
+                                           type: value["type"] as? String ?? "string",
+                                           required: required.contains(name),
+                                           choices: choices)
+                }.sorted { $0.id < $1.id }
+                return NativeElicitation(id: elicitationID,
+                                         message: request["message"] as? String ?? "Agent needs more information",
+                                         url: request["url"] as? String, fields: fields)
+            }
+        } else { elicitations = [] }
+        if capabilities.contains("thread.queue") {
+            let result = try await client.rpc("thread.queue", params: base)
+            queuedMessages = (result["entries"] as? [[String: Any]] ?? []).compactMap { row in
+                guard let index = row["index"] as? Int else { return nil }
+                return NativeQueueEntry(id: index, preview: row["preview"] as? String ?? "Attachment",
+                                        steer: row["steer"] as? Bool ?? false)
+            }
+        } else { queuedMessages = [] }
+        if capabilities.contains("thread.edit_review") {
+            let result = try await client.rpc("thread.edit_review", params: base)
+            editReview = result["pending"] as? Bool == true
+                ? NativeEditReview(changedFiles: result["changed_files"] as? Int ?? 0,
+                                   linesAdded: result["lines_added"] as? Int ?? 0,
+                                   linesRemoved: result["lines_removed"] as? Int ?? 0) : nil
+        } else { editReview = nil }
+        if capabilities.contains("thread.settings") {
+            let result = try await client.rpc("thread.settings", params: base)
+            let selected = result["model"] as? [String: Any]
+            let usage = result["context_usage"] as? [String: Any]
+            let models = (result["models"] as? [[String: Any]] ?? []).compactMap { row -> NativeModelOption? in
+                guard let modelID = row["id"] as? String, let providerID = row["provider_id"] as? String else { return nil }
+                return NativeModelOption(id: "\(providerID)\n\(modelID)", providerID: providerID,
+                                         name: row["name"] as? String ?? modelID)
+            }
+            threadSettings = NativeThreadSettings(modelID: selected?["id"] as? String,
+                                                  providerID: selected?["provider_id"] as? String,
+                                                  models: models, usedTokens: usage?["used_tokens"] as? Int,
+                                                  maxTokens: usage?["max_tokens"] as? Int)
+        } else { threadSettings = nil }
+    }
+
+    func respondToElicitation(_ elicitation: NativeElicitation, action: String, content: [String: Any] = [:]) async {
+        guard let client, let threadID = selectedThreadID else { return }
+        do {
+            _ = try await client.rpc("elicitation.respond", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
+                "elicitation_id": elicitation.id, "action": action, "content": content,
+            ])
+            try await loadAuxiliaryState(threadID)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func clearQueue() async {
+        guard let client, let threadID = selectedThreadID else { return }
+        do {
+            _ = try await client.rpc("thread.queue.clear", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID])
+            try await loadAuxiliaryState(threadID)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func resolveEditReview(_ action: String) async {
+        guard let client, let threadID = selectedThreadID else { return }
+        do {
+            _ = try await client.rpc("thread.edit_review.respond", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "action": action, "expected_last_sequence": snapshot?.lastSequence ?? 0])
+            try await loadAuxiliaryState(threadID)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func rewind(to point: NativeRewindPoint) async {
+        guard let client, let threadID = selectedThreadID else { return }
+        do {
+            _ = try await client.rpc("thread.rewind", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
+                "client_user_message_id": point.id, "expected_last_sequence": snapshot?.lastSequence ?? 0,
+            ])
+            snapshot = nil
+            try await loadSnapshot(threadID)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func cancelSubagent(_ subagent: NativeSubagent) async {
+        guard let client, let threadID = selectedThreadID, let turnID = subagent.currentTurnID else { return }
+        do {
+            _ = try await client.rpc("subagent.cancel", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
+                "subagent_id": subagent.id, "turn_id": turnID,
+            ])
+            try await loadSnapshot(threadID)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func selectModel(_ option: NativeModelOption) async {
+        guard let client, let threadID = selectedThreadID else { return }
+        do {
+            _ = try await client.rpc("thread.settings.update", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
+                "provider_id": option.providerID, "model_id": option.id.split(separator: "\n").last.map(String.init) ?? "",
+            ])
+            try await loadAuxiliaryState(threadID)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func loadProjectContext() async {
+        guard let client, let threadID = selectedThreadID else { return }
+        let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID]
+        do {
+            if capabilities.contains("project.files") {
+                let result = try await client.rpc("project.files", params: base)
+                projectFiles = (result["entries"] as? [[String: Any]] ?? []).compactMap { row in
+                    guard let path = row["path"] as? String else { return nil }
+                    return NativeProjectFile(id: path, kind: row["kind"] as? String ?? "file", size: row["size"] as? Int)
+                }
+            }
+            if capabilities.contains("changes.snapshot") {
+                let result = try await client.rpc("changes.snapshot", params: base)
+                changesRevision = (result["repository"] as? [String: Any])?["revision"] as? String
+                changes = (result["entries"] as? [[String: Any]] ?? []).compactMap { row in
+                    guard let path = row["path"] as? String else { return nil }
+                    return NativeChange(id: path, status: row["status"] as? String ?? "changed", staging: row["staging"] as? String ?? "unstaged")
+                }
+            }
+        } catch { issue = error.localizedDescription }
+    }
+
+    func previewFile(_ path: String) async {
+        guard let client, let threadID = selectedThreadID else { return }
+        do {
+            let result = try await client.rpc("project.file", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "path": path])
+            previewTitle = path; previewContent = result["content"] as? String ?? ""
+        } catch { issue = error.localizedDescription }
+    }
+
+    func loadDiff() async {
+        guard let client, let threadID = selectedThreadID, let revision = changesRevision else { return }
+        do {
+            let result = try await client.rpc("changes.diff", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "revision": revision])
+            previewTitle = "Working tree diff"; previewContent = result["diff"] as? String ?? "Diff is still loading."
+        } catch { issue = error.localizedDescription }
+    }
+
+    func mutateChange(_ change: NativeChange) async {
+        guard let client, let threadID = selectedThreadID, let revision = changesRevision else { return }
+        let method = change.staging == "staged" ? "changes.unstage" : "changes.stage"
+        let requestID = UUID().uuidString
+        do {
+            _ = try await client.rpc(method, params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
+                "revision": revision, "paths": [change.id]], requestID: requestID)
+            await loadProjectContext()
+        } catch { issue = error.localizedDescription }
     }
 
     func loadEarlierHistory() async {
@@ -357,7 +590,8 @@ import Combine
                                       hasOlderEntries: start > 0,
                                       activityEntries: current.activityEntries,
                                       truncated: start > 0, activityTruncated: current.activityTruncated,
-                                      pendingApprovals: current.pendingApprovals)
+                                      pendingApprovals: current.pendingApprovals, rewindPoints: current.rewindPoints,
+                                      subagents: current.subagents)
         } catch {
             issue = error.localizedDescription
         }
@@ -411,7 +645,8 @@ import Combine
                                              hasOlderEntries: old.hasOlderEntries,
                                              activityEntries: old.activityEntries,
                                              truncated: old.truncated, activityTruncated: old.activityTruncated,
-                                             pendingApprovals: old.pendingApprovals)
+                                             pendingApprovals: old.pendingApprovals, rewindPoints: old.rewindPoints,
+                                             subagents: old.subagents)
                         snapshot = old
                     }
                 } else {
@@ -447,7 +682,7 @@ import Combine
                     issue = error.localizedDescription
                 }
             }
-            do { try await Task.sleep(for: .seconds(state == .live ? 1 : 3)) }
+            do { try await Task.sleep(for: .seconds(state == .live ? (eventStreamLive ? 10 : 1) : 3)) }
             catch { break }
         }
     }
@@ -511,10 +746,12 @@ import Combine
         do {
             let result = try await client.rpc("thread.send", params: [
                 "instance_id": pending.instanceID, "epoch": pending.epoch,
-                "thread_id": pending.threadID, "text": text
+                "thread_id": pending.threadID, "text": text,
+                "context_paths": Array(contextPaths)
             ], requestID: pending.id)
             let outcome = result["outcome"] as? String ?? "received"
             draft = ""
+            contextPaths = []
             settlePending()
             delivery = outcome == "queued"
                 ? "Queued in desktop Zed. Native execution is being observed."

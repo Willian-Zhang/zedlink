@@ -47,6 +47,24 @@ data class NativeApprovalDecision(
     val displayLabel: String get() = action?.let { "${if (it == "allow") "Allow" else "Deny"} · $label" } ?: label
 }
 
+data class NativeElicitationField(
+    val id: String, val title: String, val type: String, val required: Boolean, val choices: List<String>,
+)
+data class NativeElicitation(
+    val id: String, val message: String, val url: String?, val fields: List<NativeElicitationField>,
+)
+data class NativeQueueEntry(val id: Int, val preview: String, val steer: Boolean)
+data class NativeEditReview(val changedFiles: Int, val linesAdded: Int, val linesRemoved: Int)
+data class NativeModelOption(val id: String, val modelId: String, val providerId: String, val name: String)
+data class NativeThreadSettings(
+    val modelId: String?, val providerId: String?, val models: List<NativeModelOption>,
+    val usedTokens: Int?, val maxTokens: Int?,
+)
+data class NativeRewindPoint(val id: String, val entryIndex: Int, val entriesRemoved: Int)
+data class NativeSubagent(val id: String, val title: String, val status: String, val currentTurnId: Int?, val entries: List<String>)
+data class NativeProjectFile(val id: String, val kind: String, val size: Int?)
+data class NativeChange(val id: String, val status: String, val staging: String)
+
 data class ThreadSnapshot(
     val threadId: String,
     val title: String,
@@ -63,6 +81,8 @@ data class ThreadSnapshot(
     val truncated: Boolean,
     val activityTruncated: Boolean,
     val approvals: List<NativeApproval>,
+    val rewindPoints: List<NativeRewindPoint>,
+    val subagents: List<NativeSubagent>,
 ) { val isBusy: Boolean get() = status != "Idle" || currentTurnId != null }
 
 enum class EntryKind { USER, ASSISTANT, TOOL, PLAN, APPROVAL, CONTEXT, OTHER }

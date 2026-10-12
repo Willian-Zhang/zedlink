@@ -2,6 +2,7 @@
 """Local, terminal-backed setup actions for Zed's task picker."""
 
 import argparse
+from datetime import datetime, timezone
 import ipaddress
 import json
 import os
@@ -36,6 +37,11 @@ PROXY_PROVIDERS = {"cloudflare", "ssh-reverse"}
 DESKTOP_ENTRY_NAME = "dev.zed.Zed-Dev.desktop"
 DESKTOP_ENTRY_MARKER = "X-ZedLink-Managed=true"
 CLI_LAUNCHER_MARKER = "# ZedLink managed patched-Zed launcher"
+TAILSCALE_DNS_ADMIN_URL = "https://login.tailscale.com/admin/dns"
+TAILSCALE_CERT_RENEWAL_WINDOW = "720h"
+TAILSCALE_CERT_RENEWAL_SECONDS = 30 * 24 * 60 * 60
+RENEWAL_SERVICE = "zedlink-certificate-renewal.service"
+RENEWAL_TIMER = "zedlink-certificate-renewal.timer"
 
 
 def config_path() -> Path:
@@ -285,6 +291,93 @@ def tailscale_defaults() -> tuple[str | None, str | None]:
     except (FileNotFoundError, IndexError, ValueError, json.JSONDecodeError,
             subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None, None
+
+
+def tailscale_preflight() -> tuple[str, str]:
+    """Return a connected Tailscale address and MagicDNS name with useful errors."""
+    if not shutil.which("tailscale"):
+        raise ValueError(
+            "Tailscale is not installed. Install it, run 'sudo tailscale up', then retry")
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"], capture_output=True, text=True,
+            timeout=5, check=True)
+        status = json.loads(result.stdout)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Tailscale did not respond; check that tailscaled is running") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "tailscale status failed").strip()
+        raise ValueError(f"Tailscale is unavailable: {detail}") from error
+    except json.JSONDecodeError as error:
+        raise ValueError("Tailscale returned an unreadable status response") from error
+
+    backend = str(status.get("BackendState", "")).strip()
+    if backend != "Running":
+        hint = "run 'sudo tailscale up' and sign in" if backend in ("", "NeedsLogin", "Stopped") \
+            else "open Tailscale and finish connecting this computer"
+        raise ValueError(f"Tailscale is {backend or 'not connected'}; {hint}")
+    self_status = status.get("Self", {})
+    hostname = str(self_status.get("DNSName", "")).rstrip(".")
+    addresses = self_status.get("TailscaleIPs", [])
+    address = next((str(value) for value in addresses if ":" not in str(value)), "")
+    if not address:
+        try:
+            address = subprocess.check_output(
+                ["tailscale", "ip", "-4"], text=True, timeout=3,
+                stderr=subprocess.DEVNULL).strip().splitlines()[0]
+        except (IndexError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise ValueError("Tailscale is connected but has no IPv4 address") from error
+    try:
+        ipaddress.ip_address(address)
+    except ValueError as error:
+        raise ValueError("Tailscale returned an invalid private address") from error
+    if not hostname:
+        raise ValueError(
+            f"Tailscale has no MagicDNS name. Enable MagicDNS and HTTPS at {TAILSCALE_DNS_ADMIN_URL}")
+    return address, hostname
+
+
+def certificate_health(cert_path: Path, key_path: Path, hostname: str) -> tuple[bool, str]:
+    """Validate a PEM pair without printing private key material."""
+    if not cert_path.is_file() or not key_path.is_file():
+        return False, "certificate or private key is missing"
+    if key_path.stat().st_mode & 0o077:
+        return False, "private key permissions must be 0600"
+    try:
+        subprocess.run(
+            ["openssl", "x509", "-in", str(cert_path), "-checkhost", hostname, "-noout"],
+            capture_output=True, text=True, timeout=5, check=True)
+        cert_public = subprocess.check_output(
+            ["openssl", "x509", "-in", str(cert_path), "-pubkey", "-noout"],
+            text=True, timeout=5)
+        key_public = subprocess.check_output(
+            ["openssl", "pkey", "-in", str(key_path), "-pubout"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL)
+        if cert_public.strip() != key_public.strip():
+            return False, "certificate and private key do not match"
+        end_date = subprocess.check_output(
+            ["openssl", "x509", "-in", str(cert_path), "-enddate", "-noout"],
+            text=True, timeout=5).strip().removeprefix("notAfter=")
+        expires = datetime.strptime(end_date, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except FileNotFoundError:
+        return False, "OpenSSL is required to validate the TLS certificate"
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as error:
+        return False, f"certificate validation failed: {error}"
+    remaining = expires - datetime.now(timezone.utc)
+    if remaining.total_seconds() <= 0:
+        return False, f"certificate expired {expires.date().isoformat()}"
+    return True, f"valid for {hostname} until {expires.date().isoformat()} ({remaining.days} days)"
+
+
+def certificate_needs_renewal(cert_path: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-in", str(cert_path), "-checkend",
+             str(TAILSCALE_CERT_RENEWAL_SECONDS), "-noout"],
+            capture_output=True, text=True, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True
+    return result.returncode != 0
 
 
 def split_bind(bind: str) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, int]:
@@ -579,27 +672,251 @@ def restart_gateway_detached() -> None:
     launch_gateway_detached("restart-gateway")
 
 
-def ensure_tailscale_certificate(cert_path: Path, key_path: Path, hostname: str) -> None:
-    if cert_path.is_file() and key_path.is_file():
+def explain_tailscale_certificate_error(detail: str) -> str:
+    lower = detail.lower()
+    if "permission" in lower or "access denied" in lower:
+        return (f"{detail}\nAllow this Linux user to request certificates with "
+                "'sudo tailscale set --operator=$USER', then retry.")
+    if "https" in lower or "cert domain" in lower or "not allowed" in lower:
+        return (f"{detail}\nEnable MagicDNS and HTTPS at {TAILSCALE_DNS_ADMIN_URL}. "
+                "A tailnet Owner, Admin, or Network admin may need to do this.")
+    if "rate" in lower or "too many certificates" in lower:
+        return f"{detail}\nCertificate issuance is rate limited; do not repeatedly retry."
+    return detail
+
+
+def ensure_tailscale_certificate(
+        cert_path: Path, key_path: Path, hostname: str, *, renew: bool = False,
+        confirm: bool = True) -> None:
+    healthy, detail = certificate_health(cert_path, key_path, hostname)
+    if healthy and not renew:
+        print(f"Tailscale TLS certificate: {detail}")
         return
     if cert_path.exists() or key_path.exists():
-        raise ValueError("only one TLS file exists; remove or repair the incomplete certificate pair")
-    print("\nThe TLS certificate files do not exist yet.")
+        if not cert_path.is_file() or not key_path.is_file():
+            raise ValueError("only one TLS file exists; remove or repair the incomplete certificate pair")
+        print(f"\nThe existing TLS certificate needs attention: {detail}")
+    else:
+        print("\nThe TLS certificate files do not exist yet.")
     print(f"ZedLink can request a certificate for {hostname} with Tailscale.")
     print("Certificate issuance publishes this hostname in public Certificate Transparency logs.")
-    create = input("Create the certificate and key now? [Y/n]: ").strip().lower()
-    if create not in ("", "y", "yes"):
-        raise ValueError("TLS certificate setup was cancelled; create the files and run setup again")
+    verb = "Renew" if cert_path.exists() and key_path.exists() else "Create"
+    if confirm:
+        create = input(f"{verb} the certificate and key now? [Y/n]: ").strip().lower()
+        if create not in ("", "y", "yes"):
+            raise ValueError("TLS certificate setup was cancelled; create the files and run setup again")
+    else:
+        print(f"{verb}ing the certificate automatically.")
     if cert_path.parent != key_path.parent:
         raise ValueError("automatic certificate creation requires certificate and key in the same directory")
     private_directory(config_path().parent)
     private_directory(cert_path.parent)
-    subprocess.run(["tailscale", "cert", "--cert-file", str(cert_path),
-                    "--key-file", str(key_path), hostname], check=True)
-    os.chmod(cert_path, 0o600)
-    os.chmod(key_path, 0o600)
-    print(f"Created TLS certificate: {cert_path}")
-    print(f"Created private TLS key: {key_path}")
+    with tempfile.TemporaryDirectory(prefix="tailscale-cert-", dir=cert_path.parent) as temporary:
+        staged_cert = Path(temporary) / "certificate.pem"
+        staged_key = Path(temporary) / "private-key.pem"
+        try:
+            subprocess.run(
+                ["tailscale", "cert", "--min-validity", TAILSCALE_CERT_RENEWAL_WINDOW,
+                 "--cert-file", str(staged_cert), "--key-file", str(staged_key), hostname],
+                capture_output=True, text=True, timeout=60, check=True)
+        except subprocess.CalledProcessError as error:
+            message = (error.stderr or error.stdout or "tailscale cert failed").strip()
+            raise ValueError(explain_tailscale_certificate_error(message)) from error
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("Tailscale certificate request timed out; check tailscaled connectivity") from error
+        os.chmod(staged_cert, 0o600)
+        os.chmod(staged_key, 0o600)
+        staged_ok, staged_detail = certificate_health(staged_cert, staged_key, hostname)
+        if not staged_ok:
+            raise ValueError(f"Tailscale returned an unusable certificate: {staged_detail}")
+        staged_cert.replace(cert_path)
+        staged_key.replace(key_path)
+    print(f"Saved TLS certificate: {cert_path}")
+    print(f"Saved private TLS key: {key_path}")
+    print(f"Certificate check: {staged_detail}")
+
+
+def setup_tailscale_certificate() -> None:
+    print("\nZedLink Tailscale setup")
+    print("This checks the workstation connection, MagicDNS name, and browser-trusted HTTPS certificate.")
+    address, hostname = tailscale_preflight()
+    print(f"PASS  Tailscale connected: {address}")
+    print(f"PASS  MagicDNS hostname: {hostname}")
+    tls_directory = config_path().parent / "tls"
+    cert_path = tls_directory / f"{hostname}.crt"
+    key_path = tls_directory / f"{hostname}.key"
+    healthy, detail = certificate_health(cert_path, key_path, hostname)
+    if healthy:
+        print(f"PASS  HTTPS certificate: {detail}")
+        renew = input("Renew it now anyway? [y/N]: ").strip().lower() in ("y", "yes")
+        if renew:
+            ensure_tailscale_certificate(cert_path, key_path, hostname, renew=True)
+    else:
+        ensure_tailscale_certificate(cert_path, key_path, hostname, renew=True)
+    print("\nClient device check")
+    print("1. Install Tailscale on the phone or computer.")
+    print("2. Sign in to the same tailnet and leave Tailscale connected.")
+    print(f"3. Open https://{hostname}:44679 after the ZedLink gateway starts.")
+    print("4. Pair the browser or app with ZedLink; tailnet access alone is not authorization.")
+    if config_path().is_file():
+        enable_certificate_renewal_during_setup(validate(read_config()))
+    else:
+        print("Automatic renewal will be enabled when you run ZedLink project setup.")
+
+
+def renew_tailscale_certificates(data: dict, *, force: bool = False) -> int:
+    routes = [route for route in data["routes"]
+              if route["enabled"] and route["provider"] == "tailscale"]
+    if not routes:
+        raise ValueError("no enabled Tailscale connection profile is configured")
+    pending = []
+    for route in routes:
+        hostname = urlsplit(route["url"]).hostname or ""
+        cert_path = Path(route["cert"])
+        key_path = Path(route["key"])
+        healthy, detail = certificate_health(cert_path, key_path, hostname)
+        if healthy and not force and not certificate_needs_renewal(cert_path):
+            print(f"PASS  {route['label']}: {detail}; renewal is not needed")
+        else:
+            pending.append((route, hostname, cert_path, key_path, detail))
+    if not pending:
+        return 0
+    address, detected_hostname = tailscale_preflight()
+    print(f"Tailscale connected at {address} as {detected_hostname}.")
+    renewed = 0
+    for route, hostname, cert_path, key_path, detail in pending:
+        if hostname != detected_hostname:
+            raise ValueError(
+                f"profile {route['id']} uses {hostname}, but this Tailscale client is "
+                f"{detected_hostname}; update the profile instead of silently changing identity")
+        print(f"RENEW {route['label']}: {detail}")
+        ensure_tailscale_certificate(
+            cert_path, key_path, hostname, renew=True, confirm=False)
+        renewed += 1
+    if renewed:
+        state = Path(data["state_dir"])
+        try:
+            result = admin(state, "reload-tls")
+            if result.get("reloaded") is not True:
+                raise ValueError("gateway rejected the TLS reload")
+            print(f"Reloaded TLS for {len(result.get('listeners', []))} running gateway listener(s).")
+        except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+            print("Gateway is offline; it will load the renewed certificate on its next start.")
+    return renewed
+
+
+def systemd_user_directory() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "systemd/user"
+
+
+def systemd_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def renewal_unit_paths() -> tuple[Path, Path]:
+    directory = systemd_user_directory()
+    return directory / RENEWAL_SERVICE, directory / RENEWAL_TIMER
+
+
+def write_private_text(path: Path, content: str) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=path.name + "-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def install_certificate_renewal(data: dict) -> None:
+    tailscale_routes = [route for route in data["routes"]
+                        if route["enabled"] and route["provider"] == "tailscale"]
+    if not tailscale_routes:
+        raise ValueError("configure and enable a Tailscale connection before enabling renewal")
+    for route in tailscale_routes:
+        hostname = urlsplit(route["url"]).hostname or ""
+        healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname)
+        if not healthy:
+            raise ValueError(f"set up the {route['label']} certificate first: {detail}")
+    service_path, timer_path = renewal_unit_paths()
+    manager = systemd_quote(str(Path(__file__).resolve()))
+    python = systemd_quote(sys.executable)
+    service = f"""[Unit]
+Description=Renew ZedLink Tailscale HTTPS certificates
+
+[Service]
+Type=oneshot
+ExecStart={python} {manager} renew-certificates
+NoNewPrivileges=true
+PrivateTmp=true
+"""
+    timer = f"""[Unit]
+Description=Check ZedLink Tailscale HTTPS certificates
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=12h
+RandomizedDelaySec=1h
+Persistent=true
+Unit={RENEWAL_SERVICE}
+
+[Install]
+WantedBy=timers.target
+"""
+    write_private_text(service_path, service)
+    write_private_text(timer_path, timer)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", "--now", RENEWAL_TIMER], check=True)
+    print("Automatic Tailscale certificate renewal is enabled.")
+    print("ZedLink checks every 12 hours and renews only inside the final 30 days.")
+    print("A running gateway reloads the validated certificate without losing pairings or sessions.")
+
+
+def certificate_renewal_status(data: dict) -> None:
+    service_path, timer_path = renewal_unit_paths()
+    enabled = subprocess.run(
+        ["systemctl", "--user", "is-enabled", "--quiet", RENEWAL_TIMER]).returncode == 0
+    active = subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", RENEWAL_TIMER]).returncode == 0
+    print(f"Automatic renewal: {'enabled' if enabled else 'disabled'}")
+    print(f"Renewal timer: {'active' if active else 'inactive'}")
+    print(f"Service file: {'installed' if service_path.is_file() else 'missing'}")
+    print(f"Timer file: {'installed' if timer_path.is_file() else 'missing'}")
+    for route in data["routes"]:
+        if route["enabled"] and route["provider"] == "tailscale":
+            hostname = urlsplit(route["url"]).hostname or ""
+            healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname)
+            state = "PASS" if healthy else "FAIL"
+            due = "renewal due" if certificate_needs_renewal(Path(route["cert"])) else "renewal not due"
+            print(f"{state}  {route['label']}: {detail}; {due}")
+
+
+def remove_certificate_renewal() -> None:
+    service_path, timer_path = renewal_unit_paths()
+    subprocess.run(
+        ["systemctl", "--user", "disable", "--now", RENEWAL_TIMER],
+        capture_output=True, text=True)
+    for path in (timer_path, service_path):
+        if path.exists():
+            path.unlink()
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    print("Automatic Tailscale certificate renewal is disabled.")
+
+
+def enable_certificate_renewal_during_setup(data: dict) -> None:
+    if not any(route["enabled"] and route["provider"] == "tailscale"
+               for route in data["routes"]):
+        return
+    try:
+        install_certificate_renewal(data)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"Automatic certificate renewal was not enabled: {error}")
+        print("Run 'ZedLink: Enable automatic certificate renewal' after fixing that issue.")
 
 
 def save_config(data: dict) -> None:
@@ -675,7 +992,20 @@ def configure() -> None:
         "zed_user_data_dir": old.get("zed_user_data_dir", ""),
     }
     answers = {}
-    for field, label in prompts.items():
+    prompt_fields = list(prompts)
+    if tailscale_hostname:
+        prompt_fields.remove("cert")
+        prompt_fields.remove("key")
+        old_route_hostname = urlsplit(current_route.get("url", "")).hostname
+        answers["cert"] = (old_values.get("cert") if old_route_hostname == tailscale_hostname
+                           else "") or defaults["cert"]
+        answers["key"] = (old_values.get("key") if old_route_hostname == tailscale_hostname
+                          else "") or defaults["key"]
+        print("Certificate paths are managed automatically for the detected Tailscale hostname.")
+        print(f"  Certificate: {answers['cert']}")
+        print(f"  Private key: {answers['key']}")
+    for field in prompt_fields:
+        label = prompts[field]
         current = old_values.get(field) or defaults[field]
         print(f"\n{label}")
         print(f"  {help_text[field]}")
@@ -687,9 +1017,17 @@ def configure() -> None:
                 continue
             answers[field] = answer
             break
+    route_hostname = urlsplit(answers["url"]).hostname
+    if tailscale_hostname and route_hostname != tailscale_hostname:
+        for field in ("cert", "key"):
+            label = prompts[field]
+            current = old_values.get(field, "")
+            print(f"\n{label}")
+            print(f"  {help_text[field]}")
+            suffix = f" [{current}]" if current else ""
+            answers[field] = input(f"{label}{suffix}: ").strip() or current
     cert_path = Path(answers["cert"]).expanduser()
     key_path = Path(answers["key"]).expanduser()
-    route_hostname = urlsplit(answers["url"]).hostname
     if tailscale_hostname and route_hostname == tailscale_hostname:
         ensure_tailscale_certificate(cert_path, key_path, tailscale_hostname)
     route_id = current_route.get("id", "tailscale" if route_hostname == tailscale_hostname else "primary")
@@ -716,6 +1054,7 @@ def configure() -> None:
     }
     save_config(data)
     sync_zed_settings(data)
+    enable_certificate_renewal_during_setup(data)
 
 
 def quick_setup(project_root: str) -> None:
@@ -753,6 +1092,7 @@ def quick_setup(project_root: str) -> None:
         data["project_root"] = str(project)
     save_config(data)
     sync_zed_settings(data)
+    enable_certificate_renewal_during_setup(data)
     subprocess.run([sys.executable, str(ROOT / "tools/zed_task_installer.py"), "install"],
                    check=True)
     launcher = install_desktop_launcher()
@@ -1191,8 +1531,9 @@ def diagnose(data: dict) -> None:
             continue
         certificate = Path(route["cert"])
         key = Path(route["key"])
-        route_ok = certificate.is_file() and key.is_file() and key.stat().st_mode & 0o077 == 0
-        report(route_ok, f"TLS route {route['label']}", route["url"])
+        hostname = urlsplit(route["url"]).hostname or ""
+        route_ok, route_detail = certificate_health(certificate, key, hostname)
+        report(route_ok, f"TLS route {route['label']}", route_detail)
 
     socket_path = state / "probe/zedlink.sock"
     try:
@@ -1254,13 +1595,17 @@ def repair(data: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("quick-setup", "configure", "manage-routes", "manage-targets",
+    parser.add_argument("action", choices=("quick-setup", "configure", "tailscale-setup",
+                                           "install-renewal", "renewal-status",
+                                           "renew-certificates", "remove-renewal",
+                                           "manage-routes", "manage-targets",
                                            "check-routes", "status", "start-zed",
                                            "start-gateway", "restart-gateway", "stop-gateway",
                                            "start-gateway-detached", "restart-gateway-detached",
                                            "install-launcher", "remove-launcher",
                                            "install-cli", "remove-cli",
-                                           "pair", "pair-primary", "devices", "devices-json", "revoke",
+                                           "pair", "pair-browser", "pair-terminal", "pair-primary",
+                                           "devices", "devices-json", "revoke",
                                            "revoke-device", "diagnose", "repair",
                                            "save-connection", "select-connection",
                                            "detect-connection", "check-connection"))
@@ -1269,6 +1614,9 @@ def main() -> None:
     try:
         if args.action == "configure":
             configure()
+            return
+        if args.action == "tailscale-setup":
+            setup_tailscale_certificate()
             return
         if args.action == "quick-setup":
             if not args.project_root:
@@ -1288,6 +1636,15 @@ def main() -> None:
         socket_path = state / "probe/zedlink.sock"
         if args.action == "manage-routes":
             manage_routes(data)
+        elif args.action == "install-renewal":
+            install_certificate_renewal(data)
+        elif args.action == "renewal-status":
+            certificate_renewal_status(data)
+        elif args.action == "renew-certificates":
+            renewed = renew_tailscale_certificates(data)
+            print(f"Renewed {renewed} Tailscale certificate(s).")
+        elif args.action == "remove-renewal":
+            remove_certificate_renewal()
         elif args.action == "manage-targets":
             manage_targets(data)
         elif args.action == "detect-connection":
@@ -1406,14 +1763,17 @@ def main() -> None:
                 print("ZedLink gateway stopped.")
             else:
                 print("ZedLink gateway is not running.")
-        elif args.action == "pair":
+        elif args.action in ("pair", "pair-browser", "pair-terminal"):
             route = choose_route(data)
-            subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
-                            str(state / "gateway")], check=True)
+            command = [sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
+                       str(state / "gateway")]
+            if args.action != "pair":
+                command += ["--mode", args.action.removeprefix("pair-")]
+            subprocess.run(command, check=True)
         elif args.action == "pair-primary":
             route = primary_route(data)
             subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
-                            str(state / "gateway")], check=True)
+                            str(state / "gateway"), "--mode", "browser"], check=True)
         elif args.action == "devices":
             result = paired_devices(state)
             print(f"Gateway {result['gateway_id']}")

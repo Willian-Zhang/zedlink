@@ -19,7 +19,7 @@ You need:
 - Your model already working in normal Zed.
 - Rust, Cargo, Git, Python 3, and the [Zed Linux build dependencies](https://github.com/zed-industries/zed/blob/76659a55a8c10ed355a070f8764a0b1733e3c115/docs/src/development/linux.md).
 - Tailscale connected on both the Zed computer and client device, or another private network route.
-- A trusted TLS certificate for the hostname the client browser will open.
+- HTTPS enabled for the tailnet. ZedLink can request and store the matching Tailscale certificate files during setup.
 - Python's `qrcode` package for the easiest browser pairing flow.
 
 The first patched Zed build can take a while. Later starts use the existing build.
@@ -58,6 +58,7 @@ You should see tasks such as:
 - **ZedLink: Guided setup / update**
 - **ZedLink: Install / build**
 - **ZedLink: Configure**
+- **ZedLink: Set up / renew Tailscale HTTPS**
 - **ZedLink: Diagnose setup**
 - **ZedLink: Repair setup**
 - **ZedLink: Install patched Zed launcher**
@@ -79,6 +80,29 @@ The global tasks are already installed on this workstation. To configure whichev
 That single task uses Zed's current `$ZED_WORKTREE_ROOT`, builds the pinned Zed and gateway if needed, detects the Tailscale address and MagicDNS hostname, reuses or creates the private TLS files, saves the configuration, and installs the global management tasks. If a usable configuration already exists, it preserves the route, certificate, state, and Zed profile while changing only the selected project.
 
 The only possible first-run question is permission to request a Tailscale certificate when no matching certificate exists. That confirmation remains because certificate issuance publishes the hostname in public Certificate Transparency logs.
+
+### If this is your first time using Tailscale
+
+1. [Install Tailscale on Linux](https://tailscale.com/docs/install/linux), then run `sudo tailscale up` and finish sign-in in the browser.
+2. Install Tailscale on the phone or other client and sign in to the same tailnet.
+3. Open the [Tailscale DNS admin page](https://login.tailscale.com/admin/dns). Enable **MagicDNS**, then enable **HTTPS Certificates**. An Owner, Admin, or Network admin must perform this tailnet-level step.
+4. Read and accept Tailscale's certificate-transparency notice. The workstation's machine name and tailnet DNS suffix become visible in public Certificate Transparency logs, so rename the machine first if its current name is sensitive.
+5. In Zed, run **ZedLink: Set up / renew Tailscale HTTPS**. ZedLink checks that the client is installed, signed in, and has a private address and MagicDNS hostname. It then offers to request the certificate and key into `~/.config/zedlink/tls/`.
+6. Run **ZedLink: Set up this project**. The wizard now manages the detected Tailscale certificate paths instead of asking you to type them.
+
+If certificate creation reports a Linux permission error, delegate Tailscale CLI operations to your account with:
+
+```sh
+sudo tailscale set --operator="$USER"
+```
+
+Then rerun **ZedLink: Set up / renew Tailscale HTTPS**. ZedLink validates the hostname, matching public key, private-key permissions, and expiration before replacing an existing certificate.
+
+For a Tailscale profile, normal project setup installs a private systemd user timer automatically. It checks twice daily with up to one hour of randomized delay and requests a new certificate only when fewer than 30 days remain. A replacement is generated in a private staging directory, fully validated, moved into place, and reloaded by the running gateway without changing its identity, paired devices, or native sessions. If the gateway is offline, it reads the renewed files at its next start.
+
+Open **Settings → ZedLink → Tailscale HTTPS** to inspect renewal status, open Tailscale's DNS/HTTPS administration page, enable or disable the timer, or run a check immediately. The equivalent Zed tasks are **Enable automatic certificate renewal**, **Certificate renewal status**, and **Check certificate renewal now**.
+
+Automatic renewal requires the current Linux user to be permitted to run `tailscale cert`. The timer records failures in the systemd user journal and retries at its next scheduled check. It never changes a connection profile when the detected MagicDNS identity differs from the saved hostname.
 
 ### Configure ZedLink in Zed Settings
 

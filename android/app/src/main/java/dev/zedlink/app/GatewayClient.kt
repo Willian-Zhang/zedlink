@@ -9,6 +9,7 @@ import java.net.URI
 import java.net.URL
 import java.util.UUID
 import java.io.ByteArrayOutputStream
+import okhttp3.*
 
 class GatewayException(message: String) : IOException(message)
 
@@ -45,6 +46,24 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
         }
         envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code"))) }
         return envelope.optJSONObject("result") ?: throw GatewayException("Gateway response was incomplete.")
+    }
+
+    fun eventStream(threadId: String, afterSequence: Int, onEvent: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit): WebSocket {
+        val credential = token ?: throw GatewayException("Pair this device first.")
+        val base = URI(origin)
+        val target = targetId?.let { "&target_id=${java.net.URLEncoder.encode(it, "UTF-8")}" }.orEmpty()
+        val url = "wss://${base.rawAuthority}/v1/events?thread_id=${java.net.URLEncoder.encode(threadId, "UTF-8")}&after_sequence=$afterSequence$target"
+        val request = Request.Builder().url(url).header("Sec-WebSocket-Protocol", "zedlink-v1, zedlink-token-$credential").build()
+        return OkHttpClient().newWebSocket(request, object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runCatching {
+                    val envelope = JSONObject(text)
+                    envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code"))) }
+                    envelope.optJSONObject("result") ?: throw GatewayException("Gateway returned an invalid live update.")
+                }.onSuccess(onEvent).onFailure(onFailure)
+            }
+            override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) = onFailure(throwable)
+        })
     }
 
     private suspend fun request(path: String, body: JSONObject? = null, authorized: Boolean = false): JSONObject = withContext(Dispatchers.IO) {

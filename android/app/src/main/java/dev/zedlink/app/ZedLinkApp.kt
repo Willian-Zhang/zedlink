@@ -234,6 +234,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     var showActions by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showUnexpose by remember { mutableStateOf(false) }
+    var showContext by remember { mutableStateOf(false) }
     var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).border(1.dp, Line).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -242,6 +243,9 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
                 Text(snapshot?.title ?: "Loading native thread", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (snapshot?.isBusy == true) "ZED IS WORKING" else "NATIVE THREAD READY", color = if (snapshot?.isBusy == true) Blue else Green,
                     fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+            }
+            Box {
+                IconButton(onClick = { showContext = true; model.loadProjectContext() }) { Icon(Icons.Default.Description, "Project context", tint = Ink) }
             }
             Box {
                 IconButton(onClick = { showActions = true }) { Icon(Icons.Default.MoreVert, "Session actions", tint = Ink) }
@@ -284,6 +288,29 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         dismissButton = { TextButton(onClick = { showUnexpose = false }) { Text("CANCEL") } },
         containerColor = Surface,
     )
+    if (showContext) ProjectContextDialog(state, model) { showContext = false }
+}
+
+@Composable
+private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
+    AlertDialog(onDismissRequest = close, title = { Text("Project context") },
+        text = { Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
+            if (state.previewContent.isNotEmpty()) {
+                Text(state.previewTitle, fontWeight = FontWeight.SemiBold)
+                SelectionContainer { Text(state.previewContent, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+            }
+            Text("PROJECT FILES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+            state.projectFiles.filter { it.kind == "file" }.forEach { file -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { model.previewFile(file.id) }, modifier = Modifier.weight(1f)) { Text(file.id, maxLines = 1) }
+                TextButton(onClick = { model.toggleContextPath(file.id) }) { Text(if (file.id in state.contextPaths) "REMOVE" else "ATTACH") }
+            } }
+            Text("GIT CHANGES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+            TextButton(onClick = model::loadDiff) { Text("LOAD FULL DIFF") }
+            state.changes.forEach { change -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("${change.id}\n${change.status} · ${change.staging}", modifier = Modifier.weight(1f), fontSize = 12.sp)
+                TextButton(onClick = { model.mutateChange(change) }) { Text(if (change.staging == "staged") "UNSTAGE" else "STAGE") }
+            } }
+        } }, confirmButton = { TextButton(onClick = close) { Text("DONE") } }, containerColor = Surface)
 }
 
 @Composable
@@ -310,6 +337,7 @@ private fun AgentProgress(status: String, canCancel: Boolean) {
 @Composable
 private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier: Modifier = Modifier) {
     val list = rememberLazyListState()
+    var rewindPoint by remember { mutableStateOf<NativeRewindPoint?>(null) }
     LaunchedEffect(snapshot.lastSequence) { if (snapshot.entries.isNotEmpty()) list.animateScrollToItem(snapshot.entries.lastIndex + 1) }
     LazyColumn(modifier.fillMaxWidth(), state = list, contentPadding = PaddingValues(bottom = 10.dp)) {
         if (snapshot.hasOlderEntries) item {
@@ -317,10 +345,98 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
                 Text("LOAD EARLIER CONVERSATION · ${snapshot.entryStartIndex} REMAINING", color = Muted)
             }
         }
+        items(snapshot.subagents, key = { "subagent:${it.id}" }) { subagent ->
+            var expanded by remember(subagent.id) { mutableStateOf(subagent.currentTurnId != null) }
+            Column(Modifier.fillMaxWidth().background(Surface).border(1.dp, Line).padding(12.dp)) {
+                Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
+                    Text("${subagent.title} · ${subagent.status}", modifier = Modifier.weight(1f))
+                    Text(if (expanded) "HIDE" else "VIEW", style = monoLabel())
+                }
+                if (expanded) {
+                    subagent.entries.forEach { SelectionContainer { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp) } }
+                    if (subagent.currentTurnId != null) TextButton(onClick = { model.cancelSubagent(subagent) }) { Text("STOP PARALLEL AGENT") }
+                }
+            }
+        }
         itemsIndexed(snapshot.entries, key = { index, _ -> snapshot.entryStartIndex + index }) { index, markdown ->
+            val absoluteIndex = snapshot.entryStartIndex + index
             Message(NativeEntry.parse(markdown), snapshot.isBusy && index == snapshot.entries.lastIndex)
+            snapshot.rewindPoints.firstOrNull { it.entryIndex == absoluteIndex }?.let { point ->
+                if (!snapshot.isBusy && "thread.rewind" in model.state.capabilities) {
+                    TextButton(onClick = { rewindPoint = point }) { Text("REWIND CONVERSATION HERE", color = Warning) }
+                }
+            }
         }
         items(snapshot.approvals, key = { it.id }) { ApprovalCard(it, model::respondApproval) }
+        items(model.state.elicitations, key = { "elicitation:${it.id}" }) { ElicitationCard(it, model) }
+        model.state.editReview?.let { review -> item("edit-review") { EditReviewCard(review, model) } }
+        if (model.state.queuedMessages.isNotEmpty()) item("queue") { QueueCard(model.state.queuedMessages, model) }
+    }
+    rewindPoint?.let { point -> AlertDialog(
+        onDismissRequest = { rewindPoint = null }, title = { Text("Rewind this conversation?") },
+        text = { Text("Messages and Agent edits after this point may be removed.") },
+        confirmButton = { TextButton(onClick = { rewindPoint = null; model.rewind(point) }) { Text("REWIND") } },
+        dismissButton = { TextButton(onClick = { rewindPoint = null }) { Text("CANCEL") } }, containerColor = Surface,
+    ) }
+}
+
+@Composable
+private fun ElicitationCard(item: NativeElicitation, model: ZedLinkViewModel) {
+    val values = remember(item.id) { mutableStateMapOf<String, String>() }
+    val flags = remember(item.id) { mutableStateMapOf<String, Boolean>() }
+    Column(Modifier.fillMaxWidth().background(Color(0xFF1C1915)).border(1.dp, Warning).padding(14.dp)) {
+        Text("INPUT REQUESTED", color = Warning, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        Text(item.message, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
+        item.url?.let { Text(it, color = Blue, fontSize = 12.sp) }
+        item.fields.forEach { field ->
+            if (field.type == "boolean") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(flags[field.id] == true, { flags[field.id] = it })
+                    Text(field.title)
+                }
+            } else {
+                OutlinedTextField(values[field.id].orEmpty(), { values[field.id] = it }, label = { Text(field.title) },
+                    modifier = Modifier.fillMaxWidth())
+                if (field.choices.isNotEmpty()) Text("Choices: ${field.choices.joinToString()}", color = Muted, fontSize = 11.sp)
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { model.respondElicitation(item, "decline") }) { Text("DECLINE") }
+            Button(onClick = {
+                val content = org.json.JSONObject()
+                item.fields.forEach { field ->
+                    when (field.type) {
+                        "boolean" -> content.put(field.id, flags[field.id] == true)
+                        "integer" -> values[field.id]?.toLongOrNull()?.let { content.put(field.id, it) }
+                        "number" -> values[field.id]?.toDoubleOrNull()?.let { content.put(field.id, it) }
+                        "array" -> content.put(field.id, org.json.JSONArray(values[field.id].orEmpty().split(',').map(String::trim).filter(String::isNotEmpty)))
+                        else -> content.put(field.id, values[field.id].orEmpty())
+                    }
+                }
+                model.respondElicitation(item, "accept", content)
+            }, shape = androidx.compose.ui.graphics.RectangleShape) { Text("SUBMIT") }
+        }
+    }
+}
+
+@Composable
+private fun EditReviewCard(review: NativeEditReview, model: ZedLinkViewModel) {
+    Column(Modifier.fillMaxWidth().background(Surface).border(1.dp, Line).padding(14.dp)) {
+        Text("REVIEW AGENT EDITS", style = monoLabel())
+        Text("${review.changedFiles} files · +${review.linesAdded} −${review.linesRemoved}", color = Muted)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { model.resolveEditReview("reject_all") }) { Text("REJECT ALL") }
+            Button(onClick = { model.resolveEditReview("keep_all") }, shape = androidx.compose.ui.graphics.RectangleShape) { Text("KEEP ALL") }
+        }
+    }
+}
+
+@Composable
+private fun QueueCard(entries: List<NativeQueueEntry>, model: ZedLinkViewModel) {
+    Column(Modifier.fillMaxWidth().background(Surface).border(1.dp, Line).padding(14.dp)) {
+        Text("${entries.size} QUEUED MESSAGE${if (entries.size == 1) "" else "S"}", style = monoLabel())
+        entries.forEach { Text(it.preview, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Muted, fontSize = 12.sp) }
+        TextButton(onClick = model::clearQueue) { Text("CLEAR QUEUE") }
     }
 }
 
@@ -559,8 +675,23 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
 
 @Composable
 private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
+    var modelMenu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Header("Settings", "ZedLink for Android")
+        state.threadSettings?.let { settings ->
+            SectionHeading("SELECTED AGENT SESSION", "")
+            Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                OutlinedButton(onClick = { modelMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(settings.models.firstOrNull { it.modelId == settings.modelId && it.providerId == settings.providerId }?.name ?: "Select model")
+                }
+                DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }) {
+                    settings.models.forEach { option -> DropdownMenuItem(
+                        text = { Text("${option.name} · ${option.providerId}") },
+                        onClick = { modelMenu = false; model.selectModel(option) }) }
+                }
+            }
+            if (settings.usedTokens != null && settings.maxTokens != null) SettingRow("Context", "${settings.usedTokens} / ${settings.maxTokens} tokens")
+        }
         SettingRow("Appearance", "OLED dark")
         SettingRow("Runtime", "Native Zed Agent")
         SettingRow("Connection", state.profile?.endpoint ?: "Not paired")

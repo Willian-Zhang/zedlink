@@ -73,12 +73,15 @@ The responsive browser client can be installed as a home-screen app. It includes
 
 ## Quick start
 
-1. Open this repository in Zed and trust the worktree.
-2. Press `Ctrl+Shift+P`, run **task: spawn**, then choose **ZedLink: Set up this project**.
-3. Open **ZedLink — Patched Zed** from the Linux application menu.
-4. In the desired root Agent or ACP conversation, select `/remote-control`.
-5. Run **ZedLink: Start gateway**, followed by **ZedLink: Pair a device**.
-6. Open or scan the trusted private HTTPS address, pair, select the exposed session, and send a message.
+1. Install Tailscale on the workstation and client, sign both in to the same tailnet, and enable MagicDNS plus HTTPS certificates in the [Tailscale DNS admin page](https://login.tailscale.com/admin/dns).
+2. Open this repository in Zed and trust the worktree.
+3. Press `Ctrl+Shift+P`, run **task: spawn**, then choose **ZedLink: Set up this project**. ZedLink detects the private address and hostname and can create the certificate files for you.
+4. Open **ZedLink — Patched Zed** from the Linux application menu.
+5. In the desired root Agent or ACP conversation, select `/remote-control`.
+6. Run **ZedLink: Start gateway**, followed by **ZedLink: Pair a device**. Choose a live browser QR page or a QR rendered directly in Zed's terminal. Dedicated **Pair in browser** and **Pair in terminal** tasks are also available.
+7. Open or scan the trusted private HTTPS address, pair, select the exposed session, and send a message.
+
+If Tailscale or HTTPS is not ready, run **ZedLink: Set up / renew Tailscale HTTPS**. It checks sign-in state, the private IP, MagicDNS hostname, certificate hostname, matching private key, and expiration, then gives a specific recovery step. Tailscale setup also enables a user-level renewal timer: ZedLink checks twice daily, renews inside the final 30 days, validates the replacement, and live-reloads a running gateway without clearing sessions or pairings.
 
 For requirements, first build details, TLS setup, provider configuration, and recovery steps, use the project guide below.
 

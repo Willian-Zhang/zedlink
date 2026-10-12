@@ -227,7 +227,9 @@ struct ConversationView: View {
     @State private var showingCommands = false
     @State private var showingRename = false
     @State private var showingUnexposeConfirmation = false
+    @State private var showingContext = false
     @State private var proposedTitle = ""
+    @State private var rewindPoint: NativeRewindPoint?
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -235,6 +237,8 @@ struct ConversationView: View {
             if let snapshot = session.snapshot, snapshot.threadID == threadID {
                 conversation(snapshot)
                 if !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
+                if !session.elicitations.isEmpty { elicitationStack }
+                if session.editReview != nil || !session.queuedMessages.isEmpty { nativeControls }
             } else {
                 ContentUnavailableView("Loading native thread", systemImage: "bubble.left")
                     .frame(maxHeight: .infinity)
@@ -246,6 +250,7 @@ struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { ConnectionStatusView(state: session.state) }
+            ToolbarItem(placement: .topBarTrailing) { Button { showingContext = true } label: { Image(systemName: "doc.text.magnifyingglass") } }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Rename session", systemImage: "pencil") {
@@ -264,6 +269,7 @@ struct ConversationView: View {
         .task(id: threadID) { await session.select(threadID) }
         .onDisappear { composerFocused = false }
         .sheet(isPresented: $showingCommands) { CommandPicker() }
+        .sheet(isPresented: $showingContext) { NativeContextSheet() }
         .confirmationDialog("Clear uncertain delivery?", isPresented: $showingClearConfirmation) {
             Button("Clear locally", role: .destructive) { session.clearPending() }
         } message: {
@@ -280,6 +286,14 @@ struct ConversationView: View {
                 Task { if await session.unexposeSelectedThread() { dismiss() } }
             }
         } message: { Text("The Agent keeps running in desktop Zed. Remote access to this session stops.") }
+        .confirmationDialog("Rewind this conversation?", isPresented: Binding(
+            get: { rewindPoint != nil }, set: { if !$0 { rewindPoint = nil } }
+        )) {
+            Button("Rewind", role: .destructive) {
+                if let point = rewindPoint { Task { await session.rewind(to: point) } }
+                rewindPoint = nil
+            }
+        } message: { Text("Messages and Agent edits after this point may be removed.") }
     }
 
     private func conversation(_ snapshot: ThreadSnapshot) -> some View {
@@ -287,6 +301,16 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     threadMeta(snapshot)
+                    ForEach(snapshot.subagents) { subagent in
+                        DisclosureGroup("\(subagent.title) · \(subagent.status)") {
+                            ForEach(Array(subagent.entries.enumerated()), id: \.offset) { _, entry in
+                                Text(entry).font(.caption.monospaced()).textSelection(.enabled).padding(.vertical, 4)
+                            }
+                            if subagent.currentTurnID != nil {
+                                Button("Stop parallel agent", role: .destructive) { Task { await session.cancelSubagent(subagent) } }
+                            }
+                        }.padding(12).background(ZLTheme.surface)
+                    }
                     if snapshot.hasOlderEntries {
                         Button("Load earlier conversation · \(snapshot.entryStartIndex) remaining") {
                             Task { await session.loadEarlierHistory() }
@@ -297,10 +321,17 @@ struct ConversationView: View {
                     ForEach(Array(snapshot.entries.enumerated()).map {
                         IndexedTranscriptEntry(id: snapshot.entryStartIndex + $0.offset, markdown: $0.element)
                     }) { entry in
-                        NativeMessageView(
-                            message: NativeEntryPresentation(entry.markdown, index: entry.id),
-                            thinkingLive: snapshot.isBusy && entry.id == snapshot.totalEntries - 1
-                        )
+                        VStack(alignment: .leading, spacing: 0) {
+                            NativeMessageView(
+                                message: NativeEntryPresentation(entry.markdown, index: entry.id),
+                                thinkingLive: snapshot.isBusy && entry.id == snapshot.totalEntries - 1
+                            )
+                            if !snapshot.isBusy, session.capabilities.contains("thread.rewind"),
+                               let point = snapshot.rewindPoints.first(where: { $0.entryIndex == entry.id }) {
+                                Button("Rewind conversation here", role: .destructive) { rewindPoint = point }
+                                .font(.caption).padding(.horizontal, 16).padding(.bottom, 8)
+                            }
+                        }
                             .id(entry.id)
                         Hairline().padding(.horizontal, 14)
                     }
@@ -339,6 +370,41 @@ struct ConversationView: View {
         }
         .background(ZLTheme.warning.opacity(0.07))
         .overlay(alignment: .top) { Hairline() }
+    }
+
+    private var elicitationStack: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(session.elicitations) { NativeElicitationView(elicitation: $0) }
+            }.padding(.horizontal, 12).padding(.vertical, 9)
+        }
+        .background(ZLTheme.warning.opacity(0.07))
+        .overlay(alignment: .top) { Hairline() }
+    }
+
+    private var nativeControls: some View {
+        VStack(spacing: 8) {
+            if let review = session.editReview {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("Review Agent edits").font(.subheadline.weight(.semibold))
+                        Text("\(review.changedFiles) files · +\(review.linesAdded) −\(review.linesRemoved)")
+                            .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                    }
+                    Spacer()
+                    Button("Reject all", role: .destructive) { Task { await session.resolveEditReview("reject_all") } }
+                    Button("Keep all") { Task { await session.resolveEditReview("keep_all") } }
+                }
+            }
+            if !session.queuedMessages.isEmpty {
+                HStack {
+                    Text("\(session.queuedMessages.count) queued message\(session.queuedMessages.count == 1 ? "" : "s")")
+                    Spacer()
+                    Button("Clear queue", role: .destructive) { Task { await session.clearQueue() } }
+                }.font(.footnote)
+            }
+        }
+        .padding(12).background(ZLTheme.surface).overlay(alignment: .top) { Hairline() }
     }
 
     private var composer: some View {
@@ -443,6 +509,39 @@ struct ConversationView: View {
             Button("Clear") { showingClearConfirmation = true }
         }
         .font(.caption)
+    }
+}
+
+private struct NativeContextSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var session: SessionManager
+    var body: some View {
+        NavigationStack {
+            List {
+                if !session.previewContent.isEmpty {
+                    Section(session.previewTitle) { Text(session.previewContent).font(.caption.monospaced()).textSelection(.enabled) }
+                }
+                Section("Project files") {
+                    ForEach(session.projectFiles.filter { $0.kind == "file" }) { file in
+                        HStack { Button(file.id) { Task { await session.previewFile(file.id) } }; Spacer()
+                            Button(session.contextPaths.contains(file.id) ? "Attached" : "Attach") {
+                                if session.contextPaths.contains(file.id) { session.contextPaths.remove(file.id) } else { session.contextPaths.insert(file.id) }
+                            }.disabled(session.contextPaths.contains(file.id))
+                        }
+                    }
+                }
+                Section("Git changes") {
+                    Button("Load full diff") { Task { await session.loadDiff() } }
+                    ForEach(session.changes) { change in
+                        HStack { VStack(alignment: .leading) { Text(change.id); Text("\(change.status) · \(change.staging)").font(.caption) }; Spacer()
+                            Button(change.staging == "staged" ? "Unstage" : "Stage") { Task { await session.mutateChange(change) } }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Project context").toolbar { Button("Done") { dismiss() } }
+            .task { await session.loadProjectContext() }
+        }
     }
 }
 
@@ -647,6 +746,55 @@ private struct NativeApprovalView: View {
         .padding(12).frame(width: 290, alignment: .leading)
         .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.45), lineWidth: 1))
         .accessibilityIdentifier("native-approval")
+    }
+}
+
+private struct NativeElicitationView: View {
+    @EnvironmentObject private var session: SessionManager
+    let elicitation: NativeElicitation
+    @State private var values: [String: String] = [:]
+    @State private var flags: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("INPUT REQUESTED").font(.caption2.monospaced().weight(.semibold)).foregroundStyle(ZLTheme.warning)
+            Text(elicitation.message).font(.subheadline.weight(.semibold))
+            if let url = elicitation.url, let destination = URL(string: url) {
+                Link("Open secure input page", destination: destination)
+            }
+            ForEach(elicitation.fields) { field in
+                if field.type == "boolean" {
+                    Toggle(field.title, isOn: Binding(
+                        get: { flags.contains(field.id) },
+                        set: { enabled in if enabled { flags.insert(field.id) } else { flags.remove(field.id) } }
+                    ))
+                } else if !field.choices.isEmpty {
+                    Picker(field.title, selection: Binding(
+                        get: { values[field.id] ?? field.choices.first ?? "" },
+                        set: { values[field.id] = $0 }
+                    )) { ForEach(field.choices, id: \.self) { Text($0).tag($0) } }
+                } else {
+                    TextField(field.title, text: Binding(
+                        get: { values[field.id] ?? "" }, set: { values[field.id] = $0 }
+                    )).textFieldStyle(.roundedBorder)
+                }
+            }
+            HStack {
+                Button("Decline", role: .destructive) { Task { await session.respondToElicitation(elicitation, action: "decline") } }
+                Button("Submit") {
+                    var content = Dictionary(uniqueKeysWithValues: values.map { ($0.key, $0.value as Any) })
+                    for field in elicitation.fields {
+                        if field.type == "boolean" { content[field.id] = flags.contains(field.id) }
+                        else if field.type == "integer", let value = Int(values[field.id] ?? "") { content[field.id] = value }
+                        else if field.type == "number", let value = Double(values[field.id] ?? "") { content[field.id] = value }
+                        else if field.type == "array" { content[field.id] = (values[field.id] ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                    }
+                    Task { await session.respondToElicitation(elicitation, action: "accept", content: content) }
+                }.buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(14).frame(width: 330, alignment: .leading)
+        .background(ZLTheme.surface).overlay(RoundedRectangle(cornerRadius: 12).stroke(ZLTheme.warning.opacity(0.5)))
     }
 }
 
@@ -987,11 +1135,27 @@ struct AddConnectionView: View {
 }
 
 struct SettingsView: View {
+    @EnvironmentObject private var session: SessionManager
     @AppStorage("zedlink.appearance") private var appearance = "dark"
 
     var body: some View {
         NavigationStack {
             List {
+                if let settings = session.threadSettings {
+                    Section("Selected Agent session") {
+                        if !settings.models.isEmpty {
+                            Picker("Model", selection: Binding(
+                                get: { "\(settings.providerID ?? "")\n\(settings.modelID ?? "")" },
+                                set: { id in if let option = settings.models.first(where: { $0.id == id }) { Task { await session.selectModel(option) } } }
+                            )) {
+                                ForEach(settings.models) { Text("\($0.name) · \($0.providerID)").tag($0.id) }
+                            }
+                        }
+                        if let used = settings.usedTokens, let maximum = settings.maxTokens {
+                            LabeledContent("Context", value: "\(used.formatted()) / \(maximum.formatted()) tokens")
+                        }
+                    }
+                }
                 Section("Appearance") {
                     Picker("Theme", selection: $appearance) {
                         Text("OLED dark").tag("dark")

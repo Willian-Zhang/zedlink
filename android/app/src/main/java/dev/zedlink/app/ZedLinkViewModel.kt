@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import okhttp3.WebSocket
 
 data class AppState(
     val profile: ConnectionProfile? = null,
@@ -34,6 +35,16 @@ data class AppState(
     val delivery: String = "",
     val issue: String = "",
     val sending: Boolean = false,
+    val elicitations: List<NativeElicitation> = emptyList(),
+    val queuedMessages: List<NativeQueueEntry> = emptyList(),
+    val editReview: NativeEditReview? = null,
+    val threadSettings: NativeThreadSettings? = null,
+    val projectFiles: List<NativeProjectFile> = emptyList(),
+    val changes: List<NativeChange> = emptyList(),
+    val changesRevision: String? = null,
+    val previewTitle: String = "",
+    val previewContent: String = "",
+    val contextPaths: Set<String> = emptySet(),
 )
 
 class ZedLinkViewModel(application: Application) : AndroidViewModel(application) {
@@ -41,6 +52,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         private set
     private var client: GatewayClient? = null
     private var pollJob: Job? = null
+    private var eventSocket: WebSocket? = null
+    private var eventStreamLive = false
     private var pendingId: String? = null
     private var pendingText: String? = null
     private val preferences = application.getSharedPreferences("zedlink-profile", 0)
@@ -94,6 +107,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(status = "Pair this device", live = false); return
         }
         pollJob?.cancel()
+        eventSocket?.cancel()
         viewModelScope.launch {
             state = state.copy(status = "Connecting…", live = false, issue = "")
             try {
@@ -196,9 +210,30 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "")
         runCatching { loadSnapshot(id); loadCommands(id) }
             .onFailure { state = state.copy(issue = it.message.orEmpty()) }
+        startEventStream(id)
     }
 
-    fun closeThread() { state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
+    fun closeThread() { eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
+
+    private fun startEventStream(threadId: String) {
+        eventSocket?.cancel()
+        val activeClient = client ?: return
+        eventSocket = activeClient.eventStream(threadId, state.snapshot?.lastSequence ?: 0, { result ->
+            viewModelScope.launch {
+                if (state.selectedThreadId != threadId) return@launch
+                eventStreamLive = true
+                runCatching { checkIdentity(result); loadSnapshot(threadId) }
+                    .onFailure { state = state.copy(issue = it.message.orEmpty()) }
+            }
+        }, { error -> viewModelScope.launch {
+            eventStreamLive = false
+            if (state.selectedThreadId == threadId) {
+                state = state.copy(issue = "Live updates reconnecting: ${error.message}")
+                delay(1_500)
+                if (state.selectedThreadId == threadId && !eventStreamLive) startEventStream(threadId)
+            }
+        } })
+    }
 
     fun renameSelectedThread(proposedTitle: String) = viewModelScope.launch {
         val title = proposedTitle.trim()
@@ -253,10 +288,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         state = state.copy(sending = true, delivery = "Sending to native Zed…")
         try {
             val result = activeClient.rpc("thread.send", JSONObject()
-                .put("instance_id", instance).put("epoch", epoch).put("thread_id", threadId).put("text", text), pendingId!!)
+                .put("instance_id", instance).put("epoch", epoch).put("thread_id", threadId).put("text", text)
+                .put("context_paths", JSONArray(state.contextPaths.toList())), pendingId!!)
             pendingId = null; pendingText = null
             setDraft("")
-            state = state.copy(sending = false, delivery = if (result.optString("outcome") == "queued")
+            state = state.copy(sending = false, contextPaths = emptySet(), delivery = if (result.optString("outcome") == "queued")
                 "Queued in desktop Zed." else "Received by desktop Zed. Watching native progress.")
             loadSnapshot(threadId)
         } catch (error: Exception) {
@@ -357,7 +393,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     runCatching { loadSnapshot(state.selectedThreadId!!) }
                 } else state = state.copy(live = false, status = "Reconnecting", issue = error.message.orEmpty())
             }
-            delay(if (state.live) 1_000 else 3_000)
+            delay(if (state.live) if (eventStreamLive) 10_000 else 1_000 else 3_000)
         }
     }
 
@@ -414,8 +450,145 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             result.optInt("last_sequence"), mergedEntries,
             mergedStart, totalEntries, mergedStart > 0,
             result.optJSONArray("activity_entries_markdown").strings(), result.optBoolean("truncated"),
-            result.optBoolean("activity_truncated"), approvals))
+            result.optBoolean("activity_truncated"), approvals,
+            result.optJSONArray("rewind_points").objects().mapNotNull { row ->
+                val clientId = row.optString("client_user_message_id")
+                if (clientId.isBlank()) null else NativeRewindPoint(clientId, row.optInt("entry_index"), row.optInt("entries_removed"))
+            }, result.optJSONArray("subagents").objects().mapNotNull { row ->
+                val sessionId = row.optString("session_id")
+                if (sessionId.isBlank()) null else NativeSubagent(sessionId, row.optString("title", row.optString("label", "Parallel agent")),
+                    row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"), row.optJSONArray("entries_markdown").strings())
+            }))
+        loadAuxiliaryState(id)
     }
+
+    private suspend fun loadAuxiliaryState(id: String) {
+        val activeClient = client ?: return
+        val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", id)
+        var elicitations = emptyList<NativeElicitation>()
+        var queued = emptyList<NativeQueueEntry>()
+        var review: NativeEditReview? = null
+        var settings: NativeThreadSettings? = null
+        if ("thread.elicitations" in state.capabilities) {
+            val result = activeClient.rpc("thread.elicitations", JSONObject(base.toString()))
+            elicitations = result.optJSONArray("elicitations").objects().mapNotNull { row ->
+                if (row.optString("status") != "pending") return@mapNotNull null
+                val request = row.optJSONObject("request") ?: return@mapNotNull null
+                val schema = request.optJSONObject("requestedSchema")
+                val required = schema?.optJSONArray("required").strings().toSet()
+                val properties = schema?.optJSONObject("properties")
+                val fields = properties?.keys()?.asSequence()?.mapNotNull { name ->
+                    val field = properties.optJSONObject(name) ?: return@mapNotNull null
+                    val items = field.optJSONObject("items")
+                    val choices = field.optJSONArray("enum").strings() + field.optJSONArray("oneOf").objects().mapNotNull { it.opt("const")?.toString() }
+                        + items?.optJSONArray("enum").strings() + items?.optJSONArray("oneOf").objects().mapNotNull { it.opt("const")?.toString() }
+                    NativeElicitationField(name, field.optString("title", name), field.optString("type", "string"),
+                        name in required, choices)
+                }?.sortedBy { it.id }?.toList().orEmpty()
+                NativeElicitation(row.optString("elicitation_id"), request.optString("message", "Agent needs more information"),
+                    request.optString("url").takeIf { it.isNotBlank() }, fields)
+            }
+        }
+        if ("thread.queue" in state.capabilities) {
+            val result = activeClient.rpc("thread.queue", JSONObject(base.toString()))
+            queued = result.optJSONArray("entries").objects().map { row ->
+                NativeQueueEntry(row.optInt("index"), row.optString("preview", "Attachment"), row.optBoolean("steer"))
+            }
+        }
+        if ("thread.edit_review" in state.capabilities) {
+            val result = activeClient.rpc("thread.edit_review", JSONObject(base.toString()))
+            if (result.optBoolean("pending")) review = NativeEditReview(result.optInt("changed_files"), result.optInt("lines_added"), result.optInt("lines_removed"))
+        }
+        if ("thread.settings" in state.capabilities) {
+            val result = activeClient.rpc("thread.settings", JSONObject(base.toString()))
+            val selected = result.optJSONObject("model")
+            val usage = result.optJSONObject("context_usage")
+            settings = NativeThreadSettings(selected?.optString("id"), selected?.optString("provider_id"),
+                result.optJSONArray("models").objects().mapNotNull { row ->
+                    val modelId = row.optString("id"); val providerId = row.optString("provider_id")
+                    if (modelId.isBlank() || providerId.isBlank()) null else NativeModelOption("$providerId\n$modelId", modelId, providerId, row.optString("name", modelId))
+                }, usage?.optInt("used_tokens"), usage?.optInt("max_tokens"))
+        }
+        if (state.selectedThreadId == id) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review, threadSettings = settings)
+    }
+
+    fun respondElicitation(item: NativeElicitation, action: String, content: JSONObject = JSONObject()) = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        try {
+            client?.rpc("elicitation.respond", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("thread_id", threadId).put("elicitation_id", item.id).put("action", action).put("content", content))
+            loadAuxiliaryState(threadId)
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun clearQueue() = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        try { client?.rpc("thread.queue.clear", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)); loadAuxiliaryState(threadId) }
+        catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun resolveEditReview(action: String) = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        try { client?.rpc("thread.edit_review.respond", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId).put("action", action).put("expected_last_sequence", state.snapshot?.lastSequence ?: 0)); loadAuxiliaryState(threadId) }
+        catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun rewind(point: NativeRewindPoint) = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        try {
+            client?.rpc("thread.rewind", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("thread_id", threadId).put("client_user_message_id", point.id)
+                .put("expected_last_sequence", state.snapshot?.lastSequence ?: 0))
+            state = state.copy(snapshot = null)
+            loadSnapshot(threadId)
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun cancelSubagent(subagent: NativeSubagent) = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        val turnId = subagent.currentTurnId ?: return@launch
+        try { client?.rpc("subagent.cancel", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+            .put("thread_id", threadId).put("subagent_id", subagent.id).put("turn_id", turnId)); loadSnapshot(threadId) }
+        catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun selectModel(option: NativeModelOption) = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        try { client?.rpc("thread.settings.update", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+            .put("thread_id", threadId).put("provider_id", option.providerId).put("model_id", option.modelId)); loadAuxiliaryState(threadId) }
+        catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    fun loadProjectContext() = viewModelScope.launch {
+        val threadId = state.selectedThreadId ?: return@launch
+        val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)
+        try {
+            var files = state.projectFiles; var entries = state.changes; var revision = state.changesRevision
+            if ("project.files" in state.capabilities) files = client!!.rpc("project.files", JSONObject(base.toString())).optJSONArray("entries").objects().mapNotNull { row ->
+                val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
+            if ("changes.snapshot" in state.capabilities) {
+                val result = client!!.rpc("changes.snapshot", JSONObject(base.toString()))
+                revision = result.optJSONObject("repository")?.optString("revision")
+                entries = result.optJSONArray("entries").objects().mapNotNull { row -> val path = row.optString("path"); if (path.isBlank()) null else NativeChange(path, row.optString("status", "changed"), row.optString("staging", "unstaged")) }
+            }
+            state = state.copy(projectFiles = files, changes = entries, changesRevision = revision)
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+    fun previewFile(path: String) = viewModelScope.launch { try {
+        val result = client!!.rpc("project.file", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId).put("path", path))
+        state = state.copy(previewTitle = path, previewContent = result.optString("content"))
+    } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
+    fun toggleContextPath(path: String) { state = state.copy(contextPaths = state.contextPaths.toMutableSet().apply { if (!add(path)) remove(path) }) }
+    fun loadDiff() = viewModelScope.launch { try {
+        val result = client!!.rpc("changes.diff", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId).put("revision", state.changesRevision))
+        state = state.copy(previewTitle = "Working tree diff", previewContent = result.optString("diff", "Diff is still loading."))
+    } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
+    fun mutateChange(change: NativeChange) = viewModelScope.launch { try {
+        val method = if (change.staging == "staged") "changes.unstage" else "changes.stage"
+        client!!.rpc(method, JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId)
+            .put("revision", state.changesRevision).put("paths", JSONArray(listOf(change.id))), UUID.randomUUID().toString())
+        loadProjectContext()
+    } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
 
     private suspend fun loadCommands(id: String) {
         if ("thread.commands" !in state.capabilities) return

@@ -142,7 +142,7 @@ def main() -> None:
             else:
                 raise AssertionError("gateway identity mismatch was accepted")
 
-        device_id = "1d517b0d-16ec-4f02-bb2a-a18cab841684"
+        device_id = "00000000-0000-0000-0000-000000000001"
         device_response = {
             "gateway_id": "gateway-fixture",
             "devices": [{"id": device_id, "name": "Safari on iPhone"}],
@@ -173,7 +173,8 @@ def main() -> None:
         settings_source = (manager.ROOT / "zed-source/crates/settings_ui/src/page_data.rs").read_text()
         for control in ("Gateway Control", "Gateway Status", "Start Gateway", "Restart Gateway",
                         "Stop Gateway", "Run Diagnostics", "Paired Devices", "Pair New Device",
-                        "View or Revoke Paired Devices"):
+                        "View or Revoke Paired Devices", "Tailscale HTTPS",
+                        "Enable Automatic Renewal", "Check for Renewal Now"):
             assert control in settings_source
 
         settings_path.write_text("{\n  // keep this comment\n}\n", encoding="utf-8")
