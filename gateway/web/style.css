@@ -255,13 +255,14 @@ body.no-session .messages { padding-bottom: 40px; }
 .jump-latest { position: absolute; right: 25px; bottom: 130px; z-index: 2; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line-strong); background: #202225; color: var(--ink); font-size: .77rem; box-shadow: 0 8px 25px #000b; }
 
 .composer-wrap {
-  padding: 8px max(24px, calc((100% - 920px) / 2)) 14px;
+  width: 100%;
+  padding: 8px 24px 14px;
   background: linear-gradient(180deg, transparent, #000 24%);
 }
 .composer-wrap > .delivery, .composer-wrap > .attachment-strip, .composer-wrap > .action-menu,
 .composer-wrap > .command-menu, .composer-wrap > .composer, .composer-wrap > .delivery-details {
-  width: 100%;
-  margin-inline: 0;
+  width: min(920px, 100%);
+  margin-inline: auto;
 }
 .activity { align-self: flex-start; width: min(100%, 1060px); margin: 10px 0 18px; border-block: 1px solid var(--line); background: transparent; }
 .activity-head { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 9px; min-height: 41px; padding: 7px 10px 7px 12px; color: var(--ink); font-size: .78rem; }
@@ -302,7 +303,7 @@ body.no-session .messages { padding-bottom: 40px; }
 .approval-origin { margin-bottom: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; }
 @keyframes activity-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .activity.busy .activity-indicator, .subagent.active .subagent-indicator, .composer-bottom .primary.stop-mode, .state-pill.working::before, .state-pill.working::after { animation: none; } }
-.composer-wrap > .delivery { max-height: 65px; overflow: auto; margin: 0 0 9px; padding: 7px 11px; }
+.composer-wrap > .delivery { max-height: 65px; overflow: auto; margin-block: 0 9px; padding: 7px 11px; }
 .composer { display: flex; align-items: flex-end; gap: 6px; min-height: 50px; padding: 4px 5px; border: 1px solid #303338; border-radius: 14px; background: #101214; box-shadow: 0 10px 32px #0009; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
 .composer:hover { border-color: #41454a; }
 .composer:focus-within { border-color: #62666c; background: #121416; box-shadow: 0 12px 36px #000b, 0 0 0 1px #62666c33; }
@@ -584,7 +585,7 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .composer { min-height: 50px; gap: 4px; padding: 4px; border-radius: 13px; }
   .composer textarea { min-height: 40px; height: 40px; max-height: 128px; padding: 8px 4px 7px; font-size: 1rem; line-height: 1.4; }
   .composer-bottom .primary, .command-trigger { width: 40px; height: 40px; min-height: 40px; }
-  .composer-wrap > .delivery { max-height: 54px; margin: 0 0 7px; padding: 6px 8px; font-size: .71rem; }
+  .composer-wrap > .delivery { max-height: 54px; margin-block: 0 7px; padding: 6px 8px; font-size: .71rem; }
   .action-menu { grid-template-columns: 1fr; }
   .action-menu button { border-right: 0; border-bottom: 1px solid var(--line); }
   .action-menu button:last-child { border-bottom: 0; }

@@ -915,7 +915,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.8"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.9"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1349,6 +1349,11 @@ def main():
                 collapsed = browser.execute_script("return {sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).visibility==='hidden', workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width, width:innerWidth}")
                 assert collapsed["sidebarHidden"] and collapsed["workspaceWidth"] >= collapsed["width"] - 20, collapsed
                 assert browser.find_element(By.ID, "show-sessions").get_attribute("aria-label") == "Show sessions"
+                for width in (1920, 1360, 1024):
+                    browser.set_window_size(width, 1080)
+                    centered = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); const workspace=document.querySelector('.workspace').getBoundingClientRect(); return {width:box.width,left:box.left-workspace.left,right:workspace.right-box.right,delta:Math.abs((box.left+box.width/2)-(workspace.left+workspace.width/2))}")
+                    assert centered["delta"] <= 1 and abs(centered["left"] - centered["right"]) <= 1, centered
+                browser.set_window_size(1920, 1080)
                 browser.save_screenshot("/tmp/zedlink-browser-fixture-wide-collapsed.png")
                 browser.find_element(By.ID, "show-sessions").click()
                 assert browser.find_element(By.ID, "show-sessions").get_attribute("aria-label") == "Hide sessions"
