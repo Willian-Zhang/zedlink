@@ -26,7 +26,8 @@ PATTERNS = {
         r"\b100\.(?!64\.(?:10\.20|0\.0)\b)(?:6[4-9]|[789][0-9]|1[01][0-9]|12[0-7])\.\d{1,3}\.\d{1,3}\b"
     ),
     "persisted gateway identity": re.compile(
-        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+        # Public GitHub attachment IDs are media references, not gateway identities.
+        r"(?<!https://github.com/user-attachments/assets/)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
         re.I,
     ),
 }

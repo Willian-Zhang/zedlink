@@ -1,6 +1,8 @@
 # ZedLink interface walkthrough
 
-[View or download the recording](zedlink-walkthrough.mp4).
+The main README uses a GitHub-hosted attachment for inline playback. The [repository MP4](zedlink-walkthrough.mp4) remains the reproducible source artifact.
+
+https://github.com/user-attachments/assets/eb540245-599c-4fe5-adcc-1499776d82c9
 
 A silent 32-second, captioned H.264 MP4 (1440 × 1000, 4 frames/second), captured from the production browser UI in a fresh Firefox profile with a disposable zedlink-demo project and loopback TLS gateway. Conversation and terminal output are synthetic demonstration data. The final Settings segment uses the actual patched-Zed Settings screenshot taken in a separate user-data profile and virtual display. It is a UI tour, not evidence of a live model or native mobile app round trip.
 
