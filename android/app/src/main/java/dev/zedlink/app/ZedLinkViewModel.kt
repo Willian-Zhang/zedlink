@@ -42,6 +42,8 @@ data class AppState(
     val projectFiles: List<NativeProjectFile> = emptyList(),
     val changes: List<NativeChange> = emptyList(),
     val changesRevision: String? = null,
+    val terminals: List<NativeTerminal> = emptyList(),
+    val terminalSnapshot: NativeTerminalSnapshot? = null,
     val previewTitle: String = "",
     val previewContent: String = "",
     val contextPaths: Set<String> = emptySet(),
@@ -568,6 +570,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)
         try {
             var files = state.projectFiles; var entries = state.changes; var revision = state.changesRevision
+            var terminals = state.terminals
             if ("project.files" in state.capabilities) files = client!!.rpc("project.files", JSONObject(base.toString())).optJSONArray("entries").objects().mapNotNull { row ->
                 val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
             if ("changes.snapshot" in state.capabilities) {
@@ -575,8 +578,42 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 revision = result.optJSONObject("repository")?.optString("revision")
                 entries = result.optJSONArray("entries").objects().mapNotNull { row -> val path = row.optString("path"); if (path.isBlank()) null else NativeChange(path, row.optString("status", "changed"), row.optString("staging", "unstaged")) }
             }
-            state = state.copy(projectFiles = files, changes = entries, changesRevision = revision)
+            if ("terminal.list" in state.capabilities) {
+                terminals = client!!.rpc("terminal.list", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch))
+                    .optJSONArray("terminals").objects().mapNotNull(::decodeTerminal)
+            }
+            state = state.copy(projectFiles = files, changes = entries, changesRevision = revision, terminals = terminals,
+                terminalSnapshot = state.terminalSnapshot?.takeIf { snapshot -> terminals.any { it.id == snapshot.terminal.id } })
         } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+    fun loadTerminal(terminal: NativeTerminal) = viewModelScope.launch { try {
+        val result = client!!.rpc("terminal.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("terminal_id", terminal.id))
+        val decoded = result.optJSONObject("terminal")?.let(::decodeTerminal) ?: throw GatewayException("Zed returned an invalid terminal snapshot.")
+        state = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated")))
+    } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
+    fun sendTerminalInput(input: String) = viewModelScope.launch {
+        val terminal = state.terminalSnapshot?.terminal ?: return@launch
+        if (input.isBlank() || "terminal.input" !in state.capabilities) return@launch
+        try {
+            client!!.rpc("terminal.input", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("terminal_id", terminal.id).put("input", "$input\n"), UUID.randomUUID().toString())
+            delay(120); loadTerminal(terminal)
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+    fun stopTerminalTask() = viewModelScope.launch {
+        val terminal = state.terminalSnapshot?.terminal ?: return@launch
+        if ("task.stop" !in state.capabilities) return@launch
+        try {
+            client!!.rpc("task.stop", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("terminal_id", terminal.id), UUID.randomUUID().toString())
+            delay(150); loadProjectContext(); loadTerminal(terminal)
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+    private fun decodeTerminal(row: JSONObject): NativeTerminal? {
+        val id = row.optString("terminal_id"); if (id.isBlank()) return null
+        val task = row.optJSONObject("task")
+        return NativeTerminal(id, row.optString("title", "Terminal"), row.optString("working_directory").takeIf { it.isNotBlank() },
+            task?.optString("label")?.takeIf { it.isNotBlank() }, task?.optJSONObject("status")?.optString("state")?.takeIf { it.isNotBlank() })
     }
     fun previewFile(path: String) = viewModelScope.launch { try {
         val result = client!!.rpc("project.file", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId).put("path", path))

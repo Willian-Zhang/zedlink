@@ -20,6 +20,8 @@ import Combine
     @Published private(set) var projectFiles: [NativeProjectFile] = []
     @Published private(set) var changes: [NativeChange] = []
     @Published private(set) var changesRevision: String?
+    @Published private(set) var terminals: [NativeTerminal] = []
+    @Published private(set) var terminalSnapshot: NativeTerminalSnapshot?
     @Published private(set) var previewTitle = ""
     @Published private(set) var previewContent = ""
     @Published var contextPaths: Set<String> = []
@@ -74,7 +76,7 @@ import Combine
         queuedMessages = []
         editReview = nil
         threadSettings = nil
-        projectFiles = []; changes = []; changesRevision = nil; previewTitle = ""; previewContent = ""; contextPaths = []
+        projectFiles = []; changes = []; changesRevision = nil; terminals = []; terminalSnapshot = nil; previewTitle = ""; previewContent = ""; contextPaths = []
         creatingThread = false
         pending = nil
         delivery = ""
@@ -533,7 +535,60 @@ import Combine
                     return NativeChange(id: path, status: row["status"] as? String ?? "changed", staging: row["staging"] as? String ?? "unstaged")
                 }
             }
+            if capabilities.contains("terminal.list") {
+                let result = try await client.rpc("terminal.list", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                terminals = (result["terminals"] as? [[String: Any]] ?? []).compactMap(Self.decodeTerminal)
+                if let selected = terminalSnapshot?.terminal.id, !terminals.contains(where: { $0.id == selected }) {
+                    terminalSnapshot = nil
+                }
+            }
         } catch { issue = error.localizedDescription }
+    }
+
+    func loadTerminal(_ terminal: NativeTerminal) async {
+        guard let client, capabilities.contains("terminal.snapshot") else { return }
+        do {
+            let result = try await client.rpc("terminal.snapshot", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
+            ])
+            guard let row = result["terminal"] as? [String: Any], let decoded = Self.decodeTerminal(row) else { throw GatewayFailure.invalidResponse }
+            terminalSnapshot = NativeTerminalSnapshot(terminal: decoded, content: result["content"] as? String ?? "", truncated: result["truncated"] as? Bool ?? false)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func sendTerminalInput(_ input: String) async {
+        guard let client, let terminal = terminalSnapshot?.terminal, !input.isEmpty,
+              capabilities.contains("terminal.input") else { return }
+        do {
+            _ = try await client.rpc("terminal.input", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
+                "input": input + "\n",
+            ], requestID: UUID().uuidString)
+            try? await Task.sleep(for: .milliseconds(120))
+            await loadTerminal(terminal)
+        } catch { issue = error.localizedDescription }
+    }
+
+    func stopTerminalTask() async {
+        guard let client, let terminal = terminalSnapshot?.terminal,
+              capabilities.contains("task.stop") else { return }
+        do {
+            _ = try await client.rpc("task.stop", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
+            ], requestID: UUID().uuidString)
+            try? await Task.sleep(for: .milliseconds(150))
+            await loadProjectContext()
+            await loadTerminal(terminal)
+        } catch { issue = error.localizedDescription }
+    }
+
+    private static func decodeTerminal(_ row: [String: Any]) -> NativeTerminal? {
+        guard let id = row["terminal_id"] as? String else { return nil }
+        let task = row["task"] as? [String: Any]
+        let status = task?["status"] as? [String: Any]
+        return NativeTerminal(id: id, title: row["title"] as? String ?? "Terminal",
+                              workingDirectory: row["working_directory"] as? String,
+                              taskLabel: task?["label"] as? String, taskState: status?["state"] as? String)
     }
 
     func previewFile(_ path: String) async {

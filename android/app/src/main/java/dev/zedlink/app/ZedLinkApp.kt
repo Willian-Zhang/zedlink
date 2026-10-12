@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
@@ -293,6 +294,13 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
 
 @Composable
 private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
+    var terminalInput by remember { mutableStateOf("") }
+    LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
+        while (true) {
+            delay(1500)
+            state.terminalSnapshot?.terminal?.let(model::loadTerminal)
+        }
+    }
     AlertDialog(onDismissRequest = close, title = { Text("Project context") },
         text = { Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
             if (state.previewContent.isNotEmpty()) {
@@ -310,6 +318,32 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 Text("${change.id}\n${change.status} · ${change.staging}", modifier = Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(onClick = { model.mutateChange(change) }) { Text(if (change.staging == "staged") "UNSTAGE" else "STAGE") }
             } }
+            Text("ZED TERMINALS", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+            if ("terminal.list" !in state.capabilities) {
+                Text("Enable View Project Terminals in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
+            } else if (state.terminals.isEmpty()) {
+                Text("No terminal is open for this project in Zed.", color = Muted, fontSize = 12.sp)
+            }
+            state.terminals.forEach { terminal -> TextButton(onClick = { model.loadTerminal(terminal) }, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(terminal.title, maxLines = 1)
+                    Text((terminal.taskState ?: terminal.workingDirectory ?: "terminal").uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+            } }
+            state.terminalSnapshot?.let { snapshot ->
+                SelectionContainer { Text(snapshot.content, fontFamily = FontFamily.Monospace, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) }
+                if ("terminal.input" in state.capabilities) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = terminalInput, onValueChange = { terminalInput = it }, label = { Text("Terminal input") },
+                            singleLine = true, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { if (terminalInput.isNotBlank()) { model.sendTerminalInput(terminalInput); terminalInput = "" } }))
+                        TextButton(onClick = { model.sendTerminalInput(terminalInput); terminalInput = "" }, enabled = terminalInput.isNotBlank()) { Text("SEND") }
+                    }
+                }
+                if (snapshot.terminal.taskState == "running" && "task.stop" in state.capabilities) {
+                    TextButton(onClick = model::stopTerminalTask) { Text("STOP TASK", color = MaterialTheme.colorScheme.error) }
+                }
+            }
         } }, confirmButton = { TextButton(onClick = close) { Text("DONE") } }, containerColor = Surface)
 }
 

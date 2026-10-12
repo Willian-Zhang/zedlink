@@ -41,6 +41,7 @@ Zed keeps the configured model, provider credentials, tools, MCP servers, permis
 | Session management | Rename an exposed session or stop remote exposure while the native desktop thread remains open |
 | Live activity | Indexed long-history paging plus real-time responses, inline thinking, tool calls, terminal output, failures, retries, approvals, and parallel agents |
 | Project context | Browse and search files, attach context, review syntax-highlighted code and diffs |
+| Zed terminals and tasks | Opt-in live view and input for terminals already open in the scoped project, plus stop controls for running Zed tasks |
 | Private access | Device pairing over Tailscale, routed VPNs, or trusted HTTPS profiles |
 | Clients | Responsive browser/PWA, SwiftUI source, and Jetpack Compose source |
 

@@ -515,6 +515,7 @@ struct ConversationView: View {
 private struct NativeContextSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
+    @State private var terminalInput = ""
     var body: some View {
         NavigationStack {
             List {
@@ -538,10 +539,56 @@ private struct NativeContextSheet: View {
                         }
                     }
                 }
+                Section("Zed terminals") {
+                    if !session.capabilities.contains("terminal.list") {
+                        Text("Enable View Project Terminals in desktop ZedLink settings and restart patched Zed.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if session.terminals.isEmpty {
+                        Text("No terminal is open for this project in Zed.").foregroundStyle(.secondary)
+                    }
+                    ForEach(session.terminals) { terminal in
+                        Button {
+                            Task { await session.loadTerminal(terminal) }
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(terminal.title)
+                                Text(terminal.taskState?.uppercased() ?? terminal.workingDirectory ?? "Terminal")
+                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if let snapshot = session.terminalSnapshot {
+                        Text(snapshot.content).font(.caption.monospaced()).textSelection(.enabled)
+                        if session.capabilities.contains("terminal.input") {
+                            HStack {
+                                TextField("Type into this Zed terminal", text: $terminalInput)
+                                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                    .onSubmit { sendTerminalInput() }
+                                Button("Send") { sendTerminalInput() }.disabled(terminalInput.isEmpty)
+                            }
+                        }
+                        if snapshot.terminal.taskState == "running" && session.capabilities.contains("task.stop") {
+                            Button("Stop task", role: .destructive) { Task { await session.stopTerminalTask() } }
+                        }
+                    }
+                }
             }
             .navigationTitle("Project context").toolbar { Button("Done") { dismiss() } }
-            .task { await session.loadProjectContext() }
+            .task {
+                await session.loadProjectContext()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal) }
+                }
+            }
         }
+    }
+
+    private func sendTerminalInput() {
+        let value = terminalInput
+        guard !value.isEmpty else { return }
+        terminalInput = ""
+        Task { await session.sendTerminalInput(value) }
     }
 }
 

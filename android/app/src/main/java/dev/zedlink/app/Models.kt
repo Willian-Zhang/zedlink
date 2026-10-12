@@ -87,6 +87,15 @@ data class ThreadSnapshot(
 
 enum class EntryKind { USER, ASSISTANT, TOOL, PLAN, APPROVAL, CONTEXT, OTHER }
 
+data class NativeTerminal(
+    val id: String,
+    val title: String,
+    val workingDirectory: String?,
+    val taskLabel: String?,
+    val taskState: String?,
+)
+data class NativeTerminalSnapshot(val terminal: NativeTerminal, val content: String, val truncated: Boolean)
+
 data class NativeEntry(
     val kind: EntryKind,
     val label: String,

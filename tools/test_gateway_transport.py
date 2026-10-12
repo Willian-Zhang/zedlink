@@ -99,6 +99,8 @@ class ProbeFixture:
              "entries_truncated": False, "pending_approvals": []},
         ]
         self.change_operations = {}
+        self.terminal_inputs = {}
+        self.task_stops = {}
         self.drop_send_before_accept_once = False
         self.stopped = False
         self.listener = socket.socket(socket.AF_UNIX)
@@ -265,6 +267,43 @@ class ProbeFixture:
                 elif method == "thread.edit_review.respond":
                     self.edit_review_responses.append(params["action"]); self.edit_review = None
                     result = {"thread_id": params["thread_id"], "outcome": "requested", "action": params["action"]}
+                elif method == "terminal.list":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "terminals": [
+                        {"terminal_id": "fixture-terminal", "title": "ZedLink fixture task",
+                         "working_directory": "/tmp/zedlink-fixture", "pid": "4242",
+                         "task": {"id": "fixture-task", "label": "Fixture task",
+                                  "status": {"state": "running"}}}
+                    ]}
+                elif method == "terminal.snapshot":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                              "terminal": {"terminal_id": "fixture-terminal", "title": "ZedLink fixture task",
+                                           "working_directory": "/tmp/zedlink-fixture", "pid": "4242",
+                                           "task": {"id": "fixture-task", "label": "Fixture task",
+                                                    "status": {"state": "running"}}},
+                              "content": "$ printf ready\\nready\\n", "truncated": False,
+                              "total_lines": 2, "viewport_lines": 24}
+                elif method == "terminal.input":
+                    payload = json.dumps(params, sort_keys=True)
+                    duplicate = request["request_id"] in self.terminal_inputs
+                    if duplicate and self.terminal_inputs[request["request_id"]] != payload:
+                        error = {"code": "REQUEST_ID_CONFLICT"}
+                    else:
+                        self.terminal_inputs[request["request_id"]] = payload
+                        result = {"outcome": "accepted", "duplicate": duplicate}
+                elif method == "task.list":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "tasks": [
+                        {"terminal_id": "fixture-terminal", "task_id": "fixture-task",
+                         "label": "Fixture task", "command_label": "printf ready",
+                         "status": {"state": "running"}}
+                    ]}
+                elif method == "task.stop":
+                    payload = json.dumps(params, sort_keys=True)
+                    duplicate = request["request_id"] in self.task_stops
+                    if duplicate and self.task_stops[request["request_id"]] != payload:
+                        error = {"code": "REQUEST_ID_CONFLICT"}
+                    else:
+                        self.task_stops[request["request_id"]] = payload
+                        result = {"outcome": "requested", "duplicate": duplicate}
                 elif method == "project.files":
                     result = {"entries": [
                         {"path": "src", "kind": "directory", "size": 0},
@@ -405,6 +444,7 @@ class ProbeFixture:
                                                "thread.rewind",
                                                "thread.approvals", "approval.respond", "project.files",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
+                                               "terminal.list", "terminal.snapshot", "terminal.input", "task.list", "task.stop",
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
@@ -630,6 +670,32 @@ def main():
             assert mismatch.returncode == 2 and "Gateway identity changed" in mismatch.stderr
             status, listing = http(base, context, "/v1/rpc", "POST", request, token1)
             assert status == 200 and listing["result"]["threads"][0]["thread_id"] == "fixture-thread"
+            terminal_list = {"version": 1, "request_id": "terminal-list", "method": "terminal.list",
+                             "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}}
+            status, terminal_listing = http(base, context, "/v1/rpc", "POST", terminal_list, token1)
+            assert status == 200 and terminal_listing["result"]["terminals"][0]["terminal_id"] == "fixture-terminal"
+            terminal_snapshot = {"version": 1, "request_id": "terminal-snapshot", "method": "terminal.snapshot",
+                                 "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                            "terminal_id": "fixture-terminal"}}
+            status, snapshot_result = http(base, context, "/v1/rpc", "POST", terminal_snapshot, token1)
+            assert status == 200 and "ready" in snapshot_result["result"]["content"]
+            terminal_input = {"version": 1, "request_id": "terminal-input", "method": "terminal.input",
+                              "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                         "terminal_id": "fixture-terminal", "input": "status\n"}}
+            for duplicate in (False, True):
+                status, input_result = http(base, context, "/v1/rpc", "POST", terminal_input, token1)
+                assert status == 200 and input_result["result"]["duplicate"] is duplicate
+            assert len(probe.terminal_inputs) == 1
+            task_list = {"version": 1, "request_id": "task-list", "method": "task.list", "params": {}}
+            status, task_result = http(base, context, "/v1/rpc", "POST", task_list, token1)
+            assert status == 200 and task_result["result"]["tasks"][0]["status"]["state"] == "running"
+            task_stop = {"version": 1, "request_id": "task-stop", "method": "task.stop",
+                         "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                    "terminal_id": "fixture-terminal"}}
+            for duplicate in (False, True):
+                status, stop_result = http(base, context, "/v1/rpc", "POST", task_stop, token1)
+                assert status == 200 and stop_result["result"]["duplicate"] is duplicate
+            assert len(probe.task_stops) == 1
             denied = dict(request, method="arbitrary.shell")
             status, _ = http(base, context, "/v1/rpc", "POST", denied, token1)
             assert status == 403

@@ -145,6 +145,18 @@ struct NativeSubagent: Identifiable, Equatable {
 }
 struct NativeProjectFile: Identifiable, Equatable { let id: String; let kind: String; let size: Int? }
 struct NativeChange: Identifiable, Equatable { let id: String; let status: String; let staging: String }
+struct NativeTerminal: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let workingDirectory: String?
+    let taskLabel: String?
+    let taskState: String?
+}
+struct NativeTerminalSnapshot: Equatable {
+    let terminal: NativeTerminal
+    let content: String
+    let truncated: Bool
+}
 
 struct ThreadSnapshot {
     let threadID: String

@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.09.5";
+const UI_BUILD = "2026.10.12.1";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -60,6 +60,10 @@ const state = {
   projectSearchMatches: [],
   projectSearchTruncated: false,
   changes: null,
+  terminals: [],
+  selectedTerminalId: null,
+  terminalSnapshot: null,
+  lastTerminalSnapshotAt: 0,
   contextPaths: [],
   uploads: [],
   previewPath: null,
@@ -1446,6 +1450,10 @@ function baseThreadParams() {
   return { instance_id: state.instanceId, epoch: state.epoch, thread_id: state.threadId };
 }
 
+function baseInstanceParams() {
+  return { instance_id: state.instanceId, epoch: state.epoch };
+}
+
 function renderAttachmentStrip() {
   const strip = $("attachment-strip");
   strip.replaceChildren();
@@ -1876,6 +1884,114 @@ async function loadGitDiff() {
   }
 }
 
+async function loadTerminals() {
+  if (!state.capabilities.includes("terminal.list")) {
+    state.terminals = [];
+    state.selectedTerminalId = null;
+    state.terminalSnapshot = null;
+    renderTerminals();
+    return;
+  }
+  const result = await rpc("terminal.list", baseInstanceParams());
+  state.terminals = Array.isArray(result.terminals) ? result.terminals : [];
+  if (!state.terminals.some((terminal) => terminal.terminal_id === state.selectedTerminalId)) {
+    state.selectedTerminalId = state.terminals[0]?.terminal_id || null;
+  }
+  renderTerminals();
+  if (state.selectedTerminalId) await loadTerminalSnapshot();
+}
+
+async function loadTerminalSnapshot() {
+  if (!state.selectedTerminalId || !state.capabilities.includes("terminal.snapshot")) return;
+  const terminalId = state.selectedTerminalId;
+  const result = await rpc("terminal.snapshot", { ...baseInstanceParams(), terminal_id: terminalId });
+  if (state.selectedTerminalId !== terminalId) return;
+  state.terminalSnapshot = result;
+  state.lastTerminalSnapshotAt = Date.now();
+  renderTerminalSnapshot();
+}
+
+function renderTerminals() {
+  const list = $("terminal-list");
+  list.replaceChildren();
+  const supported = state.capabilities.includes("terminal.list");
+  $("terminal-help").textContent = supported
+    ? "These are the terminals already open in this Zed project. Input and task controls follow the permissions configured in desktop Zed."
+    : "Enable View Project Terminals in desktop ZedLink settings, then restart patched Zed.";
+  for (const terminal of state.terminals) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "context-row";
+    const label = document.createElement("span");
+    label.textContent = terminal.title || "Terminal";
+    const status = document.createElement("small");
+    status.textContent = terminal.task?.status?.state?.toUpperCase() || "TERMINAL";
+    row.append(label, status);
+    row.addEventListener("click", async () => {
+      state.selectedTerminalId = terminal.terminal_id;
+      renderTerminals();
+      await loadTerminalSnapshot().catch((error) => notice(error.message));
+    });
+    if (terminal.terminal_id === state.selectedTerminalId) row.setAttribute("aria-current", "true");
+    list.append(row);
+  }
+  if (!state.terminals.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = supported ? "No terminal is open for this project in Zed." : "Terminal access is unavailable.";
+    list.append(empty);
+  }
+  $("terminal-preview").classList.toggle("hidden", !state.selectedTerminalId);
+}
+
+function renderTerminalSnapshot() {
+  const snapshot = state.terminalSnapshot;
+  if (!snapshot || snapshot.terminal?.terminal_id !== state.selectedTerminalId) return;
+  $("terminal-title").textContent = snapshot.terminal.title || "Terminal";
+  $("terminal-output").textContent = snapshot.content || "";
+  $("terminal-output").scrollTop = $("terminal-output").scrollHeight;
+  $("terminal-input").disabled = !state.capabilities.includes("terminal.input");
+  $("terminal-input").placeholder = state.capabilities.includes("terminal.input")
+    ? "Type into this Zed terminal"
+    : "Terminal input is disabled in Zed settings";
+  let stop = $("terminal-stop");
+  if (!stop) {
+    stop = document.createElement("button");
+    stop.id = "terminal-stop";
+    stop.type = "button";
+    stop.className = "danger";
+    $("terminal-preview").querySelector("header").append(stop);
+    stop.addEventListener("click", stopSelectedTask);
+  }
+  const running = snapshot.terminal.task?.status?.state === "running";
+  stop.textContent = "Stop task";
+  stop.classList.toggle("hidden", !running || !state.capabilities.includes("task.stop"));
+}
+
+async function sendTerminalInput(event) {
+  event.preventDefault();
+  const input = $("terminal-input").value;
+  if (!input || !state.selectedTerminalId || !state.capabilities.includes("terminal.input")) return;
+  const requestId = crypto.randomUUID();
+  $("terminal-input").disabled = true;
+  try {
+    await rpc("terminal.input", { ...baseInstanceParams(), terminal_id: state.selectedTerminalId, input: `${input}\n` }, requestId);
+    $("terminal-input").value = "";
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await loadTerminalSnapshot();
+  } catch (error) { notice(error.message); }
+  finally { $("terminal-input").disabled = false; }
+}
+
+async function stopSelectedTask() {
+  if (!state.selectedTerminalId || !state.capabilities.includes("task.stop")) return;
+  try {
+    await rpc("task.stop", { ...baseInstanceParams(), terminal_id: state.selectedTerminalId }, crypto.randomUUID());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await loadTerminals();
+  } catch (error) { notice(error.message); }
+}
+
 function renderActivityIndex() {
   const list = $("activity-index");
   list.replaceChildren();
@@ -1907,12 +2023,13 @@ function renderActivityIndex() {
 }
 
 function switchContextTab(tab) {
-  for (const name of ["files", "changes", "activity"]) {
+  for (const name of ["files", "changes", "terminal", "activity"]) {
     $(`context-${name}-tab`).setAttribute("aria-selected", String(name === tab));
     $(name === "activity" ? "context-activity-view" : `context-${name}`).classList.toggle("hidden", name !== tab);
   }
   if (tab === "files") loadProjectFiles().catch((error) => notice(error.message));
   if (tab === "changes") loadChanges().catch((error) => notice(error.message));
+  if (tab === "terminal") loadTerminals().catch((error) => notice(error.message));
   if (tab === "activity") renderActivityIndex();
 }
 
@@ -3171,6 +3288,10 @@ async function poll() {
       }
     }
     if (!state.threadId || Date.now() - state.lastThreadsAt > 2000) await loadThreads();
+    if (state.selectedTerminalId && $("context-terminal-tab").getAttribute("aria-selected") === "true"
+        && !$("context-panel").classList.contains("hidden") && Date.now() - state.lastTerminalSnapshotAt > 1500) {
+      await loadTerminalSnapshot();
+    }
     if (state.pending) await reconcilePending();
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Zed connected · live updates" : "Zed connected · polling", "online");
   } catch (error) {
@@ -3410,7 +3531,10 @@ $("back-sessions").addEventListener("click", () => showMobileView("sessions"));
 $("close-context").addEventListener("click", closeContextPanel);
 $("context-files-tab").addEventListener("click", () => switchContextTab("files"));
 $("context-changes-tab").addEventListener("click", () => switchContextTab("changes"));
+$("context-terminal-tab").addEventListener("click", () => switchContextTab("terminal"));
 $("context-activity-tab").addEventListener("click", () => switchContextTab("activity"));
+$("refresh-terminal").addEventListener("click", () => loadTerminalSnapshot().catch((error) => notice(error.message)));
+$("terminal-input-form").addEventListener("submit", sendTerminalInput);
 $("file-search").addEventListener("input", renderProjectFiles);
 $("project-search-form").addEventListener("submit", searchProject);
 $("project-search").addEventListener("input", () => {
