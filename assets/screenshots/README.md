@@ -31,4 +31,4 @@ Requires the locally built patched Zed binary, Xvfb, xdotool, and ImageMagick `i
 
 `code-review.png` is an older synthetic UI capture retained for documentation compatibility; the current README uses `file-browser.png` instead.
 
-The [captioned interface walkthrough](../recordings/README.md) uses this same isolated fixture and Settings capture; it contains no host desktop or OS branding.
+The [interactive interface walkthrough](../recordings/README.md) uses this same isolated browser fixture; it contains no host desktop or OS branding.

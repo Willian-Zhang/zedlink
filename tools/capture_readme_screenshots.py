@@ -12,6 +12,7 @@ import ssl
 import subprocess
 import tempfile
 import time
+import threading
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -56,8 +57,31 @@ fn main() {
             '- **Recover safely:** an uncertain request is reconciled before retrying.\n\n'
             'You can also open **Workspace** to browse files, review changes, or use an enabled Zed terminal.\n\n'
         ]
+        terminal_extra = []
+        def stream_reply():
+            probe.active_turn_id = 55
+            text = '## Assistant\n\n<thinking>\nChecking the exposed thread and reconnection state.\n</thinking>\n\n'
+            probe.entries[-1] = text
+            probe.sequence += 1
+            time.sleep(2)
+            reply = 'Your desktop agent keeps running when the phone disconnects. ZedLink reconnects to the same exposed conversation and reconciles outstanding requests before retrying. The model, tools, and permissions remain in Zed.'
+            for word in reply.split():
+                text += word + ' '
+                probe.entries[-1] = text
+                probe.sequence += 1
+                time.sleep(.15)
+            probe.active_turn_id = None
+            probe.sequence += 1
+
         def presentation(method, params, result):
-            if method == 'thread.list':
+            if record and method == 'thread.send':
+                threading.Thread(target=stream_reply, daemon=True).start()
+                result['outcome'] = 'accepted'
+            elif record and method == 'terminal.input':
+                terminal_extra.extend([{'text': '\ncargo test\n', 'foreground': '#ededed'},
+                    {'text': 'running 3 tests\n', 'foreground': '#ededed'},
+                    {'text': 'test reconnect ... ok\ntest pairing ... ok\ntest permissions ... ok\n\n3 passed; 0 failed\n', 'foreground': '#6ac79e'}])
+            elif method == 'thread.list':
                 for thread in result['threads']:
                     thread['title'] = 'Reconnect review · demo'
             elif method == 'thread.snapshot':
@@ -81,6 +105,7 @@ fn main() {
                     {'text': 'Reconnect attempt 0: 1s\nReconnect attempt 1: 2s\nReconnect attempt 2: 4s\n\n', 'foreground': '#ededed'},
                     {'text': 'demo@workstation:~/zedlink-demo$ ', 'foreground': '#6ac79e'},
                 ]
+                result['styled_runs'].extend(terminal_extra)
                 result['content'] = ''.join(run['text'] for run in result['styled_runs'])
             elif method == 'project.file' and params.get('path') == 'src/main.rs':
                 result['content'] = (project / 'src/main.rs').read_text()
@@ -113,9 +138,11 @@ fn main() {
             else:
                 raise RuntimeError('Disposable gateway failed to start')
             options = Options()
-            options.add_argument('-headless')
+            options.add_argument('-kiosk' if record else '-headless')
             options.accept_insecure_certs = True  # Disposable localhost certificate only.
             options.set_preference('network.proxy.type', 0)
+            # Grant storage only in this disposable browser profile, before recording.
+            options.set_preference('permissions.default.persistent-storage', 1)
             browser = webdriver.Firefox(service=Service('/usr/bin/geckodriver'), options=options)
             wait = WebDriverWait(browser, 10)
             browser.set_window_size(1440, 900)
@@ -126,44 +153,57 @@ fn main() {
             wait.until(lambda d: 'Your agent keeps working' in d.find_element(By.ID, 'transcript-entries').text)
             wait.until(lambda d: d.find_element(By.ID, 'show-actions').is_enabled())
             wait.until(lambda d: 'live updates' in d.find_element(By.ID, 'connection').text)
-            browser.save_screenshot(str(output / 'desktop-conversation.png'))
+            if not record:
+                browser.save_screenshot(str(output / 'desktop-conversation.png'))
             if record:
                 from demo_video import DemoVideo
-                video = DemoVideo(ROOT / 'assets/recordings')
-                video.scene(browser, 'Continue the same exposed conversation')
-                browser.find_element(By.CSS_SELECTOR, '.thinking-block > summary').click()
-                video.scene(browser, 'Expand thinking without leaving the conversation')
-                browser.find_element(By.CSS_SELECTOR, '.thinking-block > summary').click()
+                video = DemoVideo(ROOT / 'assets/recordings', browser)
+                video.scene(2)
+                video.click(browser, browser.find_element(By.CSS_SELECTOR, '.thinking-block > summary'))
+                video.scene(2)
+                video.click(browser, browser.find_element(By.CSS_SELECTOR, '.thinking-block > summary'))
+                video.click(browser, browser.find_element(By.ID, 'prompt'))
+                video.type(browser.find_element(By.ID, 'prompt'), 'How does this session recover when my phone disconnects?')
+                video.click(browser, browser.find_element(By.ID, 'send'))
+                wait.until(lambda d: probe.active_turn_id is None and 'remain in Zed' in d.find_element(By.ID, 'transcript-entries').text)
+                video.scene(2)
+                video.click(browser, browser.find_element(By.ID, 'show-context'))
+                wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src"]'))
+                video.click(browser, browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src"]'))
+                wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]'))
+                video.click(browser, browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]'))
+                video.scene(2)
+                video.click(browser, browser.find_element(By.ID, 'context-changes-tab'))
+                video.click(browser, browser.find_element(By.ID, 'load-diff'))
+                video.scene(2)
+                video.click(browser, browser.find_element(By.ID, 'context-terminal-tab'))
+                wait.until(lambda d: d.find_element(By.ID, 'terminal-output').text)
+                video.click(browser, browser.find_element(By.ID, 'terminal-input'))
+                video.type(browser.find_element(By.ID, 'terminal-input'), 'cargo test')
+                video.click(browser, browser.find_element(By.CSS_SELECTOR, '#terminal-input-form button[type="submit"]'))
+                wait.until(lambda d: '3 passed' in d.find_element(By.ID, 'terminal-output').text)
+                video.scene(3)
+                video.click(browser, browser.find_element(By.ID, 'close-context'))
+                video.scene(2)
+                return
             browser.set_window_size(393, 852)
             time.sleep(.3)
             browser.save_screenshot(str(output / 'mobile-conversation.png'))
-            if video:
-                video.scene(browser, 'A compact conversation on your phone')
             browser.execute_script("openContextPanel('terminal')")
             wait.until(lambda d: d.find_element(By.ID, 'terminal-output').text)
             browser.save_screenshot(str(output / 'mobile-terminal.png'))
-            if video:
-                video.scene(browser, 'Terminal output and mobile keyboard controls', 5)
-                browser.find_element(By.ID, 'terminal-input').send_keys('cargo test')
-                video.scene(browser, 'Review a command before sending it', 3)
-                browser.find_element(By.ID, 'terminal-input').clear()
             browser.set_window_size(1440, 900)
             browser.execute_script("openContextPanel('files'); navigateProjectDirectory('src')")
             wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]'))
             browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]').click()
             wait.until(lambda d: 'retry_delay' in d.find_element(By.ID, 'file-preview-content').text)
             browser.save_screenshot(str(output / 'file-browser.png'))
-            if video:
-                video.scene(browser, 'Browse source files and read highlighted code', 5)
             browser.find_element(By.ID, 'close-context').click()
             probe.no_threads = True
             probe.sequence += 1
             browser.execute_script('loadThreads()')
             wait.until(lambda d: d.find_element(By.ID, 'empty-state').is_displayed())
             browser.save_screenshot(str(output / 'no-sessions.png'))
-            if video:
-                video.scene(browser, 'A clear starting point when no sessions are exposed', 3)
-                video.still(output / 'zed-settings.png', 'Configure providers inside patched Zed · isolated profile')
             print('Captured current browser UI with synthetic data; not native integration evidence.')
         finally:
             if video:
