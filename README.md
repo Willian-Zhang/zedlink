@@ -13,7 +13,9 @@ The agent, configured model, tools, and project stay in desktop Zed.
 
 </div>
 
-![ZedLink desktop browser displaying a demo agent conversation](assets/screenshots/desktop-conversation.png)
+[![ZedLink interface walkthrough — click to view the recording](assets/recordings/walkthrough-poster.png)](assets/recordings/zedlink-walkthrough.mp4)
+
+**[View or download the 32-second walkthrough (MP4)](assets/recordings/zedlink-walkthrough.mp4)** — conversations, mobile terminal controls, file browsing, and native Settings. Captured with isolated demo data; no personal workspace footage.
 
 > [!IMPORTANT]
 > ZedLink is development software and currently requires the [maintained Zed fork](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control). It does not work as a Marketplace extension in stock Zed. The browser/PWA and Linux host are the most complete path; native mobile distribution and broader device validation are still in progress.

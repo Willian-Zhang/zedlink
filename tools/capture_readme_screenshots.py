@@ -21,7 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from test_gateway_transport import BINARY, ROOT, ProbeFixture, admin, http
 
 
-def main():
+def main(record=False):
     output = ROOT / 'assets/screenshots'
     with tempfile.TemporaryDirectory(prefix='zedlink-readme-demo.') as temporary:
         root = Path(temporary)
@@ -101,6 +101,7 @@ fn main() {
                                    str(cert), str(key), str(probe.path), str(state)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         browser = None
+        video = None
         try:
             context = ssl.create_default_context(cafile=str(cert))
             for _ in range(100):
@@ -126,26 +127,47 @@ fn main() {
             wait.until(lambda d: d.find_element(By.ID, 'show-actions').is_enabled())
             wait.until(lambda d: 'live updates' in d.find_element(By.ID, 'connection').text)
             browser.save_screenshot(str(output / 'desktop-conversation.png'))
+            if record:
+                from demo_video import DemoVideo
+                video = DemoVideo(ROOT / 'assets/recordings')
+                video.scene(browser, 'Continue the same exposed conversation')
+                browser.find_element(By.CSS_SELECTOR, '.thinking-block > summary').click()
+                video.scene(browser, 'Expand thinking without leaving the conversation')
+                browser.find_element(By.CSS_SELECTOR, '.thinking-block > summary').click()
             browser.set_window_size(393, 852)
             time.sleep(.3)
             browser.save_screenshot(str(output / 'mobile-conversation.png'))
+            if video:
+                video.scene(browser, 'A compact conversation on your phone')
             browser.execute_script("openContextPanel('terminal')")
             wait.until(lambda d: d.find_element(By.ID, 'terminal-output').text)
             browser.save_screenshot(str(output / 'mobile-terminal.png'))
+            if video:
+                video.scene(browser, 'Terminal output and mobile keyboard controls', 5)
+                browser.find_element(By.ID, 'terminal-input').send_keys('cargo test')
+                video.scene(browser, 'Review a command before sending it', 3)
+                browser.find_element(By.ID, 'terminal-input').clear()
             browser.set_window_size(1440, 900)
             browser.execute_script("openContextPanel('files'); navigateProjectDirectory('src')")
             wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]'))
             browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]').click()
             wait.until(lambda d: 'retry_delay' in d.find_element(By.ID, 'file-preview-content').text)
             browser.save_screenshot(str(output / 'file-browser.png'))
+            if video:
+                video.scene(browser, 'Browse source files and read highlighted code', 5)
             browser.find_element(By.ID, 'close-context').click()
             probe.no_threads = True
             probe.sequence += 1
             browser.execute_script('loadThreads()')
             wait.until(lambda d: d.find_element(By.ID, 'empty-state').is_displayed())
             browser.save_screenshot(str(output / 'no-sessions.png'))
+            if video:
+                video.scene(browser, 'A clear starting point when no sessions are exposed', 3)
+                video.still(output / 'zed-settings.png', 'Configure providers inside patched Zed · isolated profile')
             print('Captured current browser UI with synthetic data; not native integration evidence.')
         finally:
+            if video:
+                print(f'Encoded {video.close():.0f}s isolated UI walkthrough.')
             if browser:
                 browser.quit()
             server.terminate()
@@ -223,4 +245,4 @@ if __name__ == '__main__':
     if '--native-settings' in sys.argv:
         capture_native_settings()
     else:
-        main()
+        main(record='--record' in sys.argv)

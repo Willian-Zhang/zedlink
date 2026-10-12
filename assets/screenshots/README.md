@@ -30,3 +30,5 @@ env -u WAYLAND_DISPLAY ZEDLINK_SCREENSHOT_ISOLATED_DISPLAY=1 \
 Requires the locally built patched Zed binary, Xvfb, xdotool, and ImageMagick `import`. All temporary profiles and projects are removed when capture completes. Screenshots are inspected before use.
 
 `code-review.png` is an older synthetic UI capture retained for documentation compatibility; the current README uses `file-browser.png` instead.
+
+The [captioned interface walkthrough](../recordings/README.md) uses this same isolated fixture and Settings capture; it contains no host desktop or OS branding.
