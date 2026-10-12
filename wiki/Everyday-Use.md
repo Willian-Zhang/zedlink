@@ -18,7 +18,7 @@ Use **Settings → ZedLink** for routine work:
 
 | Settings page | Purpose |
 | --- | --- |
-| **Gateway Control** | Shows status; starts, restarts, or stops the gateway; and runs setup diagnostics |
+| **Gateway Control** | Shows live gateway, bridge, route, device, project, and patched-Zed state inline; starts, restarts, or stops the gateway; and runs setup diagnostics |
 | **Paired Devices** | Opens pairing, lists authorized devices, and revokes one selected device after confirmation |
 | **Connection Providers** | Selects, detects, validates, saves, activates, and checks private connection profiles |
 | **Remote Permissions** | Controls session creation, attachments, project browsing, Git changes, approvals, and native Agent settings |

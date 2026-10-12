@@ -1600,13 +1600,74 @@ def repair(data: dict) -> None:
     print("Restart patched Zed once if it was open so the updated bridge settings take effect.")
 
 
+def gateway_status(data: dict) -> dict:
+    state = Path(data["state_dir"])
+    targets = []
+    for target in data["targets"]:
+        online = False
+        try:
+            subprocess.run(
+                [sys.executable, str(ROOT / "tools/zedlink_probe_client.py"),
+                 "--socket", target["probe"], "info"],
+                check=True, timeout=2, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+            online = True
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        targets.append({
+            "label": target["label"],
+            "probe": target["probe"],
+            "online": online,
+        })
+
+    paired_devices = 0
+    gateway_online = False
+    try:
+        devices = admin(state, "devices")["devices"]
+        paired_devices = len(devices)
+        gateway_online = True
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+        pass
+
+    routes = []
+    for route in data["routes"]:
+        routes.append({
+            "id": route["id"],
+            "label": route["label"],
+            "provider": route.get("provider", "custom"),
+            "url": route["url"],
+            "bind": route["bind"],
+            "enabled": route["enabled"],
+            "primary": route["id"] == data["primary_route_id"],
+        })
+
+    return {
+        "configured": True,
+        "project_root": data["project_root"],
+        "state_dir": data["state_dir"],
+        "targets": targets,
+        "routes": routes,
+        "gateway": {
+            "online": gateway_online,
+            "built": GATEWAY.is_file(),
+            "paired_devices": paired_devices,
+        },
+        "patched_zed": {
+            "built": ZED.is_file(),
+            "executable": str(ZED),
+            "launcher_installed": desktop_launcher_path().is_file(),
+            "command_installed": cli_launcher_path().is_file(),
+        },
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("quick-setup", "configure", "tailscale-setup",
                                            "install-renewal", "renewal-status",
                                            "renew-certificates", "remove-renewal",
                                            "manage-routes", "manage-targets",
-                                           "check-routes", "status", "start-zed",
+                                           "check-routes", "status", "status-json", "start-zed",
                                            "start-gateway", "restart-gateway", "stop-gateway",
                                            "start-gateway-detached", "restart-gateway-detached",
                                            "install-launcher", "remove-launcher",
@@ -1631,6 +1692,16 @@ def main() -> None:
             quick_setup(args.project_root)
             return
         if not config_path().exists():
+            if args.action == "status-json":
+                print(json.dumps({
+                    "configured": False,
+                    "gateway": {"online": False, "built": GATEWAY.is_file(), "paired_devices": 0},
+                    "patched_zed": {"built": ZED.is_file(), "executable": str(ZED),
+                                    "launcher_installed": desktop_launcher_path().is_file(),
+                                    "command_installed": cli_launcher_path().is_file()},
+                    "project_root": "", "state_dir": "", "targets": [], "routes": [],
+                }))
+                return
             if args.action == "status":
                 print("Setup: not configured")
                 print("Next step: open Zed's task picker and run 'ZedLink: Configure'.")
@@ -1709,6 +1780,8 @@ def main() -> None:
                 print(f"Gateway admin: online; paired devices: {len(result['devices'])}")
             except (OSError, subprocess.CalledProcessError, ValueError):
                 print("Gateway admin: offline")
+        elif args.action == "status-json":
+            print(json.dumps(gateway_status(data)))
         elif args.action == "install-launcher":
             launcher = install_desktop_launcher()
             print(f"Installed application launcher: {launcher}")

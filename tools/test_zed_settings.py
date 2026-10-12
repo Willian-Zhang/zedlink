@@ -166,6 +166,19 @@ def main() -> None:
             assert manager.paired_devices(Path(data["state_dir"])) == device_response
         request.assert_called_once_with(Path(data["state_dir"]), "devices")
 
+        validated = manager.validate(data)
+        probe_response = SimpleNamespace(returncode=0)
+        with patch.object(manager, "admin", return_value=device_response), \
+             patch.object(manager.subprocess, "run", return_value=probe_response):
+            status = manager.gateway_status(validated)
+        assert status["configured"] is True
+        assert status["project_root"] == data["project_root"]
+        assert status["targets"][0]["online"] is True
+        assert status["routes"][0]["primary"] is True
+        assert status["gateway"]["online"] is True
+        assert status["gateway"]["paired_devices"] == 1
+        json.dumps(status)
+
         with patch.object(manager, "admin", return_value={"revoked": True}) as request:
             manager.revoke_device(Path(data["state_dir"]), device_id)
         request.assert_called_once_with(Path(data["state_dir"]), "revoke", device_id)
@@ -186,8 +199,8 @@ def main() -> None:
         assert launch.call_args_list[1].args[0][-1] == "restart-gateway"
 
         settings_source = (manager.ROOT / "zed-source/crates/settings_ui/src/page_data.rs").read_text()
-        for control in ("Gateway Control", "Gateway Status", "Start Gateway", "Restart Gateway",
-                        "Stop Gateway", "Run Diagnostics", "Paired Devices", "Pair New Device",
+        for control in ("Gateway Control", "Native Zed bridge", "Active connection",
+                        "Run Diagnostics", "Paired Devices", "Pair New Device",
                         "View or Revoke Paired Devices", "Tailscale HTTPS",
                         "Enable Automatic Renewal", "Check for Renewal Now"):
             assert control in settings_source

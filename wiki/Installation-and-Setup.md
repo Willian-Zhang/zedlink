@@ -119,7 +119,7 @@ The patched Zed build now has a native **ZedLink** Settings page. Open it with `
 - **Project Root** — the project whose Agent threads may be exposed.
 - **Start Gateway on Launch** — starts the saved private HTTPS gateway with patched Zed.
 - **ZedLink Manager** — the installer-managed path used to load connection and TLS profiles.
-- **Gateway Control** — shows status, starts, restarts, or stops the private gateway, and runs diagnostics without opening a task terminal.
+- **Gateway Control** — automatically shows the gateway, native bridge, active route, paired-device count, project scope, and patched-Zed readiness as inline status rows. Refresh, start, restart, stop, and diagnostics remain on the same page instead of opening a status popup.
 - **Paired Devices** — opens the private pairing page, lists authorized browsers and installed web apps, and revokes one selected device after confirmation.
 - **Remote Permissions** — separate controls for new sessions, attachments, project browsing, Git changes, approval decisions, and Agent settings.
 
