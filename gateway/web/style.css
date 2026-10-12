@@ -259,7 +259,7 @@ body.no-session .messages { padding-bottom: 40px; }
   padding: 8px 24px 14px;
   background: linear-gradient(180deg, transparent, #000 24%);
 }
-.composer-wrap > .delivery, .composer-wrap > .attachment-strip, .composer-wrap > .action-menu,
+.composer-wrap > .dictation-status, .composer-wrap > .delivery, .composer-wrap > .attachment-strip, .composer-wrap > .action-menu,
 .composer-wrap > .command-menu, .composer-wrap > .composer, .composer-wrap > .delivery-details {
   width: min(920px, 100%);
   margin-inline: auto;
@@ -748,3 +748,5 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
 .clipboard-actions button { min-height: 44px; font-size: 13px; }
 
 .terminal-tools.listening > summary { color: var(--warning); background: #30251b; border-radius: 8px; }
+
+.dictation-status { font-size: 12px; line-height: 1.4; color: var(--muted); padding: 6px 12px; overflow-wrap: anywhere; }

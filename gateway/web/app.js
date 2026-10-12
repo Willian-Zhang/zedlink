@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.12";
+const UI_BUILD = "2026.10.12.13";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -4330,20 +4330,36 @@ for (const action of ["read", "write", "phone-paste", "phone-copy", "terminal", 
   $(`clipboard-${action}`).addEventListener("click", () => clipboardAction(action).catch((error) => $("clipboard-status").textContent = error.message));
 }
 let speech = null;
+function dictationStatus(message) {
+  $("dictation-status").textContent = message;
+  $("dictation-status").classList.toggle("hidden", !message);
+  notice(message);
+}
 function renderDictationState(listening) {
   $("dictate-prompt").setAttribute("aria-pressed", String(listening));
+  $("dictate-prompt").setAttribute("aria-label", listening ? "Stop dictation" : "Dictate message");
+  $("dictate-prompt").title = listening ? "Stop dictation" : "Dictate message";
   $("terminal-dictate").textContent = listening ? "Stop dictation" : "Dictate input";
   document.querySelector(".terminal-tools").classList.toggle("listening", listening);
 }
-function stopDictation() { if (speech) { const active = speech; speech = null; active.abort(); } renderDictationState(false); }
+// Cancellation is reserved for leaving a session. User Stop must allow final results.
+function stopDictation() {
+  if (speech) { const active = speech; speech = null; active.abort(); }
+  renderDictationState(false);
+  $("dictation-status").classList.add("hidden");
+}
 function dictateInto(id) {
-  if (speech) { stopDictation(); return; }
+  if (speech) {
+    try { speech.stop(); dictationStatus("Finishing dictation…"); }
+    catch (error) { stopDictation(); dictationStatus(error.message); }
+    return;
+  }
   const input = $(id);
   if (input.disabled || (id === "terminal-input" && !state.capabilities.includes("terminal.input"))) return;
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
     input.focus();
-    notice("Use the microphone on your phone keyboard to dictate. This browser has no speech recognition API.");
+    dictationStatus("Use the microphone on your phone keyboard. This browser does not support speech recognition.");
     return;
   }
   if (safeStore.read("zedlink.voiceConsent") !== "true") {
@@ -4353,23 +4369,60 @@ function dictateInto(id) {
   if (id === "terminal-input" && terminalLiveInput) setTerminalInputMode(false);
   const scope = JSON.stringify(baseThreadParams());
   const initial = input.value;
+  let lastApplied = initial;
+  let receivedText = false;
+  let failed = false;
   const recognizer = new Recognition();
   speech = recognizer;
   recognizer.lang = navigator.language || "en-US";
-  recognizer.interimResults = false;
+  recognizer.interimResults = true;
   recognizer.continuous = false;
   renderDictationState(true);
   recognizer.onresult = (event) => {
-    if (speech !== recognizer || scope !== JSON.stringify(baseThreadParams()) || input.value !== initial) return;
-    const text = [...event.results].filter((result) => result.isFinal).map((result) => result[0].transcript).join(" ");
-    input.value = `${initial}${initial && text ? " " : ""}${text}`.slice(0, input.maxLength > 0 ? input.maxLength : 16384);
+    if (speech !== recognizer) return;
+    if (scope !== JSON.stringify(baseThreadParams()) || input.value !== lastApplied) {
+      stopDictation();
+      dictationStatus("Dictation stopped because the draft or session changed. Your edits were kept.");
+      return;
+    }
+    // Safari result lists are array-like; do not assume they support iteration.
+    const parts = [];
+    let interim = false;
+    for (let i = 0; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result[0]?.transcript) parts.push(result[0].transcript);
+      if (!result.isFinal) interim = true;
+    }
+    const text = parts.join(" ").trim();
+    if (!text) return;
+    receivedText = true;
+    lastApplied = `${initial}${initial ? " " : ""}${text}`.slice(0, input.maxLength > 0 ? input.maxLength : 16384);
+    input.value = lastApplied;
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    notice("Dictation added to the draft. Review it before sending.");
+    dictationStatus(interim ? "Listening… Text is appearing in your draft." : "Text added. Review your draft before sending.");
   };
-  recognizer.onerror = (event) => notice(`Dictation unavailable (${event.error}). Use keyboard dictation instead.`);
-  recognizer.onend = () => { if (speech === recognizer) { speech = null; renderDictationState(false); } };
-  try { recognizer.start(); notice("Listening… Tap the microphone again to stop."); }
-  catch (error) { stopDictation(); notice(error.message); }
+  recognizer.onerror = (event) => {
+    if (speech !== recognizer) return;
+    failed = true;
+    const reasons = {
+      "not-allowed": "Microphone or speech permission was denied.",
+      "service-not-allowed": "Your browser’s speech service is unavailable.",
+      "audio-capture": "The microphone could not be accessed.",
+      "network": "Your browser’s speech service could not connect.",
+      "no-speech": "No speech was detected.",
+      "language-not-supported": "Your browser cannot transcribe this language."
+    };
+    dictationStatus(`${reasons[event.error] || "Speech recognition stopped."} Use your phone keyboard’s microphone instead. Any draft text was kept.`);
+  };
+  recognizer.onend = () => {
+    if (speech !== recognizer) return;
+    speech = null;
+    renderDictationState(false);
+    if (!failed) dictationStatus(receivedText ? "Dictation added to the draft. Review it before sending." : "No text returned. Try again or use your phone keyboard’s microphone.");
+  };
+  recognizer.onstart = () => { if (speech === recognizer) dictationStatus("Listening… Speak, then tap the microphone to finish."); };
+  try { dictationStatus("Starting microphone…"); recognizer.start(); }
+  catch (error) { stopDictation(); dictationStatus(error.message); }
 }
 $("dictate-prompt").addEventListener("click", () => dictateInto("prompt"));
 $("terminal-dictate").addEventListener("click", () => { document.querySelector(".terminal-tools").open = false; dictateInto("terminal-input"); });

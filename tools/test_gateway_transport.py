@@ -928,7 +928,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.12"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.13"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1446,11 +1446,41 @@ def main():
                 browser.execute_script("document.getElementById('terminal-input').dispatchEvent(new Event('input',{bubbles:true}))")
                 # A test recognizer exercises draft handling, not real microphone transcription.
                 accepted_before_voice = probe.accepted
-                browser.execute_script("localStorage.setItem('zedlink.voiceConsent','true'); window.SpeechRecognition=class { start(){window.testRecognizer=this;} abort(){this.onend?.();} }; document.getElementById('prompt').value=''; document.getElementById('dictate-prompt').click(); const result=[{transcript:'spoken draft'}]; result.isFinal=true; window.testRecognizer.onresult({results:[result]}); window.testRecognizer.onend();")
+                browser.execute_script("""
+                    localStorage.setItem('zedlink.voiceConsent','true');
+                    window.SpeechRecognition=class {
+                        start(){window.testRecognizer=this;this.onstart?.();}
+                        stop(){window.testStopCalled=true;}
+                        abort(){this.onend?.();}
+                    };
+                    // Actual result lists may have no Symbol.iterator.
+                    window.voiceResult=(text,final)=>({0:{transcript:text},length:1,isFinal:final});
+                    document.getElementById('prompt').value='';
+                    document.getElementById('dictate-prompt').click();
+                    window.testRecognizer.onresult({results:{0:voiceResult('spoken',false),length:1}});
+                """)
+                assert browser.find_element(By.ID, "prompt").get_attribute("value") == "spoken"
+                browser.execute_script("""
+                    window.testRecognizer.onresult({results:{0:voiceResult('spoken draft',false),length:1}});
+                    document.getElementById('dictate-prompt').click();
+                    if(!window.testStopCalled) throw Error('Stop must finalize rather than abort');
+                    window.testRecognizer.onresult({results:{0:voiceResult('spoken draft',true),length:1}});
+                    window.testRecognizer.onend();
+                """)
                 assert browser.find_element(By.ID, "prompt").get_attribute("value") == "spoken draft"
                 assert probe.accepted == accepted_before_voice
                 browser.execute_script("document.getElementById('dictate-prompt').click(); const result=[{transcript:'obsolete words'}]; result.isFinal=true; document.getElementById('prompt').value='edited draft'; document.getElementById('prompt').dispatchEvent(new Event('input',{bubbles:true})); window.testRecognizer.onresult({results:[result]}); window.testRecognizer.onend(); delete window.SpeechRecognition;")
                 assert browser.find_element(By.ID, "prompt").get_attribute("value") == "edited draft"
+                browser.execute_script("""
+                    window.SpeechRecognition=class {start(){window.testRecognizer=this;} stop(){} abort(){this.onend?.();}};
+                    document.getElementById('dictate-prompt').click(); window.testRecognizer.onend();
+                """)
+                assert "No text returned" in browser.find_element(By.ID, "dictation-status").get_attribute("textContent")
+                browser.execute_script("document.getElementById('dictate-prompt').click(); window.testRecognizer.onerror({error:'network'}); window.testRecognizer.onend(); delete window.SpeechRecognition;")
+                assert "could not connect" in browser.find_element(By.ID, "dictation-status").get_attribute("textContent")
+                assert browser.find_element(By.ID, "dictate-prompt").get_attribute("aria-pressed") == "false"
+                assert probe.accepted == accepted_before_voice
+
                 browser.find_element(By.CSS_SELECTOR, ".terminal-tools > summary").click()
                 browser.find_element(By.ID, "terminal-recover").click()
                 wait.until(lambda driver: "Session refreshed" in driver.find_element(By.ID, "notice").get_attribute("textContent"))
