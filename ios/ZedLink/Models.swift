@@ -157,6 +157,25 @@ struct NativeTerminalSnapshot: Equatable {
     let content: String
     let truncated: Bool
 }
+struct NativeConfiguredTask: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let source: String
+}
+struct NativeDebuggerThread: Identifiable, Equatable {
+    let id: Int
+    let name: String
+    let status: String
+}
+struct NativeDebuggerSession: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let adapter: String
+    let terminated: Bool
+    let canRestart: Bool
+    let canStepBack: Bool
+    let threads: [NativeDebuggerThread]
+}
 
 struct ThreadSnapshot {
     let threadID: String

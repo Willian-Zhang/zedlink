@@ -539,6 +539,22 @@ private struct NativeContextSheet: View {
                         }
                     }
                 }
+                Section("Configured tasks") {
+                    if !session.capabilities.contains("task.catalog") {
+                        Text("Enable Start Configured Tasks in desktop ZedLink settings and restart patched Zed.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if session.configuredTasks.isEmpty {
+                        Text("No configured Zed tasks are available for this project.").foregroundStyle(.secondary)
+                    }
+                    ForEach(session.configuredTasks) { task in
+                        Button {
+                            Task { await session.runConfiguredTask(task) }
+                        } label: {
+                            HStack { Text(task.label); Spacer(); Text(task.source.uppercased()).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                        }
+                        .disabled(!session.capabilities.contains("task.run"))
+                    }
+                }
                 Section("Zed terminals") {
                     if !session.capabilities.contains("terminal.list") {
                         Text("Enable View Project Terminals in desktop ZedLink settings and restart patched Zed.")
@@ -569,6 +585,55 @@ private struct NativeContextSheet: View {
                         }
                         if snapshot.terminal.taskState == "running" && session.capabilities.contains("task.stop") {
                             Button("Stop task", role: .destructive) { Task { await session.stopTerminalTask() } }
+                        }
+                    }
+                }
+                Section("Debugger") {
+                    if !session.capabilities.contains("debugger.snapshot") {
+                        Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if session.debuggerSessions.isEmpty {
+                        Text("No debugger session is running in this Zed project.").foregroundStyle(.secondary)
+                    }
+                    ForEach(session.debuggerSessions) { debugger in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(debugger.label)
+                                    Text(debugger.adapter).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if !debugger.terminated {
+                                    Menu("Session") {
+                                        if debugger.canRestart {
+                                            Button("Restart") { Task { await session.controlDebugger(debugger, action: "restart") } }
+                                        }
+                                        Button("Stop", role: .destructive) { Task { await session.controlDebugger(debugger, action: "stop") } }
+                                    }.disabled(!session.capabilities.contains("debugger.control"))
+                                }
+                            }
+                            ForEach(debugger.threads) { thread in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(thread.name)
+                                        Text(thread.status.uppercased()).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Menu("Controls") {
+                                        if thread.status == "running" {
+                                            Button("Pause") { Task { await session.controlDebugger(debugger, action: "pause", thread: thread) } }
+                                        } else if thread.status == "stopped" {
+                                            Button("Continue") { Task { await session.controlDebugger(debugger, action: "continue", thread: thread) } }
+                                            Button("Step over") { Task { await session.controlDebugger(debugger, action: "step_over", thread: thread) } }
+                                            Button("Step into") { Task { await session.controlDebugger(debugger, action: "step_in", thread: thread) } }
+                                            Button("Step out") { Task { await session.controlDebugger(debugger, action: "step_out", thread: thread) } }
+                                            if debugger.canStepBack {
+                                                Button("Step back") { Task { await session.controlDebugger(debugger, action: "step_back", thread: thread) } }
+                                            }
+                                        }
+                                    }.disabled(!session.capabilities.contains("debugger.control"))
+                                }
+                            }
                         }
                     }
                 }

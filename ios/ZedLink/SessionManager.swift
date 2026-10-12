@@ -22,6 +22,8 @@ import Combine
     @Published private(set) var changesRevision: String?
     @Published private(set) var terminals: [NativeTerminal] = []
     @Published private(set) var terminalSnapshot: NativeTerminalSnapshot?
+    @Published private(set) var configuredTasks: [NativeConfiguredTask] = []
+    @Published private(set) var debuggerSessions: [NativeDebuggerSession] = []
     @Published private(set) var previewTitle = ""
     @Published private(set) var previewContent = ""
     @Published var contextPaths: Set<String> = []
@@ -76,7 +78,7 @@ import Combine
         queuedMessages = []
         editReview = nil
         threadSettings = nil
-        projectFiles = []; changes = []; changesRevision = nil; terminals = []; terminalSnapshot = nil; previewTitle = ""; previewContent = ""; contextPaths = []
+        projectFiles = []; changes = []; changesRevision = nil; terminals = []; terminalSnapshot = nil; configuredTasks = []; debuggerSessions = []; previewTitle = ""; previewContent = ""; contextPaths = []
         creatingThread = false
         pending = nil
         delivery = ""
@@ -550,7 +552,56 @@ import Combine
                     terminalSnapshot = nil
                 }
             }
+            if capabilities.contains("task.catalog") {
+                let result = try await client.rpc("task.catalog", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                configuredTasks = (result["tasks"] as? [[String: Any]] ?? []).compactMap { row in
+                    guard let id = row["task_id"] as? String, let label = row["label"] as? String else { return nil }
+                    return NativeConfiguredTask(id: id, label: label, source: row["source"] as? String ?? "project")
+                }
+            } else { configuredTasks = [] }
+            if capabilities.contains("debugger.snapshot") {
+                let result = try await client.rpc("debugger.snapshot", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
+                debuggerSessions = (result["sessions"] as? [[String: Any]] ?? []).compactMap(Self.decodeDebuggerSession)
+            } else { debuggerSessions = [] }
         } catch { issue = error.localizedDescription }
+    }
+
+    func runConfiguredTask(_ task: NativeConfiguredTask) async {
+        guard let client, capabilities.contains("task.run") else { return }
+        do {
+            _ = try await client.rpc("task.run", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "task_id": task.id,
+            ], requestID: UUID().uuidString)
+            try? await Task.sleep(for: .milliseconds(250))
+            await loadProjectContext()
+        } catch { issue = error.localizedDescription }
+    }
+
+    func controlDebugger(_ session: NativeDebuggerSession, action: String, thread: NativeDebuggerThread? = nil) async {
+        guard let client, capabilities.contains("debugger.control") else { return }
+        var params: [String: Any] = [
+            "instance_id": instanceID ?? "", "epoch": epoch ?? "", "session_id": session.id, "action": action,
+        ]
+        if let thread { params["thread_id"] = thread.id }
+        do {
+            _ = try await client.rpc("debugger.control", params: params, requestID: UUID().uuidString)
+            try? await Task.sleep(for: .milliseconds(180))
+            await loadProjectContext()
+        } catch { issue = error.localizedDescription }
+    }
+
+    private static func decodeDebuggerSession(_ row: [String: Any]) -> NativeDebuggerSession? {
+        guard let id = row["session_id"] as? String else { return nil }
+        let capabilities = row["capabilities"] as? [String: Any]
+        let threads = (row["threads"] as? [[String: Any]] ?? []).compactMap { thread -> NativeDebuggerThread? in
+            guard let id = thread["thread_id"] as? Int else { return nil }
+            return NativeDebuggerThread(id: id, name: thread["name"] as? String ?? "Thread \(id)", status: thread["status"] as? String ?? "unknown")
+        }
+        return NativeDebuggerSession(id: id, label: row["label"] as? String ?? "Debugger",
+                                     adapter: row["adapter"] as? String ?? "DAP",
+                                     terminated: row["terminated"] as? Bool ?? false,
+                                     canRestart: capabilities?["restart"] as? Bool ?? false,
+                                     canStepBack: capabilities?["step_back"] as? Bool ?? false, threads: threads)
     }
 
     func loadTerminal(_ terminal: NativeTerminal) async {

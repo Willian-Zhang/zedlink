@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.1";
+const UI_BUILD = "2026.10.12.2";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -64,6 +64,9 @@ const state = {
   selectedTerminalId: null,
   terminalSnapshot: null,
   lastTerminalSnapshotAt: 0,
+  taskCatalog: [],
+  debuggerSessions: [],
+  lastDebuggerSnapshotAt: 0,
   contextPaths: [],
   uploads: [],
   previewPath: null,
@@ -685,6 +688,9 @@ function apiError(code) {
   if (code === "STALE_REVISION") return "The repository changed. Refresh Changes before applying this action.";
   if (code === "DIFF_UNAVAILABLE" || code === "REPOSITORY_UNAVAILABLE") return "The repository diff is unavailable in desktop Zed.";
   if (code === "OPERATION_FAILED") return "Desktop Zed could not complete that Git operation.";
+  if (code === "TASK_UNAVAILABLE") return "That configured Zed task is no longer available. Refresh the task list.";
+  if (code === "DEBUGGER_UNAVAILABLE") return "That debugger session is no longer available in desktop Zed.";
+  if (code === "DEBUGGER_STATE_CONFLICT") return "The debugger changed state before that control could be applied. Refresh and try again.";
   if (code === "APPROVAL_EXPIRED" || code === "APPROVAL_ALREADY_RESOLVED" || code === "STALE_TURN") return "That approval is no longer pending. Refreshing the native thread.";
   if (code === "PAIRING_UNAVAILABLE") return "No active pairing request. Create a fresh pairing link in desktop Zed.";
   if (code === "PAIRING_EXPIRED") return "That pairing link expired. Create a fresh one in desktop Zed.";
@@ -1023,11 +1029,18 @@ function resetTargetSession() {
   state.totalEntries = 0;
   state.subagents = [];
   state.approvals = [];
+  state.terminals = [];
+  state.selectedTerminalId = null;
+  state.terminalSnapshot = null;
+  state.taskCatalog = [];
+  state.debuggerSessions = [];
   $("transcript-entries").replaceChildren();
   renderThreads();
   renderCommands();
   renderSubagents([]);
   renderApprovals([]);
+  renderTaskCatalog();
+  renderDebugger();
   renderAgentHealth();
   renderThreadSettings();
   renderEmptyWorkspace();
@@ -1885,6 +1898,7 @@ async function loadGitDiff() {
 }
 
 async function loadTerminals() {
+  await loadTaskCatalog();
   if (!state.capabilities.includes("terminal.list")) {
     state.terminals = [];
     state.selectedTerminalId = null;
@@ -1899,6 +1913,147 @@ async function loadTerminals() {
   }
   renderTerminals();
   if (state.selectedTerminalId) await loadTerminalSnapshot();
+}
+
+async function loadTaskCatalog() {
+  if (!state.capabilities.includes("task.catalog")) {
+    state.taskCatalog = [];
+    renderTaskCatalog();
+    return;
+  }
+  const result = await rpc("task.catalog", baseInstanceParams());
+  state.taskCatalog = Array.isArray(result.tasks) ? result.tasks : [];
+  renderTaskCatalog();
+}
+
+function renderTaskCatalog() {
+  const select = $("task-select");
+  const prior = select.value;
+  select.replaceChildren();
+  for (const task of state.taskCatalog) {
+    const option = document.createElement("option");
+    option.value = task.task_id;
+    option.textContent = task.source ? `${task.label} · ${task.source}` : task.label;
+    select.append(option);
+  }
+  if (!state.taskCatalog.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = state.capabilities.includes("task.catalog") ? "No configured tasks" : "Task launching disabled";
+    select.append(option);
+  }
+  if (state.taskCatalog.some((task) => task.task_id === prior)) select.value = prior;
+  const enabled = state.capabilities.includes("task.run") && state.taskCatalog.length > 0;
+  select.disabled = !enabled;
+  $("run-task").disabled = !enabled;
+  $("task-help").textContent = state.capabilities.includes("task.catalog")
+    ? "Runs the selected task through Zed's configured task inventory."
+    : "Enable Start Configured Tasks in desktop ZedLink settings, then restart patched Zed.";
+}
+
+async function runConfiguredTask(event) {
+  event.preventDefault();
+  const taskId = $("task-select").value;
+  if (!taskId || !state.capabilities.includes("task.run")) return;
+  $("run-task").disabled = true;
+  try {
+    await rpc("task.run", { ...baseInstanceParams(), task_id: taskId }, crypto.randomUUID());
+    notice("Zed started the configured task.");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await loadTerminals();
+  } catch (error) { notice(error.message); }
+  finally { $("run-task").disabled = false; }
+}
+
+async function loadDebugger() {
+  if (!state.capabilities.includes("debugger.snapshot")) {
+    state.debuggerSessions = [];
+    renderDebugger();
+    return;
+  }
+  const result = await rpc("debugger.snapshot", baseInstanceParams());
+  state.debuggerSessions = Array.isArray(result.sessions) ? result.sessions : [];
+  state.lastDebuggerSnapshotAt = Date.now();
+  renderDebugger();
+}
+
+function debuggerButton(label, action, session, thread = null) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = action === "stop" ? "danger" : "quiet";
+  button.textContent = label;
+  button.disabled = !state.capabilities.includes("debugger.control");
+  button.addEventListener("click", () => controlDebugger(session.session_id, action, thread?.thread_id));
+  return button;
+}
+
+function renderDebugger() {
+  const list = $("debugger-list");
+  list.replaceChildren();
+  const supported = state.capabilities.includes("debugger.snapshot");
+  $("debug-help").textContent = supported
+    ? "Controls use the same native DAP session shown in desktop Zed."
+    : "Enable View Debugger Sessions in desktop ZedLink settings, then restart patched Zed.";
+  for (const session of state.debuggerSessions) {
+    const article = document.createElement("article");
+    article.className = "debug-session";
+    const header = document.createElement("header");
+    const identity = document.createElement("div");
+    const label = document.createElement("strong");
+    label.textContent = session.label || "Debugger";
+    const adapter = document.createElement("small");
+    adapter.textContent = `${session.adapter || "DAP"}${session.terminated ? " · stopped" : ""}`;
+    identity.append(label, adapter);
+    const sessionActions = document.createElement("div");
+    sessionActions.className = "debug-actions";
+    if (!session.terminated) {
+      if (session.capabilities?.restart) sessionActions.append(debuggerButton("Restart", "restart", session));
+      sessionActions.append(debuggerButton("Stop", "stop", session));
+    }
+    header.append(identity, sessionActions);
+    article.append(header);
+    for (const thread of session.threads || []) {
+      const row = document.createElement("div");
+      row.className = "debug-thread";
+      const info = document.createElement("div");
+      const name = document.createElement("span");
+      name.textContent = thread.name || `Thread ${thread.thread_id}`;
+      const status = document.createElement("small");
+      status.textContent = String(thread.status || "unknown").toUpperCase();
+      info.append(name, status);
+      const actions = document.createElement("div");
+      actions.className = "debug-actions";
+      if (thread.status === "running") actions.append(debuggerButton("Pause", "pause", session, thread));
+      if (thread.status === "stopped") {
+        actions.append(
+          debuggerButton("Continue", "continue", session, thread),
+          debuggerButton("Over", "step_over", session, thread),
+          debuggerButton("Into", "step_in", session, thread),
+          debuggerButton("Out", "step_out", session, thread),
+        );
+        if (session.capabilities?.step_back) actions.append(debuggerButton("Back", "step_back", session, thread));
+      }
+      row.append(info, actions);
+      article.append(row);
+    }
+    list.append(article);
+  }
+  if (!state.debuggerSessions.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = supported ? "No debugger session is running in this Zed project." : "Debugger access is unavailable.";
+    list.append(empty);
+  }
+}
+
+async function controlDebugger(sessionId, action, threadId) {
+  const params = { ...baseInstanceParams(), session_id: sessionId, action };
+  if (threadId !== undefined && threadId !== null) params.thread_id = threadId;
+  try {
+    await rpc("debugger.control", params, crypto.randomUUID());
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    await loadDebugger();
+  } catch (error) { notice(error.message); }
 }
 
 async function loadTerminalSnapshot() {
@@ -2023,13 +2178,14 @@ function renderActivityIndex() {
 }
 
 function switchContextTab(tab) {
-  for (const name of ["files", "changes", "terminal", "activity"]) {
+  for (const name of ["files", "changes", "terminal", "debug", "activity"]) {
     $(`context-${name}-tab`).setAttribute("aria-selected", String(name === tab));
     $(name === "activity" ? "context-activity-view" : `context-${name}`).classList.toggle("hidden", name !== tab);
   }
   if (tab === "files") loadProjectFiles().catch((error) => notice(error.message));
   if (tab === "changes") loadChanges().catch((error) => notice(error.message));
   if (tab === "terminal") loadTerminals().catch((error) => notice(error.message));
+  if (tab === "debug") loadDebugger().catch((error) => notice(error.message));
   if (tab === "activity") renderActivityIndex();
 }
 
@@ -3292,6 +3448,10 @@ async function poll() {
         && !$("context-panel").classList.contains("hidden") && Date.now() - state.lastTerminalSnapshotAt > 1500) {
       await loadTerminalSnapshot();
     }
+    if ($("context-debug-tab").getAttribute("aria-selected") === "true"
+        && !$("context-panel").classList.contains("hidden") && Date.now() - state.lastDebuggerSnapshotAt > 1500) {
+      await loadDebugger();
+    }
     if (state.pending) await reconcilePending();
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Zed connected · live updates" : "Zed connected · polling", "online");
   } catch (error) {
@@ -3532,9 +3692,11 @@ $("close-context").addEventListener("click", closeContextPanel);
 $("context-files-tab").addEventListener("click", () => switchContextTab("files"));
 $("context-changes-tab").addEventListener("click", () => switchContextTab("changes"));
 $("context-terminal-tab").addEventListener("click", () => switchContextTab("terminal"));
+$("context-debug-tab").addEventListener("click", () => switchContextTab("debug"));
 $("context-activity-tab").addEventListener("click", () => switchContextTab("activity"));
 $("refresh-terminal").addEventListener("click", () => loadTerminalSnapshot().catch((error) => notice(error.message)));
 $("terminal-input-form").addEventListener("submit", sendTerminalInput);
+$("task-run-form").addEventListener("submit", runConfiguredTask);
 $("file-search").addEventListener("input", renderProjectFiles);
 $("project-search-form").addEventListener("submit", searchProject);
 $("project-search").addEventListener("input", () => {

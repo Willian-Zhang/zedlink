@@ -101,6 +101,8 @@ class ProbeFixture:
         self.change_operations = {}
         self.terminal_inputs = {}
         self.task_stops = {}
+        self.task_runs = {}
+        self.debugger_controls = {}
         self.drop_send_before_accept_once = False
         self.stopped = False
         self.listener = socket.socket(socket.AF_UNIX)
@@ -304,6 +306,43 @@ class ProbeFixture:
                     else:
                         self.task_stops[request["request_id"]] = payload
                         result = {"outcome": "requested", "duplicate": duplicate}
+                elif method == "task.catalog":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "tasks": [
+                        {"task_id": "configured-fixture-task", "label": "Build fixture", "source": "project"}
+                    ]}
+                elif method == "task.run":
+                    allowed = {"instance_id", "epoch", "task_id"}
+                    if set(params) - allowed or params.get("task_id") != "configured-fixture-task":
+                        error = {"code": "INVALID_REQUEST"}
+                    else:
+                        payload = json.dumps(params, sort_keys=True)
+                        duplicate = request["request_id"] in self.task_runs
+                        if duplicate and self.task_runs[request["request_id"]] != payload:
+                            error = {"code": "REQUEST_ID_CONFLICT"}
+                        else:
+                            self.task_runs[request["request_id"]] = payload
+                            result = {"outcome": "requested", "duplicate": duplicate}
+                elif method == "debugger.snapshot":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "sessions": [
+                        {"session_id": "fixture-debugger", "label": "Debug fixture", "adapter": "fixture-dap",
+                         "terminated": False,
+                         "capabilities": {"restart": True, "step_back": False, "single_thread": True},
+                         "threads": [{"thread_id": 7, "name": "main", "status": "stopped"}]}
+                    ]}
+                elif method == "debugger.control":
+                    allowed = {"instance_id", "epoch", "session_id", "action", "thread_id"}
+                    actions = {"pause", "continue", "step_over", "step_in", "step_out", "step_back", "restart", "stop"}
+                    if (set(params) - allowed or params.get("session_id") != "fixture-debugger"
+                            or params.get("action") not in actions):
+                        error = {"code": "INVALID_REQUEST"}
+                    else:
+                        payload = json.dumps(params, sort_keys=True)
+                        duplicate = request["request_id"] in self.debugger_controls
+                        if duplicate and self.debugger_controls[request["request_id"]] != payload:
+                            error = {"code": "REQUEST_ID_CONFLICT"}
+                        else:
+                            self.debugger_controls[request["request_id"]] = payload
+                            result = {"outcome": "requested", "duplicate": duplicate}
                 elif method == "project.files":
                     result = {"entries": [
                         {"path": "src", "kind": "directory", "size": 0},
@@ -445,6 +484,7 @@ class ProbeFixture:
                                                "thread.approvals", "approval.respond", "project.files",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
                                                "terminal.list", "terminal.snapshot", "terminal.input", "task.list", "task.stop",
+                                               "task.catalog", "task.run", "debugger.snapshot", "debugger.control",
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
@@ -696,6 +736,34 @@ def main():
                 status, stop_result = http(base, context, "/v1/rpc", "POST", task_stop, token1)
                 assert status == 200 and stop_result["result"]["duplicate"] is duplicate
             assert len(probe.task_stops) == 1
+            task_catalog = {"version": 1, "request_id": "task-catalog", "method": "task.catalog",
+                            "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}}
+            status, catalog_result = http(base, context, "/v1/rpc", "POST", task_catalog, token1)
+            assert status == 200 and catalog_result["result"]["tasks"][0]["task_id"] == "configured-fixture-task"
+            task_run = {"version": 1, "request_id": "task-run", "method": "task.run",
+                        "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                   "task_id": "configured-fixture-task"}}
+            for duplicate in (False, True):
+                status, run_result = http(base, context, "/v1/rpc", "POST", task_run, token1)
+                assert status == 200 and run_result["result"]["duplicate"] is duplicate
+            assert len(probe.task_runs) == 1
+            smuggled_task = dict(task_run, request_id="task-run-smuggled",
+                                 params={**task_run["params"], "command": "touch /tmp/never"})
+            status, smuggled_result = http(base, context, "/v1/rpc", "POST", smuggled_task, token1)
+            assert status == 200 and smuggled_result["error"]["code"] == "INVALID_REQUEST"
+            debugger_snapshot = {"version": 1, "request_id": "debugger-snapshot",
+                                 "method": "debugger.snapshot",
+                                 "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}}
+            status, debugger_result = http(base, context, "/v1/rpc", "POST", debugger_snapshot, token1)
+            assert status == 200 and debugger_result["result"]["sessions"][0]["threads"][0]["status"] == "stopped"
+            debugger_control = {"version": 1, "request_id": "debugger-control", "method": "debugger.control",
+                                "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                           "session_id": "fixture-debugger", "thread_id": 7,
+                                           "action": "continue"}}
+            for duplicate in (False, True):
+                status, control_result = http(base, context, "/v1/rpc", "POST", debugger_control, token1)
+                assert status == 200 and control_result["result"]["duplicate"] is duplicate
+            assert len(probe.debugger_controls) == 1
             denied = dict(request, method="arbitrary.shell")
             status, _ = http(base, context, "/v1/rpc", "POST", denied, token1)
             assert status == 403
@@ -812,7 +880,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.09.5"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.2"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -970,6 +1038,18 @@ def main():
                 browser.find_element(By.ID, "close-code-review").click()
                 browser.find_element(By.CSS_SELECTOR, "#changes-list .change-action").click()
                 wait.until(lambda driver: len(probe.change_operations) == 1)
+                browser.find_element(By.ID, "context-terminal-tab").click()
+                wait.until(lambda driver: "Build fixture" in driver.find_element(By.ID, "task-select").text)
+                assert not browser.find_element(By.ID, "run-task").get_attribute("disabled")
+                browser.find_element(By.ID, "run-task").click()
+                wait.until(lambda driver: len(probe.task_runs) >= 1)
+                assert "ready" in browser.find_element(By.ID, "terminal-output").text
+                browser.find_element(By.ID, "context-debug-tab").click()
+                wait.until(lambda driver: "Debug fixture" in driver.find_element(By.ID, "debugger-list").text)
+                assert "STOPPED" in browser.find_element(By.ID, "debugger-list").text
+                next(button for button in browser.find_elements(By.CSS_SELECTOR, "#debugger-list button")
+                     if button.text == "Continue").click()
+                wait.until(lambda driver: len(probe.debugger_controls) >= 1)
                 browser.find_element(By.ID, "close-context").click()
                 upload = root / "browser-note.txt"
                 upload.write_text("browser upload fixture\n")

@@ -359,7 +359,7 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .context-head .eyebrow { margin: 0 0 6px; }
 .context-head h2 { margin: 0; font-size: 1.05rem; font-weight: 560; }
 .context-head .quiet { width: 38px; min-height: 38px; padding: 0; font-size: 1.2rem; }
-.context-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-block: 1px solid var(--line); }
+.context-tabs { display: grid; grid-template-columns: repeat(5, minmax(70px, 1fr)); overflow-x: auto; border-block: 1px solid var(--line); }
 .context-tabs button { min-height: 43px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--subtle); font-size: .72rem; }
 .context-tabs button:last-child { border-right: 0; }
 .context-tabs button[aria-selected="true"] { background: #121416; color: var(--ink); }
@@ -386,6 +386,15 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .terminal-preview { margin-top: 14px; border: 1px solid var(--line-strong); background: #050506; }
 .terminal-preview header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border-bottom: 1px solid var(--line); }
 .terminal-preview pre { min-height: 220px; max-height: 48vh; margin: 0; padding: 12px; overflow: auto; color: #d7dde3; font: .72rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace-action { display: grid; gap: 7px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.workspace-action > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.workspace-action select { min-width: 0; }
+.debug-session { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.debug-session header, .debug-thread { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.debug-session header small, .debug-thread small { color: var(--subtle); }
+.debug-thread { padding: 10px 0 0 12px; }
+.debug-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.debug-actions button { min-height: 34px; }
 .terminal-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 9px; border-top: 1px solid var(--line); }
 .terminal-input button { min-height: 40px; padding-inline: 13px; }
 .file-preview { margin-top: 14px; border: 1px solid var(--line); background: #090a0b; }

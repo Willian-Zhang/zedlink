@@ -318,6 +318,21 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 Text("${change.id}\n${change.status} · ${change.staging}", modifier = Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(onClick = { model.mutateChange(change) }) { Text(if (change.staging == "staged") "UNSTAGE" else "STAGE") }
             } }
+            Text("CONFIGURED TASKS", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+            if ("task.catalog" !in state.capabilities) {
+                Text("Enable Start Configured Tasks in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
+            } else if (state.configuredTasks.isEmpty()) {
+                Text("No configured Zed tasks are available for this project.", color = Muted, fontSize = 12.sp)
+            }
+            state.configuredTasks.forEach { task ->
+                TextButton(onClick = { model.runConfiguredTask(task) }, enabled = "task.run" in state.capabilities,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth()) {
+                        Text(task.label, modifier = Modifier.weight(1f), maxLines = 1)
+                        Text(task.source.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
             Text("ZED TERMINALS", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
             if ("terminal.list" !in state.capabilities) {
                 Text("Enable View Project Terminals in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
@@ -342,6 +357,45 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 }
                 if (snapshot.terminal.taskState == "running" && "task.stop" in state.capabilities) {
                     TextButton(onClick = model::stopTerminalTask) { Text("STOP TASK", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+            Text("DEBUGGER", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+            if ("debugger.snapshot" !in state.capabilities) {
+                Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
+            } else if (state.debuggerSessions.isEmpty()) {
+                Text("No debugger session is running in this Zed project.", color = Muted, fontSize = 12.sp)
+            }
+            state.debuggerSessions.forEach { debugger ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(debugger.label, fontWeight = FontWeight.SemiBold)
+                            Text(debugger.adapter, color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        }
+                        if (!debugger.terminated) {
+                            if (debugger.canRestart) {
+                                TextButton(onClick = { model.controlDebugger(debugger, "restart") }, enabled = "debugger.control" in state.capabilities) { Text("RESTART") }
+                            }
+                            TextButton(onClick = { model.controlDebugger(debugger, "stop") }, enabled = "debugger.control" in state.capabilities) { Text("STOP", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                    debugger.threads.forEach { thread ->
+                        Column(Modifier.fillMaxWidth().padding(start = 12.dp, top = 6.dp)) {
+                            Text("${thread.name} · ${thread.status.uppercase()}", fontSize = 12.sp)
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                if (thread.status == "running") {
+                                    TextButton(onClick = { model.controlDebugger(debugger, "pause", thread) }, enabled = "debugger.control" in state.capabilities) { Text("PAUSE") }
+                                } else if (thread.status == "stopped") {
+                                    listOf("continue" to "CONTINUE", "step_over" to "OVER", "step_in" to "INTO", "step_out" to "OUT").forEach { (action, label) ->
+                                        TextButton(onClick = { model.controlDebugger(debugger, action, thread) }, enabled = "debugger.control" in state.capabilities) { Text(label) }
+                                    }
+                                    if (debugger.canStepBack) {
+                                        TextButton(onClick = { model.controlDebugger(debugger, "step_back", thread) }, enabled = "debugger.control" in state.capabilities) { Text("BACK") }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } }, confirmButton = { TextButton(onClick = close) { Text("DONE") } }, containerColor = Surface)
