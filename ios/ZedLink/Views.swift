@@ -1359,7 +1359,7 @@ private struct NativeTerminalScreen: View {
                         ForEach(session.terminals) { terminal in
                             Button(terminal.title) { keyboardFocused = false; Task { await session.loadTerminal(terminal) } }
                         }
-                    } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }
+                    } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }.disabled(sending)
                     Spacer()
                     Text(session.capabilities.contains("terminal.input") ? "Interactive" : "Read only").font(.caption)
                     if !followOutput { Button("Latest") { followOutput = true }.font(.caption) }
@@ -1390,7 +1390,7 @@ private struct NativeTerminalScreen: View {
                                         defer { sending = false }
                                         if !pending.isEmpty {
                                             guard await session.sendTerminalInput(pending, appendReturn: false) else { return }
-                                            input = ""
+                                            if input == pending { input = "" }
                                         }
                                         await session.sendTerminalInput(key.1, appendReturn: false)
                                     }
@@ -1401,7 +1401,7 @@ private struct NativeTerminalScreen: View {
                     }
                     HStack {
                         Text("›").foregroundStyle(ZLTheme.healthy)
-                        TextField("Command or reply", text: $input).focused($keyboardFocused).disabled(sending)
+                        TextField("Command or reply", text: $input).focused($keyboardFocused)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().font(.body.monospaced())
                             .submitLabel(.send).onSubmit { send() }
                         Button { send() } label: { Image(systemName: "return") }.frame(width: 44, height: 44).disabled(sending)
@@ -1427,7 +1427,7 @@ private struct NativeTerminalScreen: View {
         let value = input; sending = true
         Task {
             defer { sending = false }
-            if await session.sendTerminalInput(value.isEmpty ? "\r" : value + "\n", appendReturn: false) { input = "" }
+            if await session.sendTerminalInput(value.isEmpty ? "\r" : value + "\n", appendReturn: false) { if input == value { input = "" } }
         }
     }
 }

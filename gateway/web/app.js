@@ -2198,8 +2198,7 @@ function queueTerminalInput(input) {
 async function sendTerminalInput(event) {
   event.preventDefault();
   const input = $("terminal-input");
-  if (!terminalLiveInput && !input.value) return;
-  const pending = queueTerminalInput(terminalLiveInput ? "\r" : `${input.value}\n`);
+  const pending = queueTerminalInput(terminalLiveInput || !input.value ? "\r" : `${input.value}\n`);
   if (!pending) return;
   input.value = terminalLiveInput ? "\u200b" : "";
   await pending;
@@ -3800,7 +3799,10 @@ $("copy-terminal").addEventListener("click", async () => {
   } catch { notice("Terminal output could not be copied."); }
 });
 $("terminal-input-form").addEventListener("submit", sendTerminalInput);
-$("terminal-live-input").addEventListener("click", () => { setTerminalInputMode(!terminalLiveInput); $("terminal-input").focus(); });
+$("terminal-live-input").addEventListener("click", () => {
+  if (!terminalLiveInput && $("terminal-input").value) queueTerminalInput($("terminal-input").value);
+  setTerminalInputMode(!terminalLiveInput); $("terminal-input").focus();
+});
 $("terminal-hide-keyboard").addEventListener("click", (event) => { $("terminal-input").blur(); event.currentTarget.blur(); syncVisualViewport(); });
 $("terminal-keys").addEventListener("pointerdown", (event) => { if (event.target.closest("button")) event.preventDefault(); });
 $("terminal-keys").addEventListener("click", async (event) => {
