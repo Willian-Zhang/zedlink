@@ -390,8 +390,8 @@ body:not(.thread-open) .conversation-head { visibility: hidden; }
 .terminal-bar select { min-width: 0; height: 40px; overflow: hidden; border-color: var(--line-strong); background: #0d0f11; color: var(--ink); text-overflow: ellipsis; }
 .terminal-mode { color: var(--subtle); font: .66rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
 .terminal-mode::before { display: inline-block; width: 6px; height: 6px; margin-right: 7px; background: var(--subtle); content: ""; }
-.terminal-mode[data-state="interactive"] { color: var(--success); }
-.terminal-mode[data-state="interactive"]::before { background: var(--success); box-shadow: 0 0 9px #79c79b80; }
+.terminal-mode[data-state="interactive"] { color: var(--online); }
+.terminal-mode[data-state="interactive"]::before { background: var(--online); box-shadow: 0 0 9px #79c79b80; }
 .terminal-mode[data-state="readonly"] { color: var(--warning); }
 .terminal-mode[data-state="readonly"]::before { background: var(--warning); }
 .terminal-icon { display: grid; place-items: center; width: 40px; height: 40px; min-height: 40px; padding: 0; border: 1px solid var(--line-strong); background: transparent; color: var(--ink); font-size: 1rem; }
@@ -703,4 +703,28 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   #context-files.file-reading .file-browser { display: none; }
   #context-files .file-preview { width: 100%; }
   #context-files .preview-actions { width: 100%; justify-content: flex-end; }
+}
+
+/* Compact workspace navigation and one terminal control row. */
+#context-mobile-view { display: none; }
+.terminal-bar { display: flex; }
+.terminal-bar select { flex: 1; width: 0; }
+.terminal-bar > button, .terminal-mode { flex: none; }
+.terminal-preview header { display: none; }
+@media (max-width: 760px) {
+  .context-panel .context-head { flex: none; min-height: 52px; padding: 4px 8px; gap: 8px; border-bottom: 1px solid var(--line); }
+  .context-head .eyebrow { display: none; }
+  .context-head h2 { font-size: .85rem; }
+  #context-mobile-view { display: block; flex: 1; min-width: 0; width: 0; max-width: 180px; height: 44px; margin-left: auto; padding: 0 10px; border: 0; background: #151719; font-size: 14px; border-radius: 8px; }
+  .context-head .quiet { width: 44px; height: 44px; min-height: 44px; border: 0; }
+  .context-panel .context-tabs { display: none; }
+  .context-panel.terminal-context .context-head { min-height: 52px; padding: 4px 8px; }
+  .terminal-bar { flex: none; gap: 4px; padding: 2px 8px; }
+  .terminal-bar select { height: 44px; padding: 0 4px; font-size: 13px; }
+  .terminal-bar .terminal-icon { width: 44px; height: 44px; min-height: 44px; border: 0; border-radius: 8px; }
+  .terminal-mode { font-size: 0; letter-spacing: 0; }
+  .terminal-mode::before { margin: 0 4px; border-radius: 50%; }
+  .terminal-mode[data-state="readonly"]::after { content: "Read only"; font-size: 10px; }
+  .terminal-mode[data-state="off"]::after { content: "Off"; font-size: 10px; }
+  #terminal-stop { min-height: 44px; padding: 0 8px; font-size: 11px; }
 }

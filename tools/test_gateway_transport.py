@@ -920,7 +920,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.10"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.11"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1408,14 +1408,20 @@ def main():
                 mobile_composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,viewport:innerWidth}")
                 assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and mobile_composer["height"] <= 54 and mobile_composer["radius"] == "13px", mobile_composer
                 browser.find_element(By.ID, "show-context").click()
-                browser.find_element(By.ID, "context-terminal-tab").click()
-                wait.until(lambda driver: driver.find_element(By.ID, "terminal-mode").text == "INTERACTIVE")
+                Select(browser.find_element(By.ID, "context-mobile-view")).select_by_value("terminal")
+                wait.until(lambda driver: driver.find_element(By.ID, "terminal-mode").get_attribute("aria-label") == "Interactive")
                 mobile_terminal = browser.execute_script("const panel=document.getElementById('context-panel').getBoundingClientRect(); const consoleBox=document.getElementById('terminal-preview').getBoundingClientRect(); return {left:panel.left,right:panel.right,width:innerWidth,pageWidth:document.documentElement.scrollWidth,consoleWidth:consoleBox.width}")
                 assert mobile_terminal["left"] >= 0 and mobile_terminal["right"] <= mobile_terminal["width"] + 1, mobile_terminal
                 assert mobile_terminal["right"] - mobile_terminal["left"] >= mobile_terminal["width"] - 1, mobile_terminal
                 assert mobile_terminal["pageWidth"] <= mobile_terminal["width"] + 1 and mobile_terminal["consoleWidth"] <= mobile_terminal["width"], mobile_terminal
                 terminal_layout = browser.execute_script("const out=document.getElementById('terminal-output').getBoundingClientRect(); const panel=document.getElementById('context-panel').getBoundingClientRect(); return {output:out.height,total:panel.height,top:out.top-panel.top}")
-                assert terminal_layout["top"] < 200 and terminal_layout["output"] > terminal_layout["total"] * 0.45, terminal_layout
+                assert terminal_layout["top"] <= 105 and terminal_layout["output"] > terminal_layout["total"] * 0.45, terminal_layout
+                assert not browser.find_element(By.CSS_SELECTOR, ".context-tabs").is_displayed()
+                assert browser.find_element(By.ID, "context-mobile-view").get_attribute("value") == "terminal"
+                assert browser.find_element(By.ID, "copy-terminal").is_enabled()
+                for control in ["close-context", "context-mobile-view", "copy-terminal", "refresh-terminal"]:
+                    assert browser.find_element(By.ID, control).rect["height"] >= 44
+                browser.save_screenshot("/tmp/zedlink-workspace-compact-mobile.png")
                 browser.find_element(By.ID, "terminal-input").click()
                 keyboard_layout = browser.execute_script("syncVisualViewport({height:400,offsetTop:0}); const panel=document.getElementById('context-panel').getBoundingClientRect(); const keys=document.getElementById('terminal-keys').getBoundingClientRect(); const input=document.getElementById('terminal-input-form').getBoundingClientRect(); return {bottom:panel.bottom,keys:keys.bottom,input:input.bottom}")
                 assert keyboard_layout["bottom"] <= 401 and keyboard_layout["keys"] <= 401 and keyboard_layout["input"] <= 401, keyboard_layout

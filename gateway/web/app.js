@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.10";
+const UI_BUILD = "2026.10.12.11";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -2216,6 +2216,9 @@ function renderTerminals() {
   const supported = state.capabilities.includes("terminal.list");
   const canInput = state.capabilities.includes("terminal.input");
   $("terminal-mode").textContent = supported ? (canInput ? "Interactive" : "Read only") : "Access off";
+  $("terminal-mode").title = $("terminal-mode").textContent;
+  $("terminal-mode").setAttribute("aria-label", $("terminal-mode").textContent);
+  $("copy-terminal").disabled = !state.terminalSnapshot;
   $("terminal-mode").dataset.state = supported ? (canInput ? "interactive" : "readonly") : "off";
   $("terminal-help").textContent = supported
     ? (canInput ? "Live output and input from the selected terminal in desktop Zed." : "Terminal output is available. Enable Send Terminal Input in ZedLink settings to type here.")
@@ -2253,6 +2256,7 @@ function appendTerminalText(container, text) {
 }
 
 function renderTerminalSnapshot() {
+  $("copy-terminal").disabled = !state.terminalSnapshot;
   const snapshot = state.terminalSnapshot;
   if (!snapshot || snapshot.terminal?.terminal_id !== state.selectedTerminalId) return;
   $("terminal-title").textContent = snapshot.terminal.title || "Terminal";
@@ -2384,7 +2388,10 @@ function renderActivityIndex() {
   }
 }
 
+$("context-mobile-view").addEventListener("change", (event) => switchContextTab(event.target.value));
+
 function switchContextTab(tab) {
+  $("context-mobile-view").value = tab;
   $("context-panel").classList.toggle("terminal-context", tab === "terminal");
   $("context-panel").classList.toggle("files-context", tab === "files");
   for (const name of ["files", "changes", "terminal", "debug", "activity"]) {
