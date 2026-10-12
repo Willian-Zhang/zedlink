@@ -402,27 +402,8 @@ import Combine
         let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": id]
         if capabilities.contains("thread.elicitations") {
             let result = try await client.rpc("thread.elicitations", params: base)
-            elicitations = (result["elicitations"] as? [[String: Any]] ?? []).compactMap { row in
-                guard row["status"] as? String == "pending", let elicitationID = row["elicitation_id"] as? String,
-                      let request = row["request"] as? [String: Any] else { return nil }
-                let schema = request["requestedSchema"] as? [String: Any]
-                let required = Set(schema?["required"] as? [String] ?? [])
-                let properties = schema?["properties"] as? [String: [String: Any]] ?? [:]
-                let fields = properties.map { name, value in
-                    let oneOf = (value["oneOf"] as? [[String: Any]] ?? []).compactMap { option in option["const"].map { String(describing: $0) } }
-                    let items = value["items"] as? [String: Any]
-                    let itemOneOf = (items?["oneOf"] as? [[String: Any]] ?? []).compactMap { option in option["const"].map { String(describing: $0) } }
-                    let choices = (value["enum"] as? [Any] ?? []).map { String(describing: $0) }
-                        + oneOf + (items?["enum"] as? [Any] ?? []).map { String(describing: $0) } + itemOneOf
-                    NativeElicitationField(id: name, title: value["title"] as? String ?? name,
-                                           type: value["type"] as? String ?? "string",
-                                           required: required.contains(name),
-                                           choices: choices)
-                }.sorted { $0.id < $1.id }
-                return NativeElicitation(id: elicitationID,
-                                         message: request["message"] as? String ?? "Agent needs more information",
-                                         url: request["url"] as? String, fields: fields)
-            }
+            let rows = result["elicitations"] as? [[String: Any]] ?? []
+            elicitations = rows.compactMap(Self.decodeElicitation)
         } else { elicitations = [] }
         if capabilities.contains("thread.queue") {
             let result = try await client.rpc("thread.queue", params: base)
@@ -453,6 +434,33 @@ import Combine
                                                   models: models, usedTokens: usage?["used_tokens"] as? Int,
                                                   maxTokens: usage?["max_tokens"] as? Int)
         } else { threadSettings = nil }
+    }
+
+    private static func decodeElicitation(_ row: [String: Any]) -> NativeElicitation? {
+        guard row["status"] as? String == "pending",
+              let elicitationID = row["elicitation_id"] as? String,
+              let request = row["request"] as? [String: Any] else { return nil }
+        let schema = request["requestedSchema"] as? [String: Any]
+        let required = Set(schema?["required"] as? [String] ?? [])
+        let properties = schema?["properties"] as? [String: [String: Any]] ?? [:]
+        var fields: [NativeElicitationField] = []
+        for (name, value) in properties {
+            let oneOfRows = value["oneOf"] as? [[String: Any]] ?? []
+            let oneOf = oneOfRows.compactMap { $0["const"].map(String.init(describing:)) }
+            let items = value["items"] as? [String: Any]
+            let itemRows = items?["oneOf"] as? [[String: Any]] ?? []
+            let itemOneOf = itemRows.compactMap { $0["const"].map(String.init(describing:)) }
+            let directChoices = (value["enum"] as? [Any] ?? []).map(String.init(describing:))
+            let itemChoices = (items?["enum"] as? [Any] ?? []).map(String.init(describing:))
+            fields.append(NativeElicitationField(id: name, title: value["title"] as? String ?? name,
+                                                  type: value["type"] as? String ?? "string",
+                                                  required: required.contains(name),
+                                                  choices: directChoices + oneOf + itemChoices + itemOneOf))
+        }
+        fields.sort { $0.id < $1.id }
+        return NativeElicitation(id: elicitationID,
+                                 message: request["message"] as? String ?? "Agent needs more information",
+                                 url: request["url"] as? String, fields: fields)
     }
 
     func respondToElicitation(_ elicitation: NativeElicitation, action: String, content: [String: Any] = [:]) async {
