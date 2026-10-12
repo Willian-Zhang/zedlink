@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.6";
+const UI_BUILD = "2026.10.12.7";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -2148,6 +2148,20 @@ function renderTerminals() {
   $("terminal-preview").classList.toggle("hidden", !state.selectedTerminalId);
 }
 
+function appendTerminalText(container, text) {
+  // Private-use shell icons must not expand a native one-cell column into a tofu box.
+  for (const segment of text.split(/([\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}])/u)) {
+    if (!segment) continue;
+    const code = segment.codePointAt(0);
+    if ((code >= 0xe000 && code <= 0xf8ff) || code >= 0xf0000) {
+      const glyph = document.createElement("span");
+      glyph.className = "terminal-glyph";
+      glyph.textContent = segment;
+      container.append(glyph);
+    } else container.append(document.createTextNode(segment));
+  }
+}
+
 function renderTerminalSnapshot() {
   const snapshot = state.terminalSnapshot;
   if (!snapshot || snapshot.terminal?.terminal_id !== state.selectedTerminalId) return;
@@ -2159,7 +2173,7 @@ function renderTerminalSnapshot() {
     const fragment = document.createDocumentFragment();
     for (const run of runs) {
       const span = document.createElement("span");
-      span.textContent = run.text;
+      appendTerminalText(span, run.text);
       if (/^#[0-9a-f]{6}$/i.test(run.foreground)) span.style.color = run.foreground;
       if (/^#[0-9a-f]{6}$/i.test(run.background)) span.style.backgroundColor = run.background;
       if (run.bold) span.style.fontWeight = "700";
@@ -2169,7 +2183,10 @@ function renderTerminalSnapshot() {
       fragment.append(span);
     }
     output.replaceChildren(fragment);
-  } else output.textContent = snapshot.content || "";
+  } else {
+    output.replaceChildren();
+    appendTerminalText(output, snapshot.content || "");
+  }
   if (followOutput) output.scrollTop = output.scrollHeight;
   const canInput = state.capabilities.includes("terminal.input");
   $("terminal-input-form").classList.toggle("hidden", !canInput);

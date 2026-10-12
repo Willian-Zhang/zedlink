@@ -942,10 +942,14 @@ private fun terminalText(snapshot: NativeTerminalSnapshot?): AnnotatedString = b
             fontWeight = if (run.bold) FontWeight.Bold else FontWeight.Normal,
             fontStyle = if (run.italic) FontStyle.Italic else FontStyle.Normal,
             textDecoration = if (run.underline) TextDecoration.Underline else TextDecoration.None), start, length)
-        run.text.forEachIndexed { index, character ->
-            if (character.code in 0xe5fa..0xe6b7 || character.code in 0xf000..0xf2e0) {
-                addStyle(SpanStyle(fontFamily = FontFamily(Font(R.font.terminal_icons))), start + index, start + index + 1)
+        var index = 0
+        while (index < run.text.length) {
+            val code = run.text.codePointAt(index)
+            val size = Character.charCount(code)
+            if (code in 0xe5fa..0xe6b7 || code in 0xe700..0xe8ef || code in 0xf000..0xf2e0 || code in 0xf400..0xf533 || code in 0xf0001..0xf1af0) {
+                addStyle(SpanStyle(fontFamily = FontFamily(Font(R.font.terminal_icons))), start + index, start + index + size)
             }
+            index += size
         }
     }
 }

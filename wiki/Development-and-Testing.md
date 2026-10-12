@@ -44,3 +44,5 @@ Zed's contribution policy requires feature work of this size to start as a GitHu
 Android and macOS workflows run **only on manual dispatch**. Pushes do not launch hosted builds. Do not dispatch either workflow without the repository owner's approval while the Actions allowance is nearly exhausted. Use local Linux static checks, browser fixtures, and isolated native terminal checks by default. SwiftUI and Compose source changes that cannot be built locally must be labeled uncompiled, rather than silently running a cloud build.
 
 Terminal icon fonts are bundled and self-hosted. Source, subset ranges, and upstream notices live in `gateway/web/fonts/`; copies of the notices accompany the native app resources.
+
+For the desktop terminal font and column layout, run `python3 tools/test_terminal_rendering.py`. This uses local Chromium with synthetic output and the production CSS/text renderer; it does not verify a native Zed session. The authenticated Firefox desktop/mobile fixture remains `python3 tools/test_gateway_transport.py`. No hosted Actions run is required.

@@ -1452,7 +1452,7 @@ private func terminalText(_ snapshot: NativeTerminalSnapshot?) -> Text {
         var segments: [(String, Bool)] = []
         for character in run.text {
             let scalar = character.unicodeScalars.first?.value ?? 0
-            let icon = (0xe5fa...0xe6b7).contains(scalar) || (0xf000...0xf2e0).contains(scalar)
+            let icon = (0xe5fa...0xe6b7).contains(scalar) || (0xe700...0xe8ef).contains(scalar) || (0xf000...0xf2e0).contains(scalar) || (0xf400...0xf533).contains(scalar) || (0xf0001...0xf1af0).contains(scalar)
             if segments.last?.1 == icon {
                 segments[segments.count - 1].0.append(character)
             } else { segments.append((String(character), icon)) }

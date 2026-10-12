@@ -286,7 +286,7 @@ class ProbeFixture:
                               "content": "$ printf ready\\nready\\n", "truncated": False,
                               "styled_runs": [{"text": "$ printf ready\\n", "foreground": "#d9dedb", "background": "#020303"},
                                               {"text": "ready\\n", "foreground": "#ff5555", "background": "#020303", "bold": True},
-                                              {"text": "📁 \uf07b e\u0301 界 <script>fixture</script>", "foreground": "#55ff55", "background": "#020303"}],
+                                              {"text": "📁 \uf07b \uf48a \ue7a8 \U000f0219 \U000f08c6 e\u0301 界 <script>fixture</script>", "foreground": "#55ff55", "background": "#020303"}],
                               "total_lines": 2, "viewport_lines": 24}
                 elif method == "terminal.input":
                     payload = json.dumps(params, sort_keys=True)
@@ -915,7 +915,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.6"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.7"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1088,6 +1088,14 @@ def main():
                 assert "📁" in browser.find_element(By.ID, "terminal-output").text
                 assert not browser.find_elements(By.CSS_SELECTOR, "#terminal-output script")
                 assert browser.execute_async_script("const done=arguments[0]; document.fonts.load('12px \"ZedLink Terminal Icons\"', '\uf07b').then(fonts => done(fonts.length > 0), () => done(false))")
+
+                assert browser.find_element(By.ID, "terminal-output").value_of_css_property("white-space") == "pre"
+                assert browser.execute_async_script("const done=arguments[0]; document.fonts.load('12px \"ZedLink Terminal Icons\"', '\uf48a\ue7a8\U000f0219\U000f08c6').then(fonts => done(fonts.length > 0), () => done(false))")
+                glyph_layout = browser.execute_script("const glyphs=[...document.querySelectorAll('#terminal-output .terminal-glyph')]; return glyphs.map(g => ({width:g.getBoundingClientRect().width,height:g.getBoundingClientRect().height}))")
+                assert len(glyph_layout) == 5 and all(5 <= g["width"] <= 10 for g in glyph_layout), glyph_layout
+                # A long native row stays on one row; scrolling is confined to the terminal.
+                row_layout = browser.execute_script("const out=document.getElementById('terminal-output'); const row=document.createElement('span'); row.textContent='X'.repeat(240); out.append(document.createTextNode('\\n'),row); const rect=row.getBoundingClientRect(); const result={height:rect.height,line:parseFloat(getComputedStyle(out).lineHeight),scroll:out.scrollWidth,client:out.clientWidth,page:document.documentElement.scrollWidth,screen:innerWidth}; row.remove(); return result")
+                assert row_layout["height"] < row_layout["line"] * 1.5 and row_layout["scroll"] > row_layout["client"] and row_layout["page"] <= row_layout["screen"], row_layout
 
                 browser.find_element(By.CSS_SELECTOR, "#task-launcher > summary").click()
                 terminal_input = browser.find_element(By.ID, "terminal-input")
