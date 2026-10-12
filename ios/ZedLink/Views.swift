@@ -436,6 +436,7 @@ struct ConversationView: View {
                     .accessibilityLabel("Message to native Zed Agent")
                     .accessibilityIdentifier("composer")
 
+                VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
                 if session.canCancel {
                     Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
                         Image(systemName: "stop.fill").font(.headline).frame(width: 42, height: 42)
@@ -590,11 +591,11 @@ private struct NativeContextSheet: View {
                             }
                             .padding(.horizontal, 11).frame(minHeight: 40)
                             .background(Color(red: 0.03, green: 0.035, blue: 0.04))
-                            ScrollView([.horizontal, .vertical]) {
+                            ScrollView(.vertical) {
                                 terminalText(snapshot)
                                     .font(.system(size: 12, design: .monospaced))
                                     .foregroundStyle(Color(red: 0.85, green: 0.88, blue: 0.86))
-                                    .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
                                     .padding(13)
                             }
@@ -690,7 +691,7 @@ private struct NativeContextSheet: View {
                 await session.loadProjectContext()
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(1500))
-                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal) }
+                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal, refresh: true) }
                 }
             }
         }
@@ -961,6 +962,7 @@ private struct CommandPicker: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
     @State private var search = ""
+    @State private var showingClipboard = false
 
     private var commands: [NativeCommand] {
         guard !search.isEmpty else { return session.commands }
@@ -972,6 +974,8 @@ private struct CommandPicker: View {
         NavigationStack {
             List {
                 Section("Agent actions") {
+                    Button("Recover session") { Task { await session.refresh() }; dismiss() }
+                    Button("Remote clipboard") { showingClipboard = true }
                     Button {
                         session.prepareSubagentTask()
                         dismiss()
@@ -1009,6 +1013,7 @@ private struct CommandPicker: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
+        .sheet(isPresented: $showingClipboard) { RemoteClipboardView(destination: "prompt") { session.draft = $0 } }
         .presentationDetents([.medium, .large])
     }
 }
@@ -1353,8 +1358,12 @@ private struct NativeTerminalScreen: View {
     @State private var input = ""
     @State private var sending = false
     @State private var followOutput = true
+    @AppStorage("zedlink.terminalWrap") private var wrapOutput = true
+    @State private var showingClipboard = false
     @FocusState private var keyboardFocused: Bool
     private let keys: [(String, String)] = [("Esc", "\u{1b}"), ("Tab", "\t"), ("Ctrl C", "\u{03}"), ("↑", "\u{1b}[A"), ("↓", "\u{1b}[B"), ("←", "\u{1b}[D"), ("→", "\u{1b}[C")]
+
+    private var recoveryKey: String { "zedlink.terminalDraft.\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.terminalSnapshot?.terminal.id ?? "")" }
 
     var body: some View {
         NavigationStack {
@@ -1365,6 +1374,11 @@ private struct NativeTerminalScreen: View {
                             Button(terminal.title) { keyboardFocused = false; Task { await session.loadTerminal(terminal) } }
                         }
                     } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }.disabled(sending)
+                    Menu {
+                        Toggle("Wrap output", isOn: $wrapOutput)
+                        Button("Remote clipboard") { showingClipboard = true }
+                        Button("Recover session") { Task { await session.refresh(); await session.loadProjectContext() } }
+                    } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                     Spacer()
                     Text(session.capabilities.contains("terminal.input") ? "Interactive" : "Read only").font(.caption)
                     if !followOutput { Button("Latest") { followOutput = true }.font(.caption) }
@@ -1373,11 +1387,11 @@ private struct NativeTerminalScreen: View {
                     }
                 }.padding(10)
                 ScrollViewReader { reader in
-                ScrollView([.horizontal, .vertical]) {
+                ScrollView(wrapOutput ? .vertical : [.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 0) {
                     terminalText(session.terminalSnapshot)
                         .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: true)
+                        .fixedSize(horizontal: !wrapOutput, vertical: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(10)
                     Color.clear.frame(height: 1).id("terminal-bottom")
                     }
@@ -1409,10 +1423,14 @@ private struct NativeTerminalScreen: View {
                         TextField("Command or reply", text: $input).focused($keyboardFocused)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().font(.body.monospaced())
                             .submitLabel(.send).onSubmit { send() }
+                        VoiceDraftButton(text: $input, scope: recoveryKey)
                         Button { send() } label: { Image(systemName: "return") }.frame(width: 44, height: 44).disabled(sending)
                     }.padding(.horizontal, 10)
                 } else { Text("Enable Send Terminal Input in desktop ZedLink settings.").font(.caption).padding(10) }
             }
+            .task(id: recoveryKey) { input = UserDefaults.standard.string(forKey: recoveryKey) ?? "" }
+            .onChange(of: input) { _, value in if session.terminalSnapshot != nil { UserDefaults.standard.set(value, forKey: recoveryKey) } }
+            .sheet(isPresented: $showingClipboard) { RemoteClipboardView { input = $0 } }
             .navigationTitle("Terminal").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { keyboardFocused = false; dismiss() } }
@@ -1420,7 +1438,7 @@ private struct NativeTerminalScreen: View {
             }
             .task {
                 while !Task.isCancelled {
-                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal) }
+                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal, refresh: true) }
                     do { try await Task.sleep(for: .milliseconds(1000)) } catch { return }
                 }
             }

@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.11";
+const UI_BUILD = "2026.10.12.12";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -1395,6 +1395,8 @@ function renderThreads() {
 }
 
 async function selectThread(threadId) {
+  stopDictation();
+  if ($("clipboard-dialog").open) closeClipboard();
   closeEventStream("connecting");
   state.errorSignature = null;
   state.threadId = threadId;
@@ -1452,6 +1454,8 @@ async function selectThread(threadId) {
   updateComposerAction();
   $("thread-title").textContent = state.threads.find((thread) => thread.thread_id === threadId)?.title || "Untitled Agent thread";
   renderSelectedAgent();
+  $("prompt").value = safeStore.read(promptDraftKey()) || "";
+  $("prompt").dispatchEvent(new Event("input", { bubbles: true }));
   await loadThreads();
   try {
     await refreshSnapshot();
@@ -2008,10 +2012,14 @@ async function loadTerminals() {
   const result = await rpc("terminal.list", baseInstanceParams());
   state.terminals = Array.isArray(result.terminals) ? result.terminals : [];
   if (!state.terminals.some((terminal) => terminal.terminal_id === state.selectedTerminalId)) {
-    state.selectedTerminalId = state.terminals[0]?.terminal_id || null;
+    const remembered = safeStore.read(terminalRecoveryKey());
+    state.selectedTerminalId = state.terminals.find((terminal) => terminal.terminal_id === remembered)?.terminal_id || state.terminals[0]?.terminal_id || null;
   }
   renderTerminals();
-  if (state.selectedTerminalId) await loadTerminalSnapshot();
+  if (state.selectedTerminalId) {
+    safeStore.write(terminalRecoveryKey(), state.selectedTerminalId);
+    await loadTerminalSnapshot();
+  }
 }
 
 async function loadTaskCatalog() {
@@ -2259,6 +2267,12 @@ function renderTerminalSnapshot() {
   $("copy-terminal").disabled = !state.terminalSnapshot;
   const snapshot = state.terminalSnapshot;
   if (!snapshot || snapshot.terminal?.terminal_id !== state.selectedTerminalId) return;
+  const draftKey = `${terminalRecoveryKey()}.${state.selectedTerminalId}.draft`;
+  if ($("terminal-input").dataset.draftKey !== draftKey) {
+    setTerminalInputMode(false);
+    $("terminal-input").dataset.draftKey = draftKey;
+    $("terminal-input").value = safeStore.read(draftKey) || "";
+  }
   $("terminal-title").textContent = snapshot.terminal.title || "Terminal";
   const output = $("terminal-output");
   const followOutput = !output.textContent || output.scrollHeight - output.scrollTop - output.clientHeight < 36;
@@ -2327,6 +2341,7 @@ async function sendTerminalInput(event) {
   const pending = queueTerminalInput(terminalLiveInput || !input.value ? "\r" : `${input.value}\n`);
   if (!pending) return;
   input.value = terminalLiveInput ? "\u200b" : "";
+  if (input.dataset.draftKey) safeStore.remove(input.dataset.draftKey);
   await pending;
   await loadTerminalSnapshot();
 }
@@ -2391,6 +2406,11 @@ function renderActivityIndex() {
 $("context-mobile-view").addEventListener("change", (event) => switchContextTab(event.target.value));
 
 function switchContextTab(tab) {
+  if (tab === "terminal" && safeStore.read("zedlink.terminalWrap") === null) {
+    terminalWrap = matchMedia("(max-width: 760px)").matches;
+    renderTerminalWrap();
+  }
+  document.querySelector(".terminal-tools").open = false;
   $("context-mobile-view").value = tab;
   $("context-panel").classList.toggle("terminal-context", tab === "terminal");
   $("context-panel").classList.toggle("files-context", tab === "files");
@@ -3733,6 +3753,7 @@ async function sendPending() {
       ...(pending.uploads?.length ? { uploads: pending.uploads } : {}),
     }, pending.id);
     $("prompt").value = "";
+    safeStore.remove(promptDraftKey());
     $("prompt").style.height = "auto";
     state.contextPaths = [];
     state.uploads = [];
@@ -3859,6 +3880,7 @@ $("show-sessions").addEventListener("click", () => {
   updateSidebarToggle();
 });
 $("prompt").addEventListener("input", () => {
+  if (state.threadId) safeStore.write(promptDraftKey(), $("prompt").value);
   const prompt = $("prompt");
   prompt.style.height = "auto";
   prompt.style.height = `${Math.min(prompt.scrollHeight, 132)}px`;
@@ -3916,6 +3938,7 @@ $("terminal-select").addEventListener("change", async (event) => {
   terminalInputGeneration += 1;
   setTerminalInputMode(false);
   state.selectedTerminalId = event.target.value || null;
+  if (state.selectedTerminalId) safeStore.write(terminalRecoveryKey(), state.selectedTerminalId);
   state.terminalSnapshot = null;
   renderTerminals();
   if (state.selectedTerminalId) await loadTerminalSnapshot().catch((error) => notice(error.message));
@@ -4228,3 +4251,134 @@ $("file-preview-back").addEventListener("click", () => {
   $("file-preview").classList.add("hidden");
   $("file-search").focus();
 });
+
+function terminalRecoveryKey() { return `zedlink.terminal.${state.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}`; }
+function promptDraftKey() { return `zedlink.draft.${state.gatewayId}.${state.targetId}.${state.threadId}`; }
+let terminalWrap = safeStore.read("zedlink.terminalWrap") === null ? matchMedia("(max-width: 760px)").matches : safeStore.read("zedlink.terminalWrap") === "true";
+function renderTerminalWrap() {
+  $("terminal-output").classList.toggle("wrap-output", terminalWrap);
+  $("terminal-wrap").setAttribute("aria-pressed", String(terminalWrap));
+  $("terminal-wrap").textContent = terminalWrap ? "Keep original columns" : "Wrap output";
+}
+renderTerminalWrap();
+$("terminal-wrap").addEventListener("click", () => {
+  terminalWrap = !terminalWrap;
+  safeStore.write("zedlink.terminalWrap", String(terminalWrap));
+  renderTerminalWrap();
+  document.querySelector(".terminal-tools").open = false;
+});
+$("terminal-recover").addEventListener("click", async () => {
+  document.querySelector(".terminal-tools").open = false;
+  const scope = [state.gatewayId, state.targetId, state.threadId];
+  await connect();
+  if (scope.every((value, index) => value === [state.gatewayId, state.targetId, state.threadId][index])) {
+    openContextPanel("terminal");
+    notice("Session refreshed. No terminal commands were resent.");
+  }
+});
+let clipboardScope = null;
+$("terminal-clipboard").addEventListener("click", () => {
+  document.querySelector(".terminal-tools").open = false;
+  clipboardScope = JSON.stringify(baseThreadParams());
+  $("clipboard-text").value = "";
+  $("clipboard-status").textContent = state.capabilities.includes("clipboard.read") ? "" : "Enable Remote Clipboard in desktop ZedLink settings for desktop transfers.";
+  $("clipboard-dialog").showModal();
+});
+function closeClipboard() { $("clipboard-dialog").close(); $("clipboard-text").value = ""; clipboardScope = null; }
+$("clipboard-close").addEventListener("click", closeClipboard);
+$("clipboard-dialog").addEventListener("cancel", closeClipboard);
+async function clipboardAction(action) {
+  if (action === "read" || action === "write") await refreshCapabilities();
+  if (clipboardScope !== JSON.stringify(baseThreadParams())) throw new Error("Session changed. Close and reopen the clipboard.");
+  const input = $("clipboard-text");
+  if (action === "read") {
+    if (!state.capabilities.includes("clipboard.read")) throw new Error("Enable Remote Clipboard in desktop ZedLink settings.");
+    const result = await rpc("clipboard.read", baseThreadParams());
+    if (clipboardScope !== JSON.stringify(baseThreadParams())) return;
+    if (typeof result.text !== "string" || new TextEncoder().encode(result.text).length > 65536) throw new Error("Invalid clipboard response.");
+    input.value = result.text;
+  } else if (action === "write") {
+    if (!state.capabilities.includes("clipboard.write")) throw new Error("Enable Remote Clipboard in desktop ZedLink settings.");
+    await rpc("clipboard.write", { ...baseThreadParams(), text: input.value }, crypto.randomUUID());
+  } else if (action === "phone-paste") {
+    const text = await navigator.clipboard.readText();
+    if (clipboardScope !== JSON.stringify(baseThreadParams())) return;
+    if (new TextEncoder().encode(text).length > 65536) throw new Error("Clipboard exceeds 64 KiB.");
+    input.value = text;
+  } else if (action === "phone-copy") {
+    await navigator.clipboard.writeText(input.value);
+  } else if (action === "prompt") {
+    if (!state.threadId || input.value.length > 3000) throw new Error("Select a session and use up to 3000 characters for the prompt.");
+    $("prompt").value = input.value;
+    $("prompt").dispatchEvent(new Event("input", { bubbles: true }));
+    closeClipboard();
+    $("prompt").focus();
+    return;
+  } else {
+    if (!state.capabilities.includes("terminal.input")) throw new Error("Terminal input is disabled.");
+    if (new TextEncoder().encode(input.value).length > 16384 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input.value)) throw new Error("Paste plain text up to 16 KiB without terminal control characters.");
+    setTerminalInputMode(false);
+    $("terminal-input").value = input.value;
+    $("terminal-input").dispatchEvent(new Event("input", { bubbles: true }));
+    closeClipboard();
+    $("terminal-input").focus();
+    return;
+  }
+  $("clipboard-status").textContent = action === "write" ? "Desktop clipboard updated." : "Ready. Review the text before transferring.";
+}
+for (const action of ["read", "write", "phone-paste", "phone-copy", "terminal", "prompt"]) {
+  $(`clipboard-${action}`).addEventListener("click", () => clipboardAction(action).catch((error) => $("clipboard-status").textContent = error.message));
+}
+let speech = null;
+function renderDictationState(listening) {
+  $("dictate-prompt").setAttribute("aria-pressed", String(listening));
+  $("terminal-dictate").textContent = listening ? "Stop dictation" : "Dictate input";
+  document.querySelector(".terminal-tools").classList.toggle("listening", listening);
+}
+function stopDictation() { if (speech) { const active = speech; speech = null; active.abort(); } renderDictationState(false); }
+function dictateInto(id) {
+  if (speech) { stopDictation(); return; }
+  const input = $(id);
+  if (input.disabled || (id === "terminal-input" && !state.capabilities.includes("terminal.input"))) return;
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    input.focus();
+    notice("Use the microphone on your phone keyboard to dictate. This browser has no speech recognition API.");
+    return;
+  }
+  if (safeStore.read("zedlink.voiceConsent") !== "true") {
+    if (!confirm("Your browser’s speech service may process audio online. Start dictation? Text stays in the draft until you send it.")) return;
+    safeStore.write("zedlink.voiceConsent", "true");
+  }
+  if (id === "terminal-input" && terminalLiveInput) setTerminalInputMode(false);
+  const scope = JSON.stringify(baseThreadParams());
+  const initial = input.value;
+  const recognizer = new Recognition();
+  speech = recognizer;
+  recognizer.lang = navigator.language || "en-US";
+  recognizer.interimResults = false;
+  recognizer.continuous = false;
+  renderDictationState(true);
+  recognizer.onresult = (event) => {
+    if (speech !== recognizer || scope !== JSON.stringify(baseThreadParams()) || input.value !== initial) return;
+    const text = [...event.results].filter((result) => result.isFinal).map((result) => result[0].transcript).join(" ");
+    input.value = `${initial}${initial && text ? " " : ""}${text}`.slice(0, input.maxLength > 0 ? input.maxLength : 16384);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    notice("Dictation added to the draft. Review it before sending.");
+  };
+  recognizer.onerror = (event) => notice(`Dictation unavailable (${event.error}). Use keyboard dictation instead.`);
+  recognizer.onend = () => { if (speech === recognizer) { speech = null; renderDictationState(false); } };
+  try { recognizer.start(); notice("Listening… Tap the microphone again to stop."); }
+  catch (error) { stopDictation(); notice(error.message); }
+}
+$("dictate-prompt").addEventListener("click", () => dictateInto("prompt"));
+$("terminal-dictate").addEventListener("click", () => { document.querySelector(".terminal-tools").open = false; dictateInto("terminal-input"); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) stopDictation(); });
+
+$("terminal-input").addEventListener("input", () => {
+  const input = $("terminal-input");
+  if (!terminalLiveInput && input.dataset.draftKey) safeStore.write(input.dataset.draftKey, input.value);
+});
+
+$("action-recover").addEventListener("click", async () => { $("action-menu").classList.add("hidden"); await connect(); notice("Session refreshed. No commands or prompts were resent."); });
+$("action-clipboard").addEventListener("click", () => { $("action-menu").classList.add("hidden"); $("terminal-clipboard").click(); });

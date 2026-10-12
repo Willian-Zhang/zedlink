@@ -64,6 +64,7 @@ import Combine
     }
 
     func disconnect() {
+        requestedTerminalID = nil
         generation = UUID()
         pollTask?.cancel()
         eventTask?.cancel()
@@ -579,6 +580,10 @@ import Combine
                 let result = try await client.rpc("terminal.list", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])
                 guard current() else { return }
                 terminals = (result["terminals"] as? [[String: Any]] ?? []).compactMap(Self.decodeTerminal)
+                if terminalSnapshot == nil {
+                    let key = "zedlink.terminal.\([profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? ""].joined(separator: "."))"
+                    if let saved = UserDefaults.standard.string(forKey: key), let terminal = terminals.first(where: { $0.id == saved }) { await loadTerminal(terminal) }
+                }
                 if let selected = terminalSnapshot?.terminal.id, !terminals.contains(where: { $0.id == selected }) {
                     terminalSnapshot = nil
                 }
@@ -659,17 +664,40 @@ import Combine
                                      canStepBack: capabilities?["step_back"] as? Bool ?? false, threads: threads)
     }
 
-    func loadTerminal(_ terminal: NativeTerminal) async {
+    func transferClipboard(_ text: String? = nil) async -> String? {
+        let method = text == nil ? "clipboard.read" : "clipboard.write"
+        guard let client, capabilities.contains(method), let selectedThreadID else {
+            issue = "Enable Remote Clipboard in desktop ZedLink settings."; return nil
+        }
+        let scope = [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID]
+        var params: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": selectedThreadID]
+        if let text { guard text.utf8.count <= 65536, !text.contains("\0") else { issue = "Clipboard exceeds 64 KiB or contains a null character."; return nil }; params["text"] = text }
+        do {
+            let result = try await client.rpc(method, params: params)
+            guard scope == [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", self.selectedThreadID ?? ""] else { return nil }
+            if text != nil { return text }
+            guard let value = result["text"] as? String, value.utf8.count <= 65536 else { throw GatewayFailure.invalidResponse }
+            return value
+        } catch { issue = error.localizedDescription; return nil }
+    }
+
+    private var requestedTerminalID: String?
+    func loadTerminal(_ terminal: NativeTerminal, refresh: Bool = false) async {
+        if refresh && requestedTerminalID != terminal.id { return }
+        if !refresh { requestedTerminalID = terminal.id }
         guard let client, capabilities.contains("terminal.snapshot") else { return }
+        let scope = [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? ""]
         do {
             let result = try await client.rpc("terminal.snapshot", params: [
                 "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
             ])
+            guard requestedTerminalID == terminal.id, scope == [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? ""], terminals.contains(where: { $0.id == terminal.id }) else { return }
             guard let row = result["terminal"] as? [String: Any], let decoded = Self.decodeTerminal(row) else { throw GatewayFailure.invalidResponse }
             let runs = (result["styled_runs"] as? [[String: Any]] ?? []).prefix(2048).compactMap { row -> NativeTerminalRun? in
                 guard let text = row["text"] as? String else { return nil }
                 return NativeTerminalRun(text: text, foreground: row["foreground"] as? String ?? "", background: row["background"] as? String ?? "", bold: row["bold"] as? Bool ?? false, italic: row["italic"] as? Bool ?? false, underline: row["underline"] as? Bool ?? false, dim: row["dim"] as? Bool ?? false)
             }
+            UserDefaults.standard.set(terminal.id, forKey: "zedlink.terminal.\(scope.joined(separator: "."))")
             terminalSnapshot = NativeTerminalSnapshot(terminal: decoded, content: result["content"] as? String ?? "", truncated: result["truncated"] as? Bool ?? false, styledRuns: Array(runs))
         } catch { issue = error.localizedDescription }
     }
@@ -683,7 +711,7 @@ import Combine
                 "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
                 "input": appendReturn ? input + "\n" : input,
             ], requestID: UUID().uuidString)
-            await loadTerminal(terminal)
+            await loadTerminal(terminal, refresh: true)
             return true
         } catch {
             issue = "Terminal input failed. Check the terminal before retrying: " + error.localizedDescription
@@ -700,7 +728,7 @@ import Combine
             ], requestID: UUID().uuidString)
             try? await Task.sleep(for: .milliseconds(150))
             await loadProjectContext()
-            await loadTerminal(terminal)
+            await loadTerminal(terminal, refresh: true)
         } catch { issue = error.localizedDescription }
     }
 

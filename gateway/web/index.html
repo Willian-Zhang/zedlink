@@ -126,13 +126,13 @@
       <div class="composer-wrap">
         <div id="delivery" class="delivery hidden" role="status" aria-live="polite"></div>
         <div id="attachment-strip" class="attachment-strip hidden" aria-label="Prompt attachments"></div>
-        <div id="action-menu" class="action-menu hidden" aria-label="Agent actions and context"><button id="action-delegate" type="button"><strong>⇉</strong><span>Delegate task</span></button><button id="action-commands" type="button"><strong>/</strong><span>Commands</span></button><button id="action-file" type="button"><strong>@</strong><span>Project file</span></button><button id="action-upload" type="button"><strong>↑</strong><span>Upload file</span></button></div>
+        <div id="action-menu" class="action-menu hidden" aria-label="Agent actions and context"><button id="action-recover" type="button"><strong>↻</strong><span>Recover session</span></button><button id="action-clipboard" type="button"><strong>⧉</strong><span>Remote clipboard</span></button><button id="action-delegate" type="button"><strong>⇉</strong><span>Delegate task</span></button><button id="action-commands" type="button"><strong>/</strong><span>Commands</span></button><button id="action-file" type="button"><strong>@</strong><span>Project file</span></button><button id="action-upload" type="button"><strong>↑</strong><span>Upload file</span></button></div>
         <div id="command-menu" class="command-menu hidden" role="listbox" aria-label="Available Zed Agent commands"></div>
         <form id="composer-form" class="composer">
           <button id="show-actions" class="command-trigger" type="button" aria-label="Add command or context" aria-expanded="false" title="Add command or context">+</button>
           <input id="upload-file" class="sr-only" type="file" accept="text/*,application/json,application/xml,image/png,image/jpeg,image/webp" multiple>
           <label id="prompt-label" class="sr-only" for="prompt">Message agent</label>
-          <textarea id="prompt" rows="1" maxlength="3000" placeholder="Message Zed Agent…" aria-describedby="composer-hint" disabled></textarea>
+          <button id="dictate-prompt" class="composer-voice" type="button" aria-label="Dictate message" title="Dictate message"><svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></button><textarea id="prompt" rows="1" maxlength="3000" placeholder="Message Zed Agent…" aria-describedby="composer-hint" disabled></textarea>
           <div class="composer-bottom"><span>Runs in desktop Zed with its current model and tools</span><button id="send" class="primary" type="button" aria-label="Send message" title="Send message" data-mode="send" disabled>↑</button></div>
         </form>
         <span id="composer-hint" class="sr-only">On a keyboard, press Enter to send and Shift Enter for a new line. Type slash to browse commands. The Send button becomes Stop while Zed is running.</span>
@@ -148,7 +148,7 @@
             <label class="sr-only" for="terminal-select">Open Zed terminal</label>
             <select id="terminal-select" disabled><option value="">No open terminals</option></select>
             <span id="terminal-mode" class="terminal-mode">Checking access</span>
-            <button id="copy-terminal" class="terminal-icon" type="button" aria-label="Copy terminal output" title="Copy terminal output">⧉</button><button id="terminal-stop" class="danger hidden" type="button">Stop</button>
+            <details class="terminal-tools"><summary aria-label="Terminal tools" title="Terminal tools">⋯</summary><div class="terminal-tools-menu"><button id="terminal-wrap" type="button" aria-pressed="false">Wrap output</button><button id="terminal-clipboard" type="button">Clipboard…</button><button id="terminal-recover" type="button">Recover session</button><button id="terminal-dictate" type="button">Dictate input</button></div></details><button id="copy-terminal" class="terminal-icon" type="button" aria-label="Copy terminal output" title="Copy terminal output">⧉</button><button id="terminal-stop" class="danger hidden" type="button">Stop</button>
             <button id="refresh-terminal" class="terminal-icon" type="button" aria-label="Refresh terminal" title="Refresh terminal">↻</button>
           </div>
           <p id="terminal-help" class="terminal-help">Checking terminal access…</p>
@@ -176,5 +176,6 @@
     <button id="tab-connections" type="button" data-mobile-view="connections"><span class="mobile-tab-icon" aria-hidden="true">◎</span>Connections</button>
     <button id="tab-settings" type="button" data-mobile-view="settings"><span class="mobile-tab-icon" aria-hidden="true">⚙︎</span>Settings</button>
   </nav>
+<dialog id="clipboard-dialog" class="clipboard-dialog"><header><h2>Remote clipboard</h2><button id="clipboard-close" type="button" aria-label="Close clipboard">×</button></header><p>Text only. Preview before transferring. Terminal paste fills a draft and does not run it.</p><label for="clipboard-text">Clipboard preview</label><textarea id="clipboard-text" maxlength="65536" rows="8"></textarea><p id="clipboard-status" role="status"></p><div class="clipboard-actions"><button id="clipboard-read" type="button">Read desktop</button><button id="clipboard-phone-paste" type="button">Paste from phone</button><button id="clipboard-phone-copy" type="button">Copy to phone</button><button id="clipboard-write" type="button">Send to desktop</button><button id="clipboard-prompt" type="button">Insert in prompt</button><button id="clipboard-terminal" type="button">Insert in terminal</button></div></dialog>
 </body>
 </html>

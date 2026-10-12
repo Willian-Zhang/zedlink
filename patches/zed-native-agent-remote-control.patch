@@ -492,10 +492,10 @@ index e0ce09bb64..e6801fa893 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..9bdeb2fbcd
+index 0000000000..fb5a1c4fdd
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,4255 @@
+@@ -0,0 +1,4315 @@
 +use std::{
 +    cell::{Cell, RefCell},
 +    collections::{HashMap, HashSet, VecDeque},
@@ -525,7 +525,7 @@ index 0000000000..9bdeb2fbcd
 +    repository::{DiffType, RepoPath},
 +    status::{FileStatus, StageStatus},
 +};
-+use gpui::{App, AppContext, Entity, Global, Subscription, Task};
++use gpui::{App, AppContext, ClipboardItem, Entity, Global, Subscription, Task};
 +use language_model::LanguageModelRegistry;
 +use project::{TaskSourceKind, debugger::session::ThreadId};
 +use serde::Deserialize;
@@ -591,6 +591,7 @@ index 0000000000..9bdeb2fbcd
 +    searches: RefCell<HashMap<String, SearchRecord>>,
 +    change_operations: RefCell<HashMap<String, ChangeOperationRecord>>,
 +    terminal_operations: RefCell<HashMap<String, String>>,
++    clipboard_operations: RefCell<HashMap<String, String>>,
 +}
 +
 +#[derive(Clone, Copy)]
@@ -603,6 +604,7 @@ index 0000000000..9bdeb2fbcd
 +    agent_settings: bool,
 +    terminal_read: bool,
 +    terminal_input: bool,
++    remote_clipboard: bool,
 +    task_control: bool,
 +    task_start: bool,
 +    debugger_read: bool,
@@ -649,6 +651,10 @@ index 0000000000..9bdeb2fbcd
 +            terminal_input: settings
 +                .as_ref()
 +                .and_then(|settings| settings.allow_terminal_input)
++                .unwrap_or(false),
++            remote_clipboard: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_remote_clipboard)
 +                .unwrap_or(false),
 +            task_control: settings
 +                .as_ref()
@@ -736,6 +742,9 @@ index 0000000000..9bdeb2fbcd
 +        if self.terminal_read && self.terminal_input {
 +            capabilities.push("terminal.input");
 +        }
++        if self.remote_clipboard {
++            capabilities.extend(["clipboard.read", "clipboard.write"]);
++        }
 +        if self.task_control {
 +            capabilities.extend(["task.list", "task.stop"]);
 +        }
@@ -777,6 +786,7 @@ index 0000000000..9bdeb2fbcd
 +            "thread.settings.update" | "thread.queue.clear" => self.agent_settings,
 +            "terminal.list" | "terminal.snapshot" => self.terminal_read,
 +            "terminal.input" => self.terminal_read && self.terminal_input,
++            "clipboard.read" | "clipboard.write" => self.remote_clipboard,
 +            "task.list" | "task.stop" => self.task_control,
 +            "task.catalog" | "task.run" => self.task_start,
 +            "debugger.snapshot" => self.debugger_read,
@@ -933,6 +943,7 @@ index 0000000000..9bdeb2fbcd
 +                searches: RefCell::new(HashMap::new()),
 +                change_operations: RefCell::new(HashMap::new()),
 +                terminal_operations: RefCell::new(HashMap::new()),
++                clipboard_operations: RefCell::new(HashMap::new()),
 +            },
 +        ))
 +    })();
@@ -1454,6 +1465,7 @@ index 0000000000..9bdeb2fbcd
 +        "terminal.list" => terminal_list(&request, state, cx),
 +        "terminal.snapshot" => terminal_snapshot(&request, state, cx),
 +        "terminal.input" => terminal_input(&request, state, cx),
++        "clipboard.read" | "clipboard.write" => remote_clipboard(&request, state, cx),
 +        "task.list" => task_list(&request, state, cx),
 +        "task.stop" => task_stop(&request, state, cx),
 +        "task.catalog" => task_catalog(&request, state, cx),
@@ -4005,6 +4017,54 @@ index 0000000000..9bdeb2fbcd
 +    )
 +}
 +
++fn remote_clipboard(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    if let Err(code) = exposed_thread_for_request(request, state, cx) {
++        return error(&request.request_id, code);
++    }
++    if request.method == "clipboard.read" {
++        let text = cx
++            .read_from_clipboard()
++            .and_then(|item| item.text())
++            .unwrap_or_default();
++        if text.len() > 65536 {
++            return error(&request.request_id, "CLIPBOARD_TOO_LARGE");
++        }
++        return success(&request.request_id, json!({"text": text}));
++    }
++    let Some(text) = request.params.get("text").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    if text.len() > 65536 || text.contains('\0') {
++        return error(&request.request_id, "INVALID_REQUEST");
++    }
++    let digest = match payload_digest(&request.params) {
++        Ok(digest) => digest,
++        Err(code) => return error(&request.request_id, code),
++    };
++    if let Some(prior) = state.clipboard_operations.borrow().get(&request.request_id) {
++        return if prior == &digest {
++            success(
++                &request.request_id,
++                json!({"outcome": "accepted", "duplicate": true}),
++            )
++        } else {
++            error(&request.request_id, "REQUEST_ID_CONFLICT")
++        };
++    }
++    if state.clipboard_operations.borrow().len() >= 256 {
++        return error(&request.request_id, "CLIPBOARD_WRITE_LIMIT");
++    }
++    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
++    state
++        .clipboard_operations
++        .borrow_mut()
++        .insert(request.request_id.clone(), digest);
++    success(
++        &request.request_id,
++        json!({"outcome": "accepted", "duplicate": false}),
++    )
++}
++
 +fn terminal_input(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
 +    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
 +        || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
@@ -4827,10 +4887,10 @@ index 8f6e81ec69..3afaf26f07 100644
      }
  
 diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
-index 88083da0ba..bc05a94c40 100644
+index 88083da0ba..234e820298 100644
 --- a/crates/settings_content/src/settings_content.rs
 +++ b/crates/settings_content/src/settings_content.rs
-@@ -334,6 +334,195 @@ pub struct SettingsContent {
+@@ -334,6 +334,199 @@ pub struct SettingsContent {
      /// Settings for developer-oriented instrumentation tools (profilers,
      /// tracers, etc.) that can be toggled at runtime.
      pub instrumentation: Option<InstrumentationSettingsContent>,
@@ -4912,6 +4972,10 @@ index 88083da0ba..bc05a94c40 100644
 +    ///
 +    /// Default: false
 +    pub allow_terminal_input: Option<bool>,
++
++    /// Allows explicit text-only desktop clipboard transfers from paired devices.
++    /// Default: false
++    pub allow_remote_clipboard: Option<bool>,
 +
 +    /// Allows paired devices to stop task-backed terminals in the configured
 +    /// project.
@@ -5026,7 +5090,7 @@ index 88083da0ba..bc05a94c40 100644
  }
  
  /// Configuration for developer-oriented instrumentation tools that collect
-@@ -411,7 +600,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
+@@ -411,7 +604,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
          journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
          node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
          title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
@@ -5050,7 +5114,7 @@ index 861b71e221..c9284f4305 100644
  theme.workspace = true
  theme_settings.workspace = true
 diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
-index 24b82e56d0..46086cb871 100644
+index 24b82e56d0..6f3e715dcb 100644
 --- a/crates/settings_ui/src/page_data.rs
 +++ b/crates/settings_ui/src/page_data.rs
 @@ -1,13 +1,22 @@
@@ -5152,7 +5216,7 @@ index 24b82e56d0..46086cb871 100644
  
  const DEFAULT_AUDIO_OUTPUT: AudioOutputDeviceName = AudioOutputDeviceName(None);
  const DEFAULT_EMPTY_AUDIO_OUTPUT: Option<&AudioOutputDeviceName> = Some(&DEFAULT_AUDIO_OUTPUT);
-@@ -77,11 +151,1494 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
+@@ -77,11 +151,1517 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
          version_control_page(),
          collaboration_page(),
          ai_page(cx),
@@ -6338,7 +6402,7 @@ index 24b82e56d0..46086cb871 100644
 +        ]
 +    }
 +
-+    fn access_section() -> [SettingsPageItem; 14] {
++    fn access_section() -> [SettingsPageItem; 15] {
 +        [
 +            SettingsPageItem::SectionHeader("Remote Permissions"),
 +            SettingsPageItem::SettingItem(SettingItem {
@@ -6514,6 +6578,29 @@ index 24b82e56d0..46086cb871 100644
 +                            .zedlink
 +                            .get_or_insert_default()
 +                            .allow_terminal_input = value
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Remote Clipboard",
++                description: "Allow explicit text-only reads and writes of the desktop clipboard from paired devices in an exposed session. The clipboard can contain sensitive data. Disabled by default; changes apply immediately.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("zedlink.allow_remote_clipboard"),
++                    pick: |settings_content| {
++                        settings_content
++                            .zedlink
++                            .as_ref()?
++                            .allow_remote_clipboard
++                            .as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content
++                            .zedlink
++                            .get_or_insert_default()
++                            .allow_remote_clipboard = value
 +                    },
 +                }),
 +                metadata: None,

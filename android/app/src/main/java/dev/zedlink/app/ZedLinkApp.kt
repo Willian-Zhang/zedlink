@@ -241,6 +241,8 @@ private fun ThreadRow(thread: NativeThread, open: () -> Unit) {
 private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     val snapshot = state.snapshot
     var showCommands by remember { mutableStateOf(false) }
+    var showClipboard by remember { mutableStateOf(false) }
+    if (showClipboard) RemoteClipboardDialog(state, model, model::setDraft, { showClipboard = false }, "prompt")
     var showActions by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showUnexpose by remember { mutableStateOf(false) }
@@ -274,7 +276,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         else Messages(snapshot, model, Modifier.weight(1f))
         if (showCommands) CommandList(state.commands, {
             model.prepareSubagentTask(); showCommands = false
-        }) { model.insertCommand(it); showCommands = false }
+        }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); showCommands = false }
         if (state.delivery.isNotBlank()) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(8.dp))
         if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
@@ -312,7 +314,7 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
     LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
         while (true) {
             delay(1500)
-            state.terminalSnapshot?.terminal?.let(model::loadTerminal)
+            state.terminalSnapshot?.terminal?.let { model.loadTerminal(it, refresh = true) }
         }
     }
     AlertDialog(onDismissRequest = close, title = { Text("Project context") },
@@ -380,7 +382,7 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                     val horizontalTerminalScroll = rememberScrollState()
                     SelectionContainer {
                         Text(terminalText(snapshot), color = Color(0xFFD9DEDB), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                            modifier = Modifier.fillMaxWidth().height(280.dp).verticalScroll(verticalTerminalScroll).horizontalScroll(horizontalTerminalScroll).padding(13.dp))
+                            modifier = Modifier.fillMaxWidth().height(280.dp).verticalScroll(verticalTerminalScroll).padding(13.dp))
                     }
                 }
                 if ("terminal.input" in state.capabilities) {
@@ -684,7 +686,7 @@ private fun ApprovalCard(approval: NativeApproval, respond: (NativeApproval, Nat
 }
 
 @Composable
-private fun CommandList(commands: List<NativeCommand>, delegate: () -> Unit, choose: (NativeCommand) -> Unit) {
+private fun CommandList(commands: List<NativeCommand>, delegate: () -> Unit, clipboard: () -> Unit, recover: () -> Unit, choose: (NativeCommand) -> Unit) {
     Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).border(1.dp, Line).background(Raised).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth().clickable(onClick = delegate).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.AccountTree, null, tint = Blue, modifier = Modifier.size(19.dp))
@@ -694,6 +696,8 @@ private fun CommandList(commands: List<NativeCommand>, delegate: () -> Unit, cho
             }
         }
         Rule()
+        TextButton(onClick = clipboard) { Text("Remote clipboard") }
+        TextButton(onClick = recover) { Text("Recover session") }
         if (commands.isEmpty()) Text("No commands are advertised by this native thread.", color = Muted, modifier = Modifier.padding(14.dp))
         commands.forEach { command ->
             Row(Modifier.fillMaxWidth().clickable { choose(command) }.padding(12.dp)) {
@@ -727,6 +731,7 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
             decorationBox = { inner ->
                 Box { if (state.draft.isEmpty()) Text("Message Zed Agent…", color = Subtle); inner() }
             })
+        VoiceDraftButton(state.draft, "${state.targetId}.${state.instanceId}.${state.epoch}.${state.selectedThreadId}", model::setDraft)
         val canCancel = state.live && state.snapshot?.currentTurnId != null && "thread.cancel" in state.capabilities
         val sendEnabled = state.live && state.draft.isNotBlank() && !state.sending
         IconButton(onClick = { if (canCancel) model.cancel() else submit() }, enabled = if (canCancel) !state.sending else sendEnabled,
@@ -872,12 +877,21 @@ private fun monoLabel() = TextStyle(color = Subtle, fontFamily = FontFamily.Mono
 private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
     var input by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
+    var tools by remember { mutableStateOf(false) }
+    var clipboard by remember { mutableStateOf(false) }
+    val preferences = LocalContext.current.getSharedPreferences("zedlink-terminal", 0)
+    var wrapOutput by remember { mutableStateOf(preferences.getBoolean("wrap", true)) }
+    if (clipboard) RemoteClipboardDialog(state, model, { input = it }, { clipboard = false })
     val scrollScope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val terminalScroll = rememberScrollState()
     val horizontalScroll = rememberScrollState()
     val latestState by rememberUpdatedState(state)
+    val draftKey = "draft.${state.profile?.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}.${state.terminalSnapshot?.terminal?.id}"
+    var loadedDraftKey by remember { mutableStateOf("") }
+    LaunchedEffect(draftKey) { input = preferences.getString(draftKey, "").orEmpty(); loadedDraftKey = draftKey }
+    LaunchedEffect(input, loadedDraftKey) { if (loadedDraftKey == draftKey && state.terminalSnapshot != null) preferences.edit().putString(draftKey, input).apply() }
     LaunchedEffect(state.terminalSnapshot?.content) {
         if (terminalScroll.value >= terminalScroll.maxValue - 40) {
             withFrameNanos { }
@@ -885,7 +899,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
         }
     }
     LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
-        while (true) { latestState.terminalSnapshot?.terminal?.let(model::loadTerminal); delay(1000) }
+        while (true) { latestState.terminalSnapshot?.terminal?.let { model.loadTerminal(it, refresh = true) }; delay(1000) }
     }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
@@ -901,11 +915,19 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                     if (state.terminalSnapshot?.terminal?.taskState == "running" && "task.stop" in state.capabilities) {
                         IconButton(onClick = model::stopTerminalTask) { Icon(Icons.Default.Stop, "Stop task", tint = MaterialTheme.colorScheme.error) }
                     }
+                    Box {
+                        IconButton(onClick = { tools = true }) { Icon(Icons.Default.MoreVert, "Terminal tools") }
+                        DropdownMenu(expanded = tools, onDismissRequest = { tools = false }) {
+                            DropdownMenuItem(text = { Text(if (wrapOutput) "Keep original columns" else "Wrap output") }, onClick = { wrapOutput = !wrapOutput; preferences.edit().putBoolean("wrap", wrapOutput).apply(); tools = false })
+                            DropdownMenuItem(text = { Text("Remote clipboard") }, onClick = { clipboard = true; tools = false })
+                            DropdownMenuItem(text = { Text("Recover session") }, onClick = { model.refresh(); tools = false })
+                        }
+                    }
                     IconButton(onClick = { scrollScope.launch { terminalScroll.scrollTo(terminalScroll.maxValue) } }) { Icon(Icons.Default.ArrowDownward, "Latest output") }
                 }
                 SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
                     Text(terminalText(state.terminalSnapshot), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                        modifier = Modifier.fillMaxSize().verticalScroll(terminalScroll).horizontalScroll(horizontalScroll).padding(10.dp))
+                        modifier = Modifier.fillMaxSize().verticalScroll(terminalScroll).then(if (wrapOutput) Modifier else Modifier.horizontalScroll(horizontalScroll)).padding(10.dp))
                 }
                 if ("terminal.input" in state.capabilities) {
                     Row(Modifier.fillMaxWidth().background(Surface).horizontalScroll(rememberScrollState()).padding(5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -923,6 +945,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
                             keyboardActions = KeyboardActions(onSend = { model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false); input = "" }),
                             decorationBox = { field -> if (input.isEmpty()) Text("Command or reply", color = Muted, fontSize = 16.sp); field() })
+                        VoiceDraftButton(input, draftKey) { input = it }
                         IconButton(onClick = { model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false); input = "" }) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
                         IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
                     }

@@ -38,6 +38,8 @@ Zed keeps the configured model, provider credentials, tools, MCP servers, permis
 | ACP agents | Existing Codex, Claude Code, OpenCode, Copilot, Cursor, and other Zed-hosted ACP threads |
 | Multiple Zed targets | Save several gateways and switch among explicitly configured patched Zed instances without mixing thread state |
 | New sessions | Create in the allowed project with the native Zed Agent or a configured ACP agent |
+| Remote clipboard | Explicit text preview and transfer between paired client and desktop Zed, with a dedicated opt-in setting |
+| Voice drafts and recovery | Browser dictation/fallback, saved drafts and terminal selection; native mobile source prepared, device testing pending |
 | Session management | Rename an exposed session or stop remote exposure while the native desktop thread remains open |
 | Live activity | Indexed long-history paging plus real-time responses, inline thinking, tool calls, terminal output, failures, retries, approvals, and parallel agents |
 | Project context | Navigate folders, read source files, search, attach context, and review syntax-highlighted code and diffs |

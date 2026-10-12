@@ -30,6 +30,69 @@ def until(check, timeout=30):
     raise AssertionError('Native fixture state did not arrive before timeout')
 
 
+def clipboard_browser_round_trip(fixture, socket_path, identity):
+    # This function runs only under the opt-in virtual-display clipboard fixture.
+    import socket
+    import ssl
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.firefox.options import Options
+    from selenium.webdriver.firefox.service import Service
+    from selenium.webdriver.support.ui import WebDriverWait
+    from test_gateway_transport import http, admin
+    state = fixture / 'clipboard-gateway'
+    state.mkdir(mode=0o700)
+    cert, key = fixture / 'clipboard-cert.pem', fixture / 'clipboard-key.pem'
+    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                    '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+                    '-keyout', str(key), '-out', str(cert)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    key.chmod(0o600)
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
+    with (fixture / 'clipboard-gateway.log').open('w') as log:
+        gateway = subprocess.Popen([str(ROOT / 'gateway/target/debug/zedlink-gateway'), 'serve',
+                                    f'127.0.0.1:{port}', str(cert), str(key), socket_path, str(state)],
+                                   stdout=log, stderr=log)
+        browser = None
+        try:
+            until(lambda: (state / 'admin.sock').exists())
+            context = ssl.create_default_context(cafile=str(cert))
+            base = f'https://localhost:{port}'
+            status, info = http(base, context, '/v1/gateway')
+            assert status == 200
+            code = admin(state, 'pair-short-code')['code']
+            options = Options(); options.add_argument('-headless'); options.accept_insecure_certs = True
+            options.set_preference('network.proxy.type', 0)
+            browser = webdriver.Firefox(service=Service('/usr/bin/geckodriver'), options=options)
+            browser.set_window_size(393, 852)
+            browser.get(base + '/#gateway=' + info['gateway_id'])
+            wait = WebDriverWait(browser, 15)
+            wait.until(lambda driver: driver.find_element(By.ID, 'gateway-id').text == info['gateway_id'])
+            browser.find_element(By.ID, 'pair-code').send_keys(code)
+            browser.find_element(By.ID, 'pair-button').click()
+            wait.until(lambda driver: driver.find_element(By.ID, 'prompt').is_enabled())
+            wait.until(lambda driver: driver.find_element(By.ID, 'show-actions').is_enabled())
+            before = rpc(socket_path, 'thread.snapshot', identity)['entries_markdown']
+            browser.find_element(By.ID, 'show-actions').click()
+            browser.find_element(By.ID, 'action-clipboard').click()
+            browser.find_element(By.ID, 'clipboard-read').click()
+            wait.until(lambda driver: driver.find_element(By.ID, 'clipboard-text').get_attribute('value') == 'isolated clipboard fixture 🧪')
+            preview = browser.find_element(By.ID, 'clipboard-text')
+            preview.clear(); preview.send_keys('paired native clipboard round trip')
+            browser.find_element(By.ID, 'clipboard-write').click()
+            until(lambda: rpc(socket_path, 'clipboard.read', identity)['text'] == 'paired native clipboard round trip')
+            browser.find_element(By.ID, 'clipboard-prompt').click()
+            assert browser.find_element(By.ID, 'prompt').get_attribute('value') == 'paired native clipboard round trip'
+            assert rpc(socket_path, 'thread.snapshot', identity)['entries_markdown'] == before
+            print('PASS: paired mobile-width browser → TLS gateway → native Zed clipboard read/write, prompt staged without submission')
+        finally:
+            if browser is not None: browser.quit()
+            gateway.terminate()
+            try: gateway.wait(timeout=10)
+            except subprocess.TimeoutExpired: gateway.kill(); gateway.wait()
+
+
 def main():
     if not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY'):
         raise SystemExit('NOT RUN: a graphical session is required')
@@ -88,6 +151,37 @@ def main():
                 return result.get('thread_id')
             thread_id = until(create)
             identity = {**base, 'thread_id': thread_id}
+            if os.environ.get('ZEDLINK_TEST_CLIPBOARD') == '1':
+                assert 'clipboard.read' not in rpc(socket_path, 'instance.info', {})['capabilities']
+                config_path = profile / 'config/settings.json'
+                settings = json.loads(config_path.read_text())
+                settings['zedlink']['allow_remote_clipboard'] = True
+                config_path.write_text(json.dumps(settings))
+                until(lambda: 'clipboard.write' in rpc(socket_path, 'instance.info', {})['capabilities'])
+                clipboard_id = str(uuid.uuid4())
+                payload = {**identity, 'text': 'isolated clipboard fixture 🧪'}
+                written = rpc(socket_path, 'clipboard.write', payload, clipboard_id)
+                assert written['outcome'] == 'accepted' and not written['duplicate']
+                assert rpc(socket_path, 'clipboard.read', identity)['text'] == payload['text']
+                assert rpc(socket_path, 'clipboard.write', payload, clipboard_id)['duplicate']
+                for method, params, expected, request_id in [
+                    ('clipboard.write', {**identity, 'text': 'different'}, 'REQUEST_ID_CONFLICT', clipboard_id),
+                    ('clipboard.write', {**identity, 'text': 'x' * 65537}, 'INVALID_REQUEST', None),
+                    ('clipboard.read', {**identity, 'thread_id': 'hidden'}, 'THREAD_NOT_EXPOSED', None),
+                    ('clipboard.read', {**identity, 'epoch': 'obsolete'}, 'INSTANCE_UNAVAILABLE', None),
+                ]:
+                    try: rpc(socket_path, method, params, request_id)
+                    except RuntimeError as error: assert expected in str(error), str(error)
+                    else: raise AssertionError('Clipboard invalid scope/payload was accepted')
+                clipboard_browser_round_trip(fixture, socket_path, identity)
+                settings['zedlink']['allow_remote_clipboard'] = False
+                config_path.write_text(json.dumps(settings))
+                until(lambda: 'clipboard.read' not in rpc(socket_path, 'instance.info', {})['capabilities'])
+                try: rpc(socket_path, 'clipboard.read', identity)
+                except RuntimeError as error: assert 'UNSUPPORTED_CAPABILITY' in str(error)
+                else: raise AssertionError('Disabled clipboard read was accepted')
+                print('PASS: isolated native clipboard transfers, opt-in/hot-disable, duplicate/conflict, size and scope rejection')
+
             root = until(lambda: (result if any(entry['path'] == 'zfolder' for entry in result['entries']) else None)
                          if (result := rpc(socket_path, 'project.directory', {**identity, 'path': ''})) else None)
             assert all('/' not in entry['path'] for entry in root['entries'])

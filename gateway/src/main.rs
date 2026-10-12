@@ -1537,6 +1537,8 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.edit_review.respond"
             | "terminal.list"
             | "terminal.snapshot"
+            | "clipboard.read"
+            | "clipboard.write"
             | "terminal.input"
             | "task.list"
             | "task.stop"

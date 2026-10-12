@@ -121,6 +121,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun connect() {
+        requestedTerminalId = null
         approvalNotifications.clear()
         val profile = state.profile ?: return
         val token = TokenVault.read(getApplication(), profile.gatewayId) ?: run {
@@ -640,16 +641,43 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(projectFiles = files, changes = entries, changesRevision = revision, terminals = terminals,
                 terminalSnapshot = state.terminalSnapshot?.takeIf { snapshot -> terminals.any { it.id == snapshot.terminal.id } },
                 configuredTasks = configuredTasks, debuggerCatalog = debuggerCatalog, debuggerSessions = debuggerSessions)
+            if (state.terminalSnapshot == null) {
+                val remembered = preferences.getString(terminalRecoveryKey(), null)
+                terminals.firstOrNull { it.id == remembered }?.let { loadTerminal(it) }
+            }
         } catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty()) }
     }
-    fun loadTerminal(terminal: NativeTerminal) = viewModelScope.launch { try {
-        val result = client!!.rpc("terminal.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("terminal_id", terminal.id))
+    suspend fun transferClipboard(text: String? = null): String? {
+        val method = if (text == null) "clipboard.read" else "clipboard.write"
+        val transport = client ?: return null
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        if (method !in state.capabilities || state.selectedThreadId == null) { state = state.copy(issue = "Enable Remote Clipboard in desktop ZedLink settings."); return null }
+        if (text != null && (text.toByteArray().size > 65536 || text.contains('\u0000'))) { state = state.copy(issue = "Clipboard exceeds 64 KiB or contains a null character."); return null }
+        return try {
+            val params = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId)
+            if (text != null) params.put("text", text)
+            val result = transport.rpc(method, params)
+            if (transport !== client || scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) return null
+            if (text != null) text else result.getString("text").also { require(it.toByteArray().size <= 65536) }
+        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()); null }
+    }
+    private fun terminalRecoveryKey() = "terminal.${state.profile?.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}"
+    private var requestedTerminalId: String? = null
+    fun loadTerminal(terminal: NativeTerminal, refresh: Boolean = false): Job = viewModelScope.launch {
+        if (refresh && requestedTerminalId != terminal.id) return@launch
+        if (!refresh) requestedTerminalId = terminal.id
+        val transport = client ?: return@launch
+        val recoveryKey = terminalRecoveryKey()
+        try {
+        val result = transport.rpc("terminal.snapshot", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("terminal_id", terminal.id))
+        if (requestedTerminalId != terminal.id || transport !== client || recoveryKey != terminalRecoveryKey() || state.terminals.none { it.id == terminal.id }) return@launch
         val decoded = result.optJSONObject("terminal")?.let(::decodeTerminal) ?: throw GatewayException("Zed returned an invalid terminal snapshot.")
         val runs = result.optJSONArray("styled_runs") ?: JSONArray()
         val styles = (0 until minOf(runs.length(), 2048)).mapNotNull { index ->
             val row = runs.optJSONObject(index) ?: return@mapNotNull null
             NativeTerminalRun(row.optString("text"), row.optString("foreground"), row.optString("background"), row.optBoolean("bold"), row.optBoolean("italic"), row.optBoolean("underline"), row.optBoolean("dim"))
         }
+        preferences.edit().putString(recoveryKey, terminal.id).apply()
         state = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated"), styles))
     } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
     private val terminalInputMutex = Mutex()
@@ -667,7 +695,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 try {
                     transport.rpc("terminal.input", JSONObject().put("instance_id", instance).put("epoch", epoch)
                         .put("terminal_id", terminal.id).put("input", if (appendReturn) "$input\n" else input), UUID.randomUUID().toString())
-                    loadTerminal(terminal)
+                    loadTerminal(terminal, refresh = true)
                 } catch (error: Exception) { terminalInputGeneration += 1; state = state.copy(issue = "Terminal input failed. Check the terminal before retrying: ${error.message.orEmpty()}") }
             }
         }
@@ -678,7 +706,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         try {
             client!!.rpc("task.stop", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
                 .put("terminal_id", terminal.id), UUID.randomUUID().toString())
-            delay(150); loadProjectContext(); loadTerminal(terminal)
+            delay(150); loadProjectContext(); loadTerminal(terminal, refresh = true)
         } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
     }
     private fun decodeTerminal(row: JSONObject): NativeTerminal? {

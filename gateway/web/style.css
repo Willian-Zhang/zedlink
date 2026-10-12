@@ -728,3 +728,23 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .terminal-mode[data-state="off"]::after { content: "Off"; font-size: 10px; }
   #terminal-stop { min-height: 44px; padding: 0 8px; font-size: 11px; }
 }
+
+.terminal-preview pre.wrap-output { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.terminal-tools { position: relative; flex: none; }
+.terminal-tools > summary { display: grid; place-items: center; width: 44px; height: 44px; cursor: pointer; list-style: none; font-size: 22px; }
+.terminal-tools > summary::-webkit-details-marker { display: none; }
+.terminal-tools-menu { position: absolute; right: 0; top: 100%; z-index: 12; min-width: 200px; padding: 5px; background: #151719; border: 1px solid var(--line); box-shadow: 0 8px 24px #0008; }
+.terminal-tools-menu button { display: block; width: 100%; min-height: 44px; border: 0; text-align: left; font-size: 13px; }
+.composer-voice { flex: none; width: 38px; min-height: 40px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.composer-voice[aria-pressed="true"] { color: var(--warning); background: #30251b; border-radius: 50%; }
+.clipboard-dialog { width: min(520px, calc(100% - 24px)); max-height: calc(var(--app-height, 100dvh) - 24px); overflow: auto; padding: 16px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.clipboard-dialog::backdrop { background: #000b; }
+.clipboard-dialog header { display: flex; align-items: center; justify-content: space-between; }
+.clipboard-dialog h2 { font-size: 18px; }
+.clipboard-dialog header button { width: 44px; height: 44px; padding: 0; }
+.clipboard-dialog p { color: var(--muted); font-size: 13px; }
+.clipboard-dialog textarea { width: 100%; margin-top: 8px; font-size: 16px; }
+.clipboard-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.clipboard-actions button { min-height: 44px; font-size: 13px; }
+
+.terminal-tools.listening > summary { color: var(--warning); background: #30251b; border-radius: 8px; }

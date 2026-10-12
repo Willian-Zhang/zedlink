@@ -100,6 +100,8 @@ class ProbeFixture:
         ]
         self.change_operations = {}
         self.terminal_inputs = {}
+        self.clipboard = "remote fixture 🧪"
+        self.clipboard_writes = []
         self.task_stops = {}
         self.task_runs = {}
         self.debugger_launches = {}
@@ -288,6 +290,12 @@ class ProbeFixture:
                                               {"text": "ready\\n", "foreground": "#ff5555", "background": "#020303", "bold": True},
                                               {"text": "📁 \uf07b \uf48a \ue7a8 \U000f0219 \U000f08c6 e\u0301 界 <script>fixture</script>", "foreground": "#55ff55", "background": "#020303"}],
                               "total_lines": 2, "viewport_lines": 24}
+                elif method == "clipboard.read":
+                    result = {"text": self.clipboard}
+                elif method == "clipboard.write":
+                    self.clipboard = params["text"]
+                    self.clipboard_writes.append(params["text"])
+                    result = {"outcome": "accepted", "duplicate": False}
                 elif method == "terminal.input":
                     payload = json.dumps(params, sort_keys=True)
                     duplicate = request["request_id"] in self.terminal_inputs
@@ -508,7 +516,7 @@ class ProbeFixture:
                                                "thread.rewind",
                                                "thread.approvals", "approval.respond", "project.files", "project.directory",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
-                                               "terminal.list", "terminal.snapshot", "terminal.input", "task.list", "task.stop",
+                                               "terminal.list", "terminal.snapshot", "terminal.input", "clipboard.read", "clipboard.write", "task.list", "task.stop",
                                                "task.catalog", "task.run", "debugger.catalog", "debugger.launch", "debugger.snapshot", "debugger.control",
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
@@ -920,7 +928,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.11"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.12"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1422,6 +1430,37 @@ def main():
                 for control in ["close-context", "context-mobile-view", "copy-terminal", "refresh-terminal"]:
                     assert browser.find_element(By.ID, control).rect["height"] >= 44
                 browser.save_screenshot("/tmp/zedlink-workspace-compact-mobile.png")
+                assert browser.find_element(By.ID, "terminal-output").value_of_css_property("white-space") == "pre-wrap"
+                # Explicit clipboard transfers stage a draft without terminal execution.
+                inputs_before_clipboard = len(probe.terminal_inputs)
+                browser.find_element(By.CSS_SELECTOR, ".terminal-tools > summary").click()
+                browser.find_element(By.ID, "terminal-clipboard").click()
+                browser.find_element(By.ID, "clipboard-read").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "clipboard-text").get_attribute("value") == "remote fixture 🧪")
+                browser.find_element(By.ID, "clipboard-write").click()
+                wait.until(lambda driver: probe.clipboard_writes == ["remote fixture 🧪"])
+                browser.find_element(By.ID, "clipboard-terminal").click()
+                assert browser.find_element(By.ID, "terminal-input").get_attribute("value") == "remote fixture 🧪"
+                assert len(probe.terminal_inputs) == inputs_before_clipboard
+                browser.find_element(By.ID, "terminal-input").clear()
+                browser.execute_script("document.getElementById('terminal-input').dispatchEvent(new Event('input',{bubbles:true}))")
+                # A test recognizer exercises draft handling, not real microphone transcription.
+                accepted_before_voice = probe.accepted
+                browser.execute_script("localStorage.setItem('zedlink.voiceConsent','true'); window.SpeechRecognition=class { start(){window.testRecognizer=this;} abort(){this.onend?.();} }; document.getElementById('prompt').value=''; document.getElementById('dictate-prompt').click(); const result=[{transcript:'spoken draft'}]; result.isFinal=true; window.testRecognizer.onresult({results:[result]}); window.testRecognizer.onend();")
+                assert browser.find_element(By.ID, "prompt").get_attribute("value") == "spoken draft"
+                assert probe.accepted == accepted_before_voice
+                browser.execute_script("document.getElementById('dictate-prompt').click(); const result=[{transcript:'obsolete words'}]; result.isFinal=true; document.getElementById('prompt').value='edited draft'; document.getElementById('prompt').dispatchEvent(new Event('input',{bubbles:true})); window.testRecognizer.onresult({results:[result]}); window.testRecognizer.onend(); delete window.SpeechRecognition;")
+                assert browser.find_element(By.ID, "prompt").get_attribute("value") == "edited draft"
+                browser.find_element(By.CSS_SELECTOR, ".terminal-tools > summary").click()
+                browser.find_element(By.ID, "terminal-recover").click()
+                wait.until(lambda driver: "Session refreshed" in driver.find_element(By.ID, "notice").get_attribute("textContent"))
+                wait.until(lambda driver: driver.find_element(By.ID, "context-mobile-view").get_attribute("value") == "terminal" and driver.find_element(By.ID, "terminal-preview").is_displayed())
+                assert browser.find_element(By.ID, "prompt").get_attribute("value") == "edited draft"
+                assert browser.find_element(By.ID, "terminal-select").get_attribute("value") == "fixture-terminal"
+                assert len(probe.terminal_inputs) == inputs_before_clipboard
+                browser.save_screenshot("/tmp/zedlink-mobile-terminal-integrations.png")
+                browser.execute_script("document.getElementById('prompt').value=''; document.getElementById('prompt').dispatchEvent(new Event('input',{bubbles:true}))")
+
                 browser.find_element(By.ID, "terminal-input").click()
                 keyboard_layout = browser.execute_script("syncVisualViewport({height:400,offsetTop:0}); const panel=document.getElementById('context-panel').getBoundingClientRect(); const keys=document.getElementById('terminal-keys').getBoundingClientRect(); const input=document.getElementById('terminal-input-form').getBoundingClientRect(); return {bottom:panel.bottom,keys:keys.bottom,input:input.bottom}")
                 assert keyboard_layout["bottom"] <= 401 and keyboard_layout["keys"] <= 401 and keyboard_layout["input"] <= 401, keyboard_layout
