@@ -33,8 +33,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.RectangleShape
@@ -297,6 +300,8 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
 private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
     var terminalInput by remember { mutableStateOf("") }
     var terminalMenu by remember { mutableStateOf(false) }
+    var fullTerminal by remember { mutableStateOf(false) }
+    if (fullTerminal) TerminalScreen(state, model) { fullTerminal = false }
     LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
         while (true) {
             delay(1500)
@@ -357,6 +362,7 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 }
             }
             state.terminalSnapshot?.let { snapshot ->
+                TextButton(onClick = { fullTerminal = true }) { Icon(Icons.Default.Fullscreen, null); Text("Open full-screen terminal") }
                 Column(Modifier.fillMaxWidth().border(1.dp, Line).background(Color(0xFF020303))) {
                     Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).background(Color(0xFF08090A)).padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(7.dp).background(Green))
@@ -851,3 +857,68 @@ private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
 @Composable private fun FlatButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, action: () -> Unit) { Button(action, modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = enabled, shape = androidx.compose.ui.graphics.RectangleShape, colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Black)) { Text(label, fontWeight = FontWeight.Bold) } }
 @Composable private fun FlatIconButton(label: String, action: () -> Unit) { Box(Modifier.size(44.dp).border(1.dp, Line).clickable(onClick = action), contentAlignment = Alignment.Center) { Text(label, fontFamily = FontFamily.Monospace, fontSize = 20.sp) } }
 private fun monoLabel() = TextStyle(color = Subtle, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, letterSpacing = 1.sp)
+
+
+@Composable
+private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
+    var input by remember { mutableStateOf("") }
+    var menu by remember { mutableStateOf(false) }
+    val scrollScope = rememberCoroutineScope()
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    val terminalScroll = rememberScrollState()
+    val horizontalScroll = rememberScrollState()
+    val latestState by rememberUpdatedState(state)
+    LaunchedEffect(state.terminalSnapshot?.content) {
+        if (terminalScroll.value >= terminalScroll.maxValue - 40) {
+            withFrameNanos { }
+            terminalScroll.scrollTo(terminalScroll.maxValue)
+        }
+    }
+    LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
+        while (true) { latestState.terminalSnapshot?.terminal?.let(model::loadTerminal); delay(1000) }
+    }
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Surface(color = Black, modifier = Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = close) { Icon(Icons.Default.ArrowBack, "Back to workspace") }
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { menu = true }) { Text(state.terminalSnapshot?.terminal?.title ?: "Terminal", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            state.terminals.forEach { terminal -> DropdownMenuItem(text = { Text(terminal.title, maxLines = 1) }, onClick = { menu = false; model.loadTerminal(terminal) }) }
+                        }
+                    }
+                    if (state.terminalSnapshot?.terminal?.taskState == "running" && "task.stop" in state.capabilities) {
+                        IconButton(onClick = model::stopTerminalTask) { Icon(Icons.Default.Stop, "Stop task", tint = MaterialTheme.colorScheme.error) }
+                    }
+                    IconButton(onClick = { scrollScope.launch { terminalScroll.scrollTo(terminalScroll.maxValue) } }) { Icon(Icons.Default.ArrowDownward, "Latest output") }
+                }
+                SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
+                    Text(state.terminalSnapshot?.content.orEmpty(), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                        modifier = Modifier.fillMaxSize().verticalScroll(terminalScroll).horizontalScroll(horizontalScroll).padding(10.dp))
+                }
+                if ("terminal.input" in state.capabilities) {
+                    Row(Modifier.fillMaxWidth().background(Surface).horizontalScroll(rememberScrollState()).padding(5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        listOf("Esc" to "\u001b", "Tab" to "\t", "Ctrl C" to "\u0003", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, bytes) ->
+                            TextButton(onClick = {
+                                if (input.isNotEmpty()) { model.sendTerminalInput(input, appendReturn = false); input = "" }
+                                model.sendTerminalInput(bytes, appendReturn = false)
+                            }, modifier = Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) { Text(label, fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("›", color = Green); Spacer(Modifier.width(8.dp))
+                        BasicTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f), singleLine = true,
+                            textStyle = TextStyle(color = Ink, fontSize = 16.sp, fontFamily = FontFamily.Monospace), cursorBrush = SolidColor(Green),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
+                            keyboardActions = KeyboardActions(onSend = { model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false); input = "" }),
+                            decorationBox = { field -> if (input.isEmpty()) Text("Command or reply", color = Muted, fontSize = 16.sp); field() })
+                        IconButton(onClick = { model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false); input = "" }) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
+                        IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
+                    }
+                } else { Text("Enable Send Terminal Input in desktop ZedLink settings.", color = Muted, modifier = Modifier.padding(12.dp)) }
+            }
+        }
+    }
+}

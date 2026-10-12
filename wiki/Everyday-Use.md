@@ -53,3 +53,14 @@ The iPhone, Android, and browser clients keep connection state separate for each
 An unavailable target remains selected and is shown as unavailable. ZedLink never sends its work to another target automatically.
 
 From **+ New**, choose an agent advertised by the selected Zed project. The native Zed Agent uses its current Zed model and profile. Codex, Claude Code, and other ACP choices retain their external agent configuration in Zed.
+
+
+## Terminal keyboard
+
+Open **Context → Terminal** to use an existing terminal in the selected Zed project. Enable **View Project Terminals** and **Send Terminal Input** in desktop ZedLink settings. Those permissions are independent and apply live.
+
+The browser offers two input modes. **Command** composes a whole command or reply before sending. Tap **Command** to switch to **Keyboard**, which sends typing directly to the selected Zed terminal. Use the shortcut row for Esc, Tab completion, Ctrl C, arrows, and Backspace. Hardware keyboards support these keys and Ctrl combinations in Keyboard mode. Enter sends a command or terminal Return; **Hide keyboard** restores the output area.
+
+The native apps offer **Open full-screen terminal** from project context, a command/reply field, Return, and the same Esc, Tab, Ctrl C, and arrow shortcuts. Sending a shortcut first delivers any partially composed command without pressing Return. iOS includes a keyboard Hide action; Android includes a keyboard-dismiss button. Native apps currently compose text before submission; browser Keyboard mode additionally streams typing.
+
+These controls address the existing terminal through Zed. Terminal output is a bounded text snapshot, refreshed while the terminal view is open. It does not yet project terminal cell colors, cursor position, or remote resize, so full-screen editors and other terminal UIs do not have full emulator fidelity. Do not use this as evidence that every interactive terminal program is supported.

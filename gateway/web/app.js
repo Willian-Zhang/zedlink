@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.4";
+const UI_BUILD = "2026.10.12.5";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -2160,23 +2160,68 @@ function renderTerminalSnapshot() {
   $("terminal-input-form").classList.toggle("hidden", !canInput);
   $("terminal-read-only").classList.toggle("hidden", canInput);
   $("terminal-input").disabled = !canInput;
+  $("terminal-keys").classList.toggle("hidden", !canInput);
+  $("terminal-hide-keyboard").classList.toggle("hidden", !canInput);
+  $("terminal-help").classList.toggle("hidden", canInput);
   const running = snapshot.terminal.task?.status?.state === "running";
   $("terminal-stop").classList.toggle("hidden", !running || !state.capabilities.includes("task.stop"));
 }
 
+let terminalLiveInput = false;
+let terminalInputQueue = Promise.resolve();
+let terminalInputGeneration = 0;
+let terminalPendingBytes = 0;
+const terminalKeys = { escape: "\x1b", tab: "\t", interrupt: "\x03", up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", right: "\x1b[C", backspace: "\x7f", enter: "\r" };
+
+function queueTerminalInput(input) {
+  if (!input || !state.selectedTerminalId || !state.capabilities.includes("terminal.input")) return;
+  const bytes = new TextEncoder().encode(input).length;
+  if (bytes > 16384 || terminalPendingBytes + bytes > 16384) { notice("Terminal input is too large. Wait for pending input to finish."); return; }
+  const params = { ...baseInstanceParams(), terminal_id: state.selectedTerminalId, input };
+  const target = state.targetId;
+  const generation = terminalInputGeneration;
+  const requestId = crypto.randomUUID();
+  terminalPendingBytes += bytes;
+  terminalInputQueue = terminalInputQueue.then(async () => {
+    if (generation !== terminalInputGeneration || params.terminal_id !== state.selectedTerminalId || target !== state.targetId || params.instance_id !== baseInstanceParams().instance_id || params.epoch !== baseInstanceParams().epoch) return;
+    try {
+      await rpc("terminal.input", params, requestId);
+    } catch (error) {
+      // Do not replay keystrokes whose delivery is unknown, or send queued input after an error.
+      terminalInputGeneration += 1;
+      notice(`Terminal input stopped: ${error.message}. Check the terminal before typing again.`);
+    }
+  }).finally(() => { terminalPendingBytes -= bytes; });
+  return terminalInputQueue;
+}
+
 async function sendTerminalInput(event) {
   event.preventDefault();
-  const input = $("terminal-input").value;
-  if (!input || !state.selectedTerminalId || !state.capabilities.includes("terminal.input")) return;
-  const requestId = crypto.randomUUID();
-  $("terminal-input").disabled = true;
-  try {
-    await rpc("terminal.input", { ...baseInstanceParams(), terminal_id: state.selectedTerminalId, input: `${input}\n` }, requestId);
-    $("terminal-input").value = "";
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    await loadTerminalSnapshot();
-  } catch (error) { notice(error.message); }
-  finally { $("terminal-input").disabled = false; }
+  const input = $("terminal-input");
+  if (!terminalLiveInput && !input.value) return;
+  const pending = queueTerminalInput(terminalLiveInput ? "\r" : `${input.value}\n`);
+  if (!pending) return;
+  input.value = terminalLiveInput ? "\u200b" : "";
+  await pending;
+  await loadTerminalSnapshot();
+}
+
+function setTerminalInputMode(live) {
+  terminalLiveInput = live;
+  $("terminal-live-hint").classList.toggle("hidden", !live);
+  const input = $("terminal-input");
+  input.value = live ? "\u200b" : "";
+  input.placeholder = live ? "Type directly in terminal" : "Type a command";
+  $("terminal-live-input").textContent = live ? "Keyboard" : "Command";
+  $("terminal-live-input").setAttribute("aria-pressed", String(live));
+}
+
+function terminalTypedInput(event) {
+  if (!terminalLiveInput || event.isComposing) return;
+  const input = $("terminal-input");
+  const text = input.value.replaceAll("\u200b", "");
+  if (text) queueTerminalInput(text);
+  input.value = "\u200b";
 }
 
 async function stopSelectedTask() {
@@ -2240,6 +2285,8 @@ function openContextPanel(tab = "files") {
 }
 
 function closeContextPanel() {
+  $("terminal-input").blur();
+  terminalInputGeneration += 1;
   document.body.classList.remove("context-open");
   $("context-panel").classList.add("hidden");
   $("show-context").setAttribute("aria-expanded", "false");
@@ -3737,6 +3784,8 @@ $("context-terminal-tab").addEventListener("click", () => switchContextTab("term
 $("context-debug-tab").addEventListener("click", () => switchContextTab("debug"));
 $("context-activity-tab").addEventListener("click", () => switchContextTab("activity"));
 $("terminal-select").addEventListener("change", async (event) => {
+  terminalInputGeneration += 1;
+  setTerminalInputMode(false);
   state.selectedTerminalId = event.target.value || null;
   state.terminalSnapshot = null;
   renderTerminals();
@@ -3751,6 +3800,31 @@ $("copy-terminal").addEventListener("click", async () => {
   } catch { notice("Terminal output could not be copied."); }
 });
 $("terminal-input-form").addEventListener("submit", sendTerminalInput);
+$("terminal-live-input").addEventListener("click", () => { setTerminalInputMode(!terminalLiveInput); $("terminal-input").focus(); });
+$("terminal-hide-keyboard").addEventListener("click", (event) => { $("terminal-input").blur(); event.currentTarget.blur(); syncVisualViewport(); });
+$("terminal-keys").addEventListener("pointerdown", (event) => { if (event.target.closest("button")) event.preventDefault(); });
+$("terminal-keys").addEventListener("click", async (event) => {
+  const key = event.target.closest("[data-terminal-key]")?.dataset.terminalKey;
+  if (!key) return;
+  // Flush a partial command before completion or cursor movement.
+  const input = $("terminal-input");
+  if (!terminalLiveInput && input.value) { queueTerminalInput(input.value); input.value = ""; setTerminalInputMode(true); }
+  await queueTerminalInput(terminalKeys[key]);
+  await loadTerminalSnapshot();
+});
+$("terminal-input").addEventListener("input", terminalTypedInput);
+$("terminal-input").addEventListener("compositionstart", () => $("terminal-live-hint").classList.add("hidden"));
+$("terminal-input").addEventListener("compositionend", (event) => { terminalTypedInput(event); $("terminal-live-hint").classList.toggle("hidden", !terminalLiveInput); });
+$("terminal-input").addEventListener("beforeinput", (event) => {
+  if (terminalLiveInput && event.inputType === "deleteContentBackward") { event.preventDefault(); queueTerminalInput("\x7f"); }
+});
+$("terminal-input").addEventListener("keydown", (event) => {
+  if (!terminalLiveInput || event.isComposing) return;
+  const key = { Escape: "escape", Tab: "tab", ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Backspace: "backspace" }[event.key];
+  let bytes = key ? terminalKeys[key] : null;
+  if (event.ctrlKey && !event.altKey && event.key.length === 1 && /^[a-z@\[\]\\^_]$/i.test(event.key)) bytes = String.fromCharCode(event.key.toUpperCase().charCodeAt(0) & 31);
+  if (bytes !== null) { event.preventDefault(); queueTerminalInput(bytes); }
+});
 $("task-run-form").addEventListener("submit", runConfiguredTask);
 $("debugger-launch-form").addEventListener("submit", launchConfiguredDebugger);
 $("file-search").addEventListener("input", renderProjectFiles);

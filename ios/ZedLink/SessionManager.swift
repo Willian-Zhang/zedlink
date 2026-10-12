@@ -640,17 +640,21 @@ import Combine
         } catch { issue = error.localizedDescription }
     }
 
-    func sendTerminalInput(_ input: String) async {
+    @discardableResult
+    func sendTerminalInput(_ input: String, appendReturn: Bool = true) async -> Bool {
         guard let client, let terminal = terminalSnapshot?.terminal, !input.isEmpty,
-              capabilities.contains("terminal.input") else { return }
+              capabilities.contains("terminal.input") else { return false }
         do {
             _ = try await client.rpc("terminal.input", params: [
                 "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
-                "input": input + "\n",
+                "input": appendReturn ? input + "\n" : input,
             ], requestID: UUID().uuidString)
-            try? await Task.sleep(for: .milliseconds(120))
             await loadTerminal(terminal)
-        } catch { issue = error.localizedDescription }
+            return true
+        } catch {
+            issue = "Terminal input failed. Check the terminal before retrying: " + error.localizedDescription
+            return false
+        }
     }
 
     func stopTerminalTask() async {

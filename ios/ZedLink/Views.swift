@@ -516,6 +516,7 @@ private struct NativeContextSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
     @State private var terminalInput = ""
+    @State private var showingTerminal = false
     var body: some View {
         NavigationStack {
             List {
@@ -555,6 +556,7 @@ private struct NativeContextSheet: View {
                     }
                 }
                 Section("Zed terminals") {
+                    if session.terminalSnapshot != nil { Button("Open full-screen terminal", systemImage: "arrow.up.left.and.arrow.down.right") { showingTerminal = true } }
                     if !session.capabilities.contains("terminal.list") {
                         Text("Enable View Project Terminals in ZedLink settings. Changes apply without restarting Zed.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -686,6 +688,7 @@ private struct NativeContextSheet: View {
                 }
             }
             .navigationTitle("Project context").toolbar { Button("Done") { dismiss() } }
+            .sheet(isPresented: $showingTerminal) { NativeTerminalScreen() }
             .task {
                 await session.loadProjectContext()
                 while !Task.isCancelled {
@@ -1334,6 +1337,97 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden).background(ZLTheme.background)
             .navigationTitle("Settings")
+        }
+    }
+}
+
+
+private struct NativeTerminalScreen: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var session: SessionManager
+    @State private var input = ""
+    @State private var sending = false
+    @State private var followOutput = true
+    @FocusState private var keyboardFocused: Bool
+    private let keys: [(String, String)] = [("Esc", "\u{1b}"), ("Tab", "\t"), ("Ctrl C", "\u{03}"), ("↑", "\u{1b}[A"), ("↓", "\u{1b}[B"), ("←", "\u{1b}[D"), ("→", "\u{1b}[C")]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack {
+                    Menu {
+                        ForEach(session.terminals) { terminal in
+                            Button(terminal.title) { keyboardFocused = false; Task { await session.loadTerminal(terminal) } }
+                        }
+                    } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }
+                    Spacer()
+                    Text(session.capabilities.contains("terminal.input") ? "Interactive" : "Read only").font(.caption)
+                    if !followOutput { Button("Latest") { followOutput = true }.font(.caption) }
+                    if session.terminalSnapshot?.terminal.taskState == "running" && session.capabilities.contains("task.stop") {
+                        Button("Stop", role: .destructive) { Task { await session.stopTerminalTask() } }.font(.caption)
+                    }
+                }.padding(10)
+                ScrollViewReader { reader in
+                ScrollView([.horizontal, .vertical]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                    Text(session.terminalSnapshot?.content ?? "")
+                        .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(10)
+                    Color.clear.frame(height: 1).id("terminal-bottom")
+                    }
+                }.simultaneousGesture(DragGesture().onChanged { _ in followOutput = false })
+                .onChange(of: session.terminalSnapshot?.content) { _, _ in if followOutput { reader.scrollTo("terminal-bottom", anchor: .bottom) } }
+                .onChange(of: followOutput) { _, follow in if follow { reader.scrollTo("terminal-bottom", anchor: .bottom) } }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
+                if session.capabilities.contains("terminal.input") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(keys, id: \.0) { key in
+                                Button(key.0) {
+                                    let pending = input; sending = true
+                                    Task {
+                                        defer { sending = false }
+                                        if !pending.isEmpty {
+                                            guard await session.sendTerminalInput(pending, appendReturn: false) else { return }
+                                            input = ""
+                                        }
+                                        await session.sendTerminalInput(key.1, appendReturn: false)
+                                    }
+                                }.font(.system(size: 13, design: .monospaced)).frame(minWidth: 44, minHeight: 44)
+                                    .background(Color(red: 0.08, green: 0.09, blue: 0.10), in: RoundedRectangle(cornerRadius: 7)).disabled(sending)
+                            }
+                        }.padding(6)
+                    }
+                    HStack {
+                        Text("›").foregroundStyle(ZLTheme.healthy)
+                        TextField("Command or reply", text: $input).focused($keyboardFocused).disabled(sending)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().font(.body.monospaced())
+                            .submitLabel(.send).onSubmit { send() }
+                        Button { send() } label: { Image(systemName: "return") }.frame(width: 44, height: 44).disabled(sending)
+                    }.padding(.horizontal, 10)
+                } else { Text("Enable Send Terminal Input in desktop ZedLink settings.").font(.caption).padding(10) }
+            }
+            .navigationTitle("Terminal").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { keyboardFocused = false; dismiss() } }
+                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Hide keyboard") { keyboardFocused = false } }
+            }
+            .task {
+                while !Task.isCancelled {
+                    if let terminal = session.terminalSnapshot?.terminal { await session.loadTerminal(terminal) }
+                    do { try await Task.sleep(for: .milliseconds(1000)) } catch { return }
+                }
+            }
+        }.presentationDetents([.large])
+    }
+
+    private func send() {
+        guard !sending else { return }
+        let value = input; sending = true
+        Task {
+            defer { sending = false }
+            if await session.sendTerminalInput(value.isEmpty ? "\r" : value + "\n", appendReturn: false) { input = "" }
         }
     }
 }

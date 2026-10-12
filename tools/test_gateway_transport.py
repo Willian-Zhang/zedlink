@@ -912,7 +912,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.4"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.5"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1082,11 +1082,23 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, "#task-launcher > summary").click()
                 terminal_input = browser.find_element(By.ID, "terminal-input")
                 terminal_input.send_keys("echo terminal-ui")
-                browser.find_element(By.CSS_SELECTOR, "#terminal-input-form button").click()
+                browser.find_element(By.CSS_SELECTOR, "#terminal-input-form button[type=submit]").click()
                 wait.until(lambda driver: any(json.loads(row).get("input") == "echo terminal-ui\n"
                                               for row in probe.terminal_inputs.values()))
                 assert browser.find_element(By.ID, "terminal-preview").value_of_css_property("background-color") in (
                     "rgb(2, 3, 3)", "rgba(2, 3, 3, 1)")
+                browser.find_element(By.ID, "terminal-live-input").click()
+                assert browser.find_element(By.ID, "terminal-live-input").get_attribute("aria-pressed") == "true"
+                terminal_start = set(probe.terminal_inputs)
+                terminal_input.send_keys("pwd", Keys.ENTER)
+                wait.until(lambda driver: "".join(json.loads(row)["input"] for key, row in probe.terminal_inputs.items() if key not in terminal_start) == "pwd\r")
+                for key, expected in [("tab", "\t"), ("interrupt", "\x03"), ("escape", "\x1b"), ("up", "\x1b[A"), ("backspace", "\x7f")]:
+                    prior = set(probe.terminal_inputs)
+                    browser.find_element(By.CSS_SELECTOR, f'[data-terminal-key="{key}"]').click()
+                    wait.until(lambda driver: any(json.loads(row)["input"] == expected for request_id, row in probe.terminal_inputs.items() if request_id not in prior))
+                terminal_input.click()
+                browser.find_element(By.ID, "terminal-hide-keyboard").click()
+                assert browser.execute_script("return document.activeElement.id") != "terminal-input"
                 browser.save_screenshot("/tmp/zedlink-browser-terminal.png")
                 browser.find_element(By.ID, "context-debug-tab").click()
                 wait.until(lambda driver: "Debug fixture" in driver.find_element(By.ID, "debugger-select").text)
@@ -1355,6 +1367,12 @@ def main():
                 assert mobile_terminal["left"] >= 0 and mobile_terminal["right"] <= mobile_terminal["width"] + 1, mobile_terminal
                 assert mobile_terminal["right"] - mobile_terminal["left"] >= mobile_terminal["width"] - 1, mobile_terminal
                 assert mobile_terminal["pageWidth"] <= mobile_terminal["width"] + 1 and mobile_terminal["consoleWidth"] <= mobile_terminal["width"], mobile_terminal
+                terminal_layout = browser.execute_script("const out=document.getElementById('terminal-output').getBoundingClientRect(); const panel=document.getElementById('context-panel').getBoundingClientRect(); return {output:out.height,total:panel.height,top:out.top-panel.top}")
+                assert terminal_layout["top"] < 200 and terminal_layout["output"] > terminal_layout["total"] * 0.45, terminal_layout
+                browser.find_element(By.ID, "terminal-input").click()
+                keyboard_layout = browser.execute_script("syncVisualViewport({height:400,offsetTop:0}); const panel=document.getElementById('context-panel').getBoundingClientRect(); const keys=document.getElementById('terminal-keys').getBoundingClientRect(); const input=document.getElementById('terminal-input-form').getBoundingClientRect(); return {bottom:panel.bottom,keys:keys.bottom,input:input.bottom}")
+                assert keyboard_layout["bottom"] <= 401 and keyboard_layout["keys"] <= 401 and keyboard_layout["input"] <= 401, keyboard_layout
+                browser.find_element(By.ID, "terminal-hide-keyboard").click()
                 browser.save_screenshot("/tmp/zedlink-browser-terminal-mobile.png")
                 browser.find_element(By.ID, "close-context").click()
                 probe.edit_review = {"changed_files": 3, "lines_added": 18, "lines_removed": 4}

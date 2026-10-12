@@ -7,6 +7,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -616,14 +618,25 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val decoded = result.optJSONObject("terminal")?.let(::decodeTerminal) ?: throw GatewayException("Zed returned an invalid terminal snapshot.")
         state = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated")))
     } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
-    fun sendTerminalInput(input: String) = viewModelScope.launch {
-        val terminal = state.terminalSnapshot?.terminal ?: return@launch
-        if (input.isBlank() || "terminal.input" !in state.capabilities) return@launch
-        try {
-            client!!.rpc("terminal.input", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
-                .put("terminal_id", terminal.id).put("input", "$input\n"), UUID.randomUUID().toString())
-            delay(120); loadTerminal(terminal)
-        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    private val terminalInputMutex = Mutex()
+    private var terminalInputGeneration = 0
+    fun sendTerminalInput(input: String, appendReturn: Boolean = true): kotlinx.coroutines.Job {
+        val terminal = state.terminalSnapshot?.terminal
+        val instance = state.instanceId
+        val epoch = state.epoch
+        val transport = client
+        val generation = terminalInputGeneration
+        return viewModelScope.launch {
+            terminalInputMutex.withLock {
+                if (generation != terminalInputGeneration || terminal == null || transport == null || input.isEmpty() || "terminal.input" !in state.capabilities ||
+                    instance != state.instanceId || epoch != state.epoch || transport !== client || terminal.id != state.terminalSnapshot?.terminal?.id) return@withLock
+                try {
+                    transport.rpc("terminal.input", JSONObject().put("instance_id", instance).put("epoch", epoch)
+                        .put("terminal_id", terminal.id).put("input", if (appendReturn) "$input\n" else input), UUID.randomUUID().toString())
+                    loadTerminal(terminal)
+                } catch (error: Exception) { terminalInputGeneration += 1; state = state.copy(issue = "Terminal input failed. Check the terminal before retrying: ${error.message.orEmpty()}") }
+            }
+        }
     }
     fun stopTerminalTask() = viewModelScope.launch {
         val terminal = state.terminalSnapshot?.terminal ?: return@launch
