@@ -5,7 +5,11 @@ struct ProjectFileBrowser: View {
     @State private var directory = ""
     @State private var query = ""
     @State private var reading = false
-    @State private var wrap = true
+    @State private var contentQuery = ""
+    @State private var matches: [ProjectSearchMatch] = []
+    @State private var searchStatus = ""
+    @State private var searchTask: Task<Void, Never>?
+    @State private var selectedLine: Int?
 
     private var entries: [NativeProjectFile] {
         let prefix = directory.isEmpty ? "" : directory + "/"
@@ -25,18 +29,13 @@ struct ProjectFileBrowser: View {
                     HStack {
                         Button { reading = false } label: { Label("Files", systemImage: "chevron.left") }
                         Spacer()
-                        Toggle("Wrap", isOn: $wrap).toggleStyle(.button)
                         ShareLink(item: session.previewContent) { Image(systemName: "square.and.arrow.up") }
                             .disabled(session.previewLoading)
                     }.padding()
                     if session.previewLoading {
                         ProgressView("Loading file…").frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        ScrollView(wrap ? [.vertical] : [.horizontal, .vertical]) {
-                            Text(highlightedSource(session.previewContent))
-                                .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                .frame(maxWidth: wrap ? .infinity : nil, alignment: .leading).padding()
-                        }
+                        CodeReviewView(content: session.previewContent, title: session.previewTitle, truncated: session.previewTruncated, initialLine: selectedLine)
                         Text(session.previewTruncated ? "Partial preview · 256 KiB limit · Cannot attach" : "Read-only project file")
                             .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                         Button(session.contextPaths.contains(session.previewTitle) ? "Attached" : "Attach to prompt") {
@@ -48,6 +47,29 @@ struct ProjectFileBrowser: View {
                 .navigationTitle(session.previewTitle.split(separator: "/").last.map(String.init) ?? "File")
             } else {
                 List {
+                    if session.capabilities.contains("project.search") {
+                        Section("Search contents") {
+                            HStack {
+                                TextField("Text in project", text: $contentQuery)
+                                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                    .accessibilityIdentifier("project-content-query")
+                                    .onSubmit { searchContents() }
+                                Button("Search") { searchContents() }.disabled(contentQuery.count < 2)
+                            }
+                            if !searchStatus.isEmpty { Text(searchStatus).font(.caption) }
+                            ForEach(matches) { match in
+                                Button {
+                                    selectedLine = match.line; reading = true; dismissZedLinkKeyboard()
+                                    Task { await session.previewFile(match.path) }
+                                } label: {
+                                    VStack(alignment: .leading) {
+                                        Text("\(match.path):\(match.line)").font(.caption.monospaced())
+                                        Text(match.preview).font(.caption).lineLimit(2)
+                                    }
+                                }.accessibilityIdentifier("project-search-result-" + match.id)
+                            }
+                        }
+                    }
                     Section {
                         Button("Project") { directory = ""; query = "" }
                         if !directory.isEmpty {
@@ -62,7 +84,7 @@ struct ProjectFileBrowser: View {
                             Button {
                                 dismissZedLinkKeyboard()
                                 if entry.kind == "directory" { directory = entry.id; query = "" }
-                                else { reading = true; Task { await session.previewFile(entry.id) } }
+                                else { selectedLine = nil; reading = true; Task { await session.previewFile(entry.id) } }
                             } label: {
                                 HStack {
                                     Image(systemName: entry.kind == "directory" ? "folder.fill" : "doc.text")
@@ -85,11 +107,27 @@ struct ProjectFileBrowser: View {
             }
         }.navigationBarTitleDisplayMode(.inline)
             .task(id: directory) { await session.loadDirectory(directory) }
+            .onDisappear { searchTask?.cancel() }
+            .onChange(of: session.operationScope) { _, _ in searchTask?.cancel(); matches = []; searchStatus = ""; reading = false }
+    }
+
+    private func searchContents() {
+        searchTask?.cancel(); matches = []; searchStatus = "Searching…"; dismissZedLinkKeyboard()
+        let query = contentQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2 else { searchStatus = "Enter at least two characters."; return }
+        searchTask = Task {
+            do {
+                let result = try await session.searchProject(query)
+                try Task.checkCancellation()
+                matches = result.matches
+                searchStatus = "\(matches.count) matches" + (result.truncated ? " · results limited" : "")
+            } catch is CancellationError {} catch { searchStatus = error.localizedDescription }
+        }
     }
 }
 
 // Lightweight source colors; rendering is bounded by the native file-read limit.
-private func highlightedSource(_ source: String) -> AttributedString {
+func highlightedSource(_ source: String) -> AttributedString {
     var result = AttributedString(source)
     let pattern = #"(?m)(//[^\n]*|#[^\n]*|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\b(?:fn|func|let|var|const|class|struct|enum|import|from|def|return|if|else|for|while|public|private|fun|val|true|false|null|nil|async|await)\b|\b\d+(?:\.\d+)?\b)"#
     guard let expression = try? NSRegularExpression(pattern: pattern) else { return result }

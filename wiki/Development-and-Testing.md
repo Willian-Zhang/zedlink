@@ -65,3 +65,5 @@ Xcode/simulator and physical iPhone validation of this revision have not run on 
 - On iPhone 15 Pro, check keyboard show/hide, composer safe area, large text, VoiceOver, landscape, and busy/offline states. Approvals must stay visible and exact-turn Stop must target the active native turn.
 
 No hosted Actions build was dispatched for this layout change. Local syntax parsing cannot establish SwiftUI type checking or rendered layout correctness.
+
+The expanded [iOS end-to-end guide](iOS-End-to-End-Testing.md) includes the local Mac runner, opt-in disposable-thread UI tests, and physical-device acceptance matrix.

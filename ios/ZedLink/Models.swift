@@ -222,6 +222,15 @@ struct PendingSend: Codable {
     let threadID: String
     // A draft remains in memory only. A relaunched app reconciles by ID without resending.
     var text: String?
+    var contextPaths: [String] = []
+    var attachments: [PromptAttachment] = []
+
+    var submissionParams: [String: Any] {
+        var params: [String: Any] = ["instance_id": instanceID, "epoch": epoch, "thread_id": threadID, "text": text ?? ""]
+        if !contextPaths.isEmpty { params["context_paths"] = contextPaths }
+        if !attachments.isEmpty { params["uploads"] = attachments.map(\.payload) }
+        return params
+    }
 
     enum CodingKeys: String, CodingKey { case id, instanceID, epoch, threadID }
 }
@@ -253,3 +262,21 @@ enum LinkState: Equatable {
         }
     }
 }
+
+struct PromptAttachment: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    let mimeType: String
+    let data: Data
+    var payload: [String: Any] { ["name": name, "mime_type": mimeType, "data": data.base64EncodedString()] }
+}
+
+struct ProjectSearchMatch: Identifiable {
+    let path: String
+    let line: Int
+    let column: Int
+    let preview: String
+    var id: String { "\(path):\(line):\(column)" }
+}
+
+enum WorkspacePage: String { case files, changes, terminal, debug, activity }

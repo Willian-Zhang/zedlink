@@ -25,3 +25,5 @@ ZedLink controls the same Zed-hosted Agent thread visible in desktop Zed. The ph
 Only conversations explicitly exposed with `/remote-control` are available remotely. Closing Zed makes its threads unavailable while leaving paired-device and gateway state intact.
 
 [← Project README](../README.md)
+
+- [iOS redesign and end-to-end testing](iOS-End-to-End-Testing.md) — local builds, disposable-session UI checks, and phone validation.
