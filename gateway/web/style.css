@@ -54,7 +54,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .connection.warning { color: var(--warning); }
 .connection.warning::before { background: var(--warning); }
 
-.layout { display: grid; grid-template-columns: clamp(340px, 22vw, 430px) minmax(0, 1fr); width: 100%; min-height: calc(100dvh - 68px); }
+.layout { display: grid; grid-template-columns: clamp(240px, 17vw, 280px) minmax(0, 1fr); width: 100%; min-height: calc(100dvh - 68px); }
 .sidebar { min-width: 0; background: #050506; }
 .panel { padding: 34px 25px; }
 .panel h1 { margin: 8px 0 8px; font-size: clamp(1.8rem, 3vw, 2.2rem); font-weight: 500; letter-spacing: -.045em; line-height: 1.05; }
@@ -665,3 +665,15 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
 /* Shell icons occupy one terminal cell, including while the font loads. */
 .terminal-preview pre { font-variant-ligatures: none; letter-spacing: 0; }
 .terminal-glyph { display: inline-block; width: 1ch; overflow: hidden; vertical-align: bottom; font-family: "ZedLink Terminal Icons", monospace; font-weight: 400; font-style: normal; }
+
+@media (min-width: 761px) {
+  #sessions-panel { padding: 22px 14px; }
+  #sessions-panel h1 { font-size: 1.45rem; }
+  #sessions-panel .section-head { gap: 8px; }
+  #sessions-panel #new-session, #sessions-panel #refresh, #sessions-panel #open-settings { width: 32px; min-height: 32px; }
+  #session-search { margin-top: 20px; }
+  .list-label { margin-top: 22px; }
+  .thread-item { min-height: 76px; padding: 11px 9px; }
+  .thread-item strong { margin-top: 6px; font-size: .85rem; }
+  .thread-item small { margin-top: 5px; }
+}

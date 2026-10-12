@@ -915,7 +915,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.7"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.8"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1341,7 +1341,7 @@ def main():
                 browser.save_screenshot("/tmp/zedlink-browser-fixture.png")
                 browser.set_window_size(1920, 1080)
                 wide = browser.execute_script("return {width:innerWidth, layoutWidth:document.querySelector('.layout').getBoundingClientRect().width, sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width, workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width}")
-                assert wide["layoutWidth"] >= wide["width"] - 2 and wide["sidebarWidth"] >= 340, wide
+                assert wide["layoutWidth"] >= wide["width"] - 2 and 240 <= wide["sidebarWidth"] <= 280, wide
                 composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); const workspace=document.querySelector('.workspace').getBoundingClientRect(); const add=document.getElementById('show-actions').getBoundingClientRect(); const send=document.getElementById('send').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,addWidth:add.width,sendWidth:send.width,centerDelta:Math.abs((box.left+box.width/2)-(workspace.left+workspace.width/2))}")
                 assert composer["width"] <= 922 and composer["height"] <= 54, composer
                 assert composer["radius"] == "14px" and composer["addWidth"] == 40 and composer["sendWidth"] == 40 and composer["centerDelta"] <= 1, composer
@@ -1568,6 +1568,28 @@ def main():
                 assert "ZedLink private device pairing" in terminal_helper.stdout
                 assert "\x1b[40m" in terminal_helper.stdout and "\x1b[47m" in terminal_helper.stdout
                 assert "One-time code:" in terminal_helper.stdout and "Gateway ID:" in terminal_helper.stdout
+                manager_config = root / "manager-config" / "zedlink"
+                manager_config.mkdir(parents=True)
+                manager_state = root / "manager-state"
+                manager_state.mkdir()
+                (manager_state / "gateway").symlink_to(state, target_is_directory=True)
+                (manager_config / "config.json").write_text(json.dumps({
+                    "version": 2, "project_root": str(root), "state_dir": str(manager_state),
+                    "primary_route_id": "fixture", "routes": [{
+                        "id": "fixture", "label": "Fixture", "provider": "custom",
+                        "kind": "direct_tls", "bind": f"127.0.0.1:{port}", "url": base,
+                        "cert": str(cert), "key": str(root / "key.pem"), "enabled": True,
+                    }],
+                }))
+                os.chmod(manager_config / "config.json", 0o600)
+                manager_pairing = subprocess.run(
+                    ["python3", str(ROOT / "tools/zedlink_manager.py"), "pair-primary-terminal"],
+                    env={**os.environ, "XDG_CONFIG_HOME": str(manager_config.parent)},
+                    capture_output=True, text=True, check=False, timeout=10,
+                )
+                assert manager_pairing.returncode == 0, manager_pairing.stderr
+                assert "One-time code:" in manager_pairing.stdout and "\x1b[47m" in manager_pairing.stdout
+                assert "Private pairing page:" not in manager_pairing.stdout
                 helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base,
                                          str(state), "--mode", "browser", "--no-open"],
                                         capture_output=True, text=True, check=True, timeout=5)

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pinned_zed_revision="76659a55a8c10ed355a070f8764a0b1733e3c115"
+pinned_zed_revision="c66312b200d113694fca08c1d468669028a09a0e"
 
 actual_revision="$(git -C "$project_root/zed-source" rev-parse HEAD)"
 if [[ "$actual_revision" != "$pinned_zed_revision" ]] &&
@@ -18,7 +18,7 @@ RUSTUP_TOOLCHAIN=stable cargo fmt --manifest-path "$project_root/zed-source/Carg
 CARGO_INCREMENTAL=0 RUSTUP_TOOLCHAIN=stable cargo check --manifest-path "$project_root/zed-source/Cargo.toml" \
   -p agent_ui -p settings_ui --offline
 git -C "$project_root/zed-source" apply --reverse --check \
-  "$project_root/patches/zed-1.22.0-local-probe.patch"
+  "$project_root/patches/zed-native-agent-remote-control.patch"
 
 cargo test --manifest-path "$project_root/protocol-core/Cargo.toml" --offline
 cargo fmt --manifest-path "$project_root/gateway/Cargo.toml" -- --check

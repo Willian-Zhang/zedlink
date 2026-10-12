@@ -150,7 +150,16 @@ def run_test(binary, keep):
         base = {"instance_id": info["instance_id"], "epoch": info["epoch"]}
         assert {"debugger.catalog", "debugger.launch", "debugger.snapshot", "debugger.control"} <= set(info["capabilities"])
         for _ in range(100):
-            catalog = rpc(socket_path, "debugger.catalog", base)["result"]["scenarios"]
+            response = rpc(socket_path, "debugger.catalog", base)
+            if response.get("error", {}).get("code") == "INSTANCE_UNAVAILABLE":
+                # Startup may replace the provisional identity before the workspace opens.
+                # Refresh only here, before any debugger mutation has been submitted.
+                info = rpc(socket_path, "instance.info", {})["result"]
+                base = {"instance_id": info["instance_id"], "epoch": info["epoch"]}
+                time.sleep(0.1)
+                continue
+            assert "result" in response, response
+            catalog = response["result"]["scenarios"]
             if len(catalog) == 1:
                 break
             time.sleep(0.1)

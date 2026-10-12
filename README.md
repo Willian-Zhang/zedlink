@@ -12,7 +12,7 @@
 ![ZedLink desktop conversation showing live Agent activity and parallel agents](assets/screenshots/desktop-conversation.png)
 
 > [!IMPORTANT]
-> ZedLink is working development software built against pinned Zed revision `76659a55a8c10ed355a070f8764a0b1733e3c115`. It currently requires the maintained [`tjnull/zed`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) fork and is not a Marketplace extension. A physical iPhone Safari client has completed a same-thread round trip over trusted Tailscale HTTPS.
+> ZedLink is working development software built against pinned Zed revision `c66312b200d113694fca08c1d468669028a09a0e`. It currently requires the maintained [`tjnull/zed`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) fork and is not a Marketplace extension. A physical iPhone Safari client has completed a same-thread round trip over trusted Tailscale HTTPS.
 
 ## Distribution status
 

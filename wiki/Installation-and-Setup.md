@@ -6,7 +6,7 @@
 
 `zed-source/` is a generated local checkout of the maintained [`tjnull/zed`](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control) fork on branch `zedlink/native-agent-remote-control`. That branch is based on the pinned official Zed revision and contains the native ZedLink integration. The installer builds the patched `zed` executable under `zed-source/target/`, keeps `tjnull/zed` as `origin`, and records `zed-industries/zed` as `upstream`.
 
-The directory is intentionally ignored by the ZedLink repository and is never copied into `tjnull/zedlink`. The reviewable [source patch](../patches/zed-1.22.0-local-probe.patch) mirrors the fork changes for auditing and compatibility checks. If `zed-source/` is missing, the installer recreates it directly from the fork branch.
+The directory is intentionally ignored by the ZedLink repository and is never copied into `tjnull/zedlink`. The reviewable [source patch](../patches/zed-native-agent-remote-control.patch) mirrors the fork changes for auditing and compatibility checks. If `zed-source/` is missing, the installer recreates it directly from the fork branch.
 
 Keep it while using or rebuilding patched Zed. It can be deleted to recover disk space only after closing Zed Dev and accepting that the next **ZedLink: Install / build** will clone and compile Zed again. Deleting it is not required before committing or pushing ZedLink changes.
 
@@ -17,7 +17,7 @@ You need:
 
 - A Linux computer with this repository.
 - Your model already working in normal Zed.
-- Rust, Cargo, Git, Python 3, and the [Zed Linux build dependencies](https://github.com/zed-industries/zed/blob/76659a55a8c10ed355a070f8764a0b1733e3c115/docs/src/development/linux.md).
+- Rust, Cargo, Git, Python 3, and the [Zed Linux build dependencies](https://github.com/zed-industries/zed/blob/c66312b200d113694fca08c1d468669028a09a0e/docs/src/development/linux.md).
 - Tailscale connected on both the Zed computer and client device, or another private network route.
 - HTTPS enabled for the tailnet. ZedLink can request and store the matching Tailscale certificate files during setup.
 - Python's `qrcode` package for the easiest browser pairing flow.

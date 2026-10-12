@@ -19,7 +19,7 @@ Use **Settings → ZedLink** for routine work:
 | Settings page | Purpose |
 | --- | --- |
 | **Gateway Control** | Shows live gateway, bridge, route, device, project, and patched-Zed state inline; starts, restarts, or stops the gateway; and runs setup diagnostics |
-| **Paired Devices** | Opens pairing, lists authorized devices, and revokes one selected device after confirmation |
+| **Paired Devices** | Offers browser QR or terminal QR, lists authorized devices, and revokes one selected device after confirmation |
 | **Connection Providers** | Selects, detects, validates, saves, activates, and checks private connection profiles |
 | **Remote Permissions** | Controls session creation, attachments, project browsing, Git changes, approvals, and native Agent settings |
 
@@ -40,6 +40,8 @@ The task picker remains available for setup and maintenance:
 | **ZedLink: Configure** | Changes the project, route, TLS paths, or Zed profile |
 | **ZedLink: Rebuild patched Zed** | Rebuilds the pinned patch and gateway |
 | **ZedLink: Guided setup / update** | Runs the complete guided workflow again |
+
+In desktop **Settings → ZedLink → Paired Devices**, choose **Open Browser QR** or **Show Terminal QR**. The terminal option opens a local Zed terminal and prints a one-use QR and manual code for the primary connection, valid for five minutes. It does not launch a browser. From a shell, `python3 tools/zedlink_manager.py pair-primary-terminal` does the same; `pair-terminal` lets you choose another route.
 
 **ZedLink: Pair a device** opens the private pairing page without focusing a task terminal. Its temporary task tab closes after success and remains visible only when pairing fails. The `/bin/sh -i -c 'python3'` line shown by older task definitions was Zed's task wrapper; a blank cursor after “finished successfully” did not mean Python was still running. Run **ZedLink: Guided setup / update** once to refresh an older global task definition.
 

@@ -3,6 +3,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -198,9 +199,21 @@ def main() -> None:
         assert launch.call_args_list[0].args[0][-1] == "start-gateway"
         assert launch.call_args_list[1].args[0][-1] == "restart-gateway"
 
+        # Settings actions choose the primary route without prompting for a route.
+        for action, mode in [("pair-primary", "browser"), ("pair-primary-terminal", "terminal")]:
+            with patch.object(sys, "argv", ["zedlink_manager.py", action]), \
+                 patch.object(manager, "config_path", return_value=root / "configured.json"), \
+                 patch.object(manager, "read_config", return_value=data), \
+                 patch.object(manager.subprocess, "run") as launch:
+                (root / "configured.json").write_text("{}")
+                manager.main()
+                assert launch.call_args.args[0][-2:] == ["--mode", mode]
+                assert launch.call_args.args[0][2] == data["routes"][0]["url"]
+
         settings_source = (manager.ROOT / "zed-source/crates/settings_ui/src/page_data.rs").read_text()
         for control in ("Gateway Control", "Native Zed bridge", "Active connection",
                         "Run Diagnostics", "Paired Devices", "Pair New Device",
+                        "Show Terminal QR", "Open Browser QR",
                         "View or Revoke Paired Devices", "Tailscale HTTPS",
                         "Enable Automatic Renewal", "Check for Renewal Now"):
             assert control in settings_source

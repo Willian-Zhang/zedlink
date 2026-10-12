@@ -62,10 +62,10 @@ The supported extension API does not provide an entity for an open native Agent 
 
 ## Prototype and evidence
 
-- Base Zed revision: `76659a55a8c10ed355a070f8764a0b1733e3c115`
+- Base Zed revision: `c66312b200d113694fca08c1d468669028a09a0e`
 - Prototype branch: `tjnull/zed:zedlink/native-agent-remote-control`
 - ZedLink repository: `tjnull/zedlink`
-- Reviewable patch: `patches/zed-1.22.0-local-probe.patch`
+- Reviewable patch: `patches/zed-native-agent-remote-control.patch`
 
 Validated in the prototype:
 

@@ -3,8 +3,8 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_root="$project_root/zed-source"
-patch="$project_root/patches/zed-1.22.0-local-probe.patch"
-pinned_revision="76659a55a8c10ed355a070f8764a0b1733e3c115"
+patch="$project_root/patches/zed-native-agent-remote-control.patch"
+pinned_revision="c66312b200d113694fca08c1d468669028a09a0e"
 zed_fork="https://github.com/tjnull/zed.git"
 zed_branch="zedlink/native-agent-remote-control"
 zed_upstream="https://github.com/zed-industries/zed.git"

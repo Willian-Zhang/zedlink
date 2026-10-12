@@ -27,7 +27,7 @@ The browser transport fixture does not prove native Zed integration. Native test
 The patch is pinned to Zed revision:
 
 ```text
-76659a55a8c10ed355a070f8764a0b1733e3c115
+c66312b200d113694fca08c1d468669028a09a0e
 ```
 
 The stock extension API at that revision cannot enumerate or control an existing native Agent thread, which is why ZedLink requires the narrow, reviewable source patch under `patches/`.
@@ -46,3 +46,9 @@ Android and macOS workflows run **only on manual dispatch**. Pushes do not launc
 Terminal icon fonts are bundled and self-hosted. Source, subset ranges, and upstream notices live in `gateway/web/fonts/`; copies of the notices accompany the native app resources.
 
 For the desktop terminal font and column layout, run `python3 tools/test_terminal_rendering.py`. This uses local Chromium with synthetic output and the production CSS/text renderer; it does not verify a native Zed session. The authenticated Firefox desktop/mobile fixture remains `python3 tools/test_gateway_transport.py`. No hosted Actions run is required.
+
+The pinned base is upstream `main` at `c66312b200d113694fca08c1d468669028a09a0e` (October 12, 2026, Zed 1.25.0 development source). The fork incorporates the ACP v2 changes while preserving the native cancellation guard and bounded compaction output. The previous 1.22 stable base remains available in the fork's backup branch.
+
+`python3 tools/test_native_agent_smoke.py` launches patched Zed with a disposable profile/project and a deterministic loopback model. It checks native streaming/replay, exact-turn cancellation, and tool denial/approval; it does not contact the user's LLM. The Zed fork's repository Actions are disabled to protect the owner's limited remaining budget; ZedLink Android/macOS workflows remain manual-only.
+
+The merged upstream ACP v2 API also introduces standalone permission requests. ZedLink currently projects native tool-linked authorization choices; standalone ACP v2 permission requests are not yet exposed remotely. Use desktop Zed for those requests. Physical mobile validation must be repeated before treating this upstream update as release ready.

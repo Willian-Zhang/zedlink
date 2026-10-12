@@ -1672,7 +1672,7 @@ def main() -> None:
                                            "start-gateway-detached", "restart-gateway-detached",
                                            "install-launcher", "remove-launcher",
                                            "install-cli", "remove-cli",
-                                           "pair", "pair-browser", "pair-terminal", "pair-primary",
+                                           "pair", "pair-browser", "pair-terminal", "pair-primary", "pair-primary-terminal",
                                            "devices", "devices-json", "revoke",
                                            "revoke-device", "diagnose", "repair",
                                            "save-connection", "select-connection",
@@ -1850,10 +1850,11 @@ def main() -> None:
             if args.action != "pair":
                 command += ["--mode", args.action.removeprefix("pair-")]
             subprocess.run(command, check=True)
-        elif args.action == "pair-primary":
+        elif args.action in ("pair-primary", "pair-primary-terminal"):
             route = primary_route(data)
             subprocess.run([sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
-                            str(state / "gateway"), "--mode", "browser"], check=True)
+                            str(state / "gateway"), "--mode",
+                            "terminal" if args.action == "pair-primary-terminal" else "browser"], check=True)
         elif args.action == "devices":
             result = paired_devices(state)
             print(f"Gateway {result['gateway_id']}")
