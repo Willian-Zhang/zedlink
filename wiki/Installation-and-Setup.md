@@ -112,7 +112,7 @@ The patched Zed build now has a native **ZedLink** Settings page. Open it with `
   <img src="../assets/screenshots/zed-settings.png" width="760" alt="Native ZedLink connection provider settings in patched Zed">
 </p>
 
-<p align="center"><sub>Native patched Zed Settings using generic example paths and a Tailscale connection profile.</sub></p>
+<p align="center"><sub>Native patched Zed Settings captured in a disposable demo project and a fresh isolated profile.</sub></p>
 
 - **Enable ZedLink** — starts the private local bridge whenever patched Zed starts.
 - **Private State Directory** — normally `~/.local/state/zedlink` written as a full absolute path.

@@ -521,6 +521,8 @@ class ProbeFixture:
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
                     error = {"code": "UNSUPPORTED_CAPABILITY"}
+                if not error and (transform := getattr(self, "response_transform", None)):
+                    result = transform(method, params, result)
                 response = {"version": 1, "request_id": request["request_id"]}
                 response["error" if error else "result"] = error or result
                 connection.sendall(json.dumps(response).encode() + b"\n")
