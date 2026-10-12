@@ -167,3 +167,19 @@ This removes only task labels beginning with `ZedLink:` and preserves unrelated 
 cd /home/you/Documents/projects/zedlink
 bash tools/setup_zed_ide.sh --remove-global-tasks
 ```
+
+## A configured task opens a terminal but its command never runs
+
+ZedLink asks Zed to run the selected named task through Zed's normal task system. Shell startup customizations can intercept that command. One example is a `.bashrc` rule that replaces every interactive Zed shell with `exec script ...`; the terminal opens and may look active, but the task command never reaches the replacement shell.
+
+Use a task-specific shell when a task does not need interactive shell setup:
+
+```json
+{
+  "label": "Build project",
+  "command": "make",
+  "shell": { "program": "/bin/sh" }
+}
+```
+
+You can also update the shell wrapper so it does not run when `ZED_TERM=true` or `TERM_PROGRAM=zed`. Test the task once from Zed's desktop task picker; ZedLink uses the same native scheduling path and preserves the resulting terminal output and status.
