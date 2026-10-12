@@ -539,11 +539,9 @@ private struct NativeContextSheet: View {
                         }
                     }
                 }
-                Section("Configured tasks") {
-                    if !session.capabilities.contains("task.catalog") {
-                        Text("Enable Start Configured Tasks in desktop ZedLink settings and restart patched Zed.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else if session.configuredTasks.isEmpty {
+                if session.capabilities.contains("task.catalog") {
+                    Section("Run configured task") {
+                    if session.configuredTasks.isEmpty {
                         Text("No configured Zed tasks are available for this project.").foregroundStyle(.secondary)
                     }
                     ForEach(session.configuredTasks) { task in
@@ -554,37 +552,72 @@ private struct NativeContextSheet: View {
                         }
                         .disabled(!session.capabilities.contains("task.run"))
                     }
+                    }
                 }
                 Section("Zed terminals") {
                     if !session.capabilities.contains("terminal.list") {
-                        Text("Enable View Project Terminals in desktop ZedLink settings and restart patched Zed.")
+                        Text("Enable View Project Terminals in ZedLink settings. Changes apply without restarting Zed.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if session.terminals.isEmpty {
                         Text("No terminal is open for this project in Zed.").foregroundStyle(.secondary)
                     }
-                    ForEach(session.terminals) { terminal in
-                        Button {
-                            Task { await session.loadTerminal(terminal) }
+                    if !session.terminals.isEmpty {
+                        Menu {
+                            ForEach(session.terminals) { terminal in
+                                Button(terminal.title) { Task { await session.loadTerminal(terminal) } }
+                            }
                         } label: {
-                            VStack(alignment: .leading) {
-                                Text(terminal.title)
-                                Text(terminal.taskState?.uppercased() ?? terminal.workingDirectory ?? "Terminal")
-                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                            HStack {
+                                Image(systemName: "terminal")
+                                Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal")
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(session.capabilities.contains("terminal.input") ? "Interactive" : "Read only")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(session.capabilities.contains("terminal.input") ? ZLTheme.healthy : ZLTheme.warning)
                             }
                         }
                     }
                     if let snapshot = session.terminalSnapshot {
-                        Text(snapshot.content).font(.caption.monospaced()).textSelection(.enabled)
+                        VStack(spacing: 0) {
+                            HStack(spacing: 8) {
+                                Circle().fill(ZLTheme.healthy).frame(width: 7, height: 7)
+                                Text(snapshot.terminal.title).font(.caption.monospaced()).lineLimit(1)
+                                Spacer()
+                                if snapshot.terminal.taskState == "running" && session.capabilities.contains("task.stop") {
+                                    Button("Stop", role: .destructive) { Task { await session.stopTerminalTask() } }
+                                        .font(.caption)
+                                }
+                            }
+                            .padding(.horizontal, 11).frame(minHeight: 40)
+                            .background(Color(red: 0.03, green: 0.035, blue: 0.04))
+                            ScrollView([.horizontal, .vertical]) {
+                                Text(snapshot.content.isEmpty ? " " : snapshot.content)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(Color(red: 0.85, green: 0.88, blue: 0.86))
+                                    .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                    .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
+                                    .padding(13)
+                            }
+                            .frame(height: 300)
+                            .background(Color(red: 0.005, green: 0.008, blue: 0.008))
+                        }
+                        .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
                         if session.capabilities.contains("terminal.input") {
                             HStack {
+                                Text("›").font(.body.monospaced()).foregroundStyle(ZLTheme.healthy)
                                 TextField("Type into this Zed terminal", text: $terminalInput)
                                     .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                    .font(.callout.monospaced()).textFieldStyle(.plain)
                                     .onSubmit { sendTerminalInput() }
-                                Button("Send") { sendTerminalInput() }.disabled(terminalInput.isEmpty)
+                                Button { sendTerminalInput() } label: { Image(systemName: "arrow.up") }
+                                    .buttonStyle(.borderedProminent).disabled(terminalInput.isEmpty)
                             }
-                        }
-                        if snapshot.terminal.taskState == "running" && session.capabilities.contains("task.stop") {
-                            Button("Stop task", role: .destructive) { Task { await session.stopTerminalTask() } }
+                            .padding(9).background(Color(red: 0.03, green: 0.035, blue: 0.04))
+                            .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+                        } else {
+                            Label("Read only · Enable Send Terminal Input in ZedLink settings to type here.", systemImage: "lock")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }

@@ -529,8 +529,11 @@ import Combine
 
     func loadProjectContext() async {
         guard let client, let threadID = selectedThreadID else { return }
-        let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID]
         do {
+            let info = try await client.rpc("instance.info")
+            try checkIdentity(info)
+            capabilities = Set(info["capabilities"] as? [String] ?? [])
+            let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID]
             if capabilities.contains("project.files") {
                 let result = try await client.rpc("project.files", params: base)
                 projectFiles = (result["entries"] as? [[String: Any]] ?? []).compactMap { row in
@@ -552,6 +555,9 @@ import Combine
                 if let selected = terminalSnapshot?.terminal.id, !terminals.contains(where: { $0.id == selected }) {
                     terminalSnapshot = nil
                 }
+            } else {
+                terminals = []
+                terminalSnapshot = nil
             }
             if capabilities.contains("task.catalog") {
                 let result = try await client.rpc("task.catalog", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? ""])

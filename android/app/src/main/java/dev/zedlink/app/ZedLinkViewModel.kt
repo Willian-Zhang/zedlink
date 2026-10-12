@@ -570,10 +570,13 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun loadProjectContext() = viewModelScope.launch {
         val threadId = state.selectedThreadId ?: return@launch
-        val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)
         try {
+            val info = client!!.rpc("instance.info")
+            checkIdentity(info)
+            state = state.copy(capabilities = info.optJSONArray("capabilities").strings().toSet())
+            val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", threadId)
             var files = state.projectFiles; var entries = state.changes; var revision = state.changesRevision
-            var terminals = state.terminals; var configuredTasks = state.configuredTasks; var debuggerCatalog = state.debuggerCatalog; var debuggerSessions = state.debuggerSessions
+            var terminals = emptyList<NativeTerminal>(); var configuredTasks = state.configuredTasks; var debuggerCatalog = state.debuggerCatalog; var debuggerSessions = state.debuggerSessions
             if ("project.files" in state.capabilities) files = client!!.rpc("project.files", JSONObject(base.toString())).optJSONArray("entries").objects().mapNotNull { row ->
                 val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
             if ("changes.snapshot" in state.capabilities) {

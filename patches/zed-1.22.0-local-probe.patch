@@ -488,12 +488,12 @@ index bfefb986bd..de394bf31d 100644
  
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..658e00368e
+index 0000000000..22469ab01b
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,4163 @@
+@@ -0,0 +1,4179 @@
 +use std::{
-+    cell::RefCell,
++    cell::{Cell, RefCell},
 +    collections::{HashMap, HashSet, VecDeque},
 +    fs::{self, DirBuilder, Permissions},
 +    io::{BufRead, BufReader, Read, Write},
@@ -574,7 +574,7 @@ index 0000000000..658e00368e
 +
 +struct ProbeState {
 +    project_root: PathBuf,
-+    permissions: ProbePermissions,
++    permissions: Cell<ProbePermissions>,
 +    instance_id: String,
 +    epoch: String,
 +    submissions: RefCell<HashMap<String, SubmissionRecord>>,
@@ -606,6 +606,68 @@ index 0000000000..658e00368e
 +}
 +
 +impl ProbePermissions {
++    fn from_settings(cx: &App) -> Self {
++        let settings = cx
++            .global::<SettingsStore>()
++            .merged_settings()
++            .zedlink
++            .clone();
++        Self {
++            session_creation: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_session_creation)
++                .unwrap_or(true),
++            attachments: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_attachments)
++                .unwrap_or(true),
++            project_context: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_project_context)
++                .unwrap_or(true),
++            git_changes: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_git_changes)
++                .unwrap_or(true),
++            approval_decisions: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_approval_decisions)
++                .unwrap_or(true),
++            agent_settings: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_agent_settings)
++                .unwrap_or(true),
++            terminal_read: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_terminal_read)
++                .unwrap_or(false),
++            terminal_input: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_terminal_input)
++                .unwrap_or(false),
++            task_control: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_task_control)
++                .unwrap_or(false),
++            task_start: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_task_start)
++                .unwrap_or(false),
++            debugger_read: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_debugger_read)
++                .unwrap_or(false),
++            debugger_start: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_debugger_start)
++                .unwrap_or(false),
++            debugger_control: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_debugger_control)
++                .unwrap_or(false),
++        }
++    }
++
 +    fn capabilities(self) -> Vec<&'static str> {
 +        let mut capabilities = vec![
 +            "thread.list",
@@ -661,7 +723,7 @@ index 0000000000..658e00368e
 +        if self.terminal_read {
 +            capabilities.extend(["terminal.list", "terminal.snapshot"]);
 +        }
-+        if self.terminal_input {
++        if self.terminal_read && self.terminal_input {
 +            capabilities.push("terminal.input");
 +        }
 +        if self.task_control {
@@ -702,7 +764,7 @@ index 0000000000..658e00368e
 +            }
 +            "thread.settings.update" | "thread.queue.clear" => self.agent_settings,
 +            "terminal.list" | "terminal.snapshot" => self.terminal_read,
-+            "terminal.input" => self.terminal_input,
++            "terminal.input" => self.terminal_read && self.terminal_input,
 +            "task.list" | "task.stop" => self.task_control,
 +            "task.catalog" | "task.run" => self.task_start,
 +            "debugger.snapshot" => self.debugger_read,
@@ -774,60 +836,7 @@ index 0000000000..658e00368e
 +        .merged_settings()
 +        .zedlink
 +        .clone();
-+    let permissions = ProbePermissions {
-+        session_creation: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_session_creation)
-+            .unwrap_or(true),
-+        attachments: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_attachments)
-+            .unwrap_or(true),
-+        project_context: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_project_context)
-+            .unwrap_or(true),
-+        git_changes: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_git_changes)
-+            .unwrap_or(true),
-+        approval_decisions: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_approval_decisions)
-+            .unwrap_or(true),
-+        agent_settings: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_agent_settings)
-+            .unwrap_or(true),
-+        terminal_read: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_terminal_read)
-+            .unwrap_or(false),
-+        terminal_input: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_terminal_input)
-+            .unwrap_or(false),
-+        task_control: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_task_control)
-+            .unwrap_or(false),
-+        task_start: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_task_start)
-+            .unwrap_or(false),
-+        debugger_read: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_debugger_read)
-+            .unwrap_or(false),
-+        debugger_start: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_debugger_start)
-+            .unwrap_or(false),
-+        debugger_control: settings
-+            .as_ref()
-+            .and_then(|settings| settings.allow_debugger_control)
-+            .unwrap_or(false),
-+    };
++    let permissions = ProbePermissions::from_settings(cx);
 +    let gateway_manager = settings.as_ref().and_then(|settings| {
 +        if !settings.start_gateway_on_launch.unwrap_or(true) {
 +            return None;
@@ -900,7 +909,7 @@ index 0000000000..658e00368e
 +            listener,
 +            ProbeState {
 +                project_root,
-+                permissions,
++                permissions: Cell::new(permissions),
 +                instance_id: uuid::Uuid::new_v4().to_string(),
 +                epoch: uuid::Uuid::new_v4().to_string(),
 +                submissions: RefCell::new(HashMap::new()),
@@ -921,6 +930,12 @@ index 0000000000..658e00368e
 +        return;
 +    };
 +    let state = Rc::new(state);
++
++    cx.observe_global::<SettingsStore>({
++        let state = state.clone();
++        move |cx| state.permissions.set(ProbePermissions::from_settings(cx))
++    })
++    .detach();
 +
 +    let (sender, receiver) = async_channel::bounded::<ProbeCommand>(16);
 +    let listener_thread = std::thread::Builder::new()
@@ -1112,7 +1127,8 @@ index 0000000000..658e00368e
 +}
 +
 +fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
-+    if !state.permissions.allows(&request.method, &request.params) {
++    let permissions = state.permissions.get();
++    if !permissions.allows(&request.method, &request.params) {
 +        return error(&request.request_id, "UNSUPPORTED_CAPABILITY");
 +    }
 +    match request.method.as_str() {
@@ -1121,7 +1137,7 @@ index 0000000000..658e00368e
 +            json!({
 +                "instance_id": state.instance_id,
 +                "epoch": state.epoch,
-+                "capabilities": state.permissions.capabilities(),
++                "capabilities": permissions.capabilities(),
 +                "project": state.project_root.file_name().and_then(|name| name.to_str()),
 +                "provisional": true,
 +            }),
@@ -4952,7 +4968,7 @@ index 861b71e221..65db5266d8 100644
  telemetry.workspace = true
  theme.workspace = true
 diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
-index 972d401b68..4415dd3ebd 100644
+index 972d401b68..4e33fa0f63 100644
 --- a/crates/settings_ui/src/page_data.rs
 +++ b/crates/settings_ui/src/page_data.rs
 @@ -1,13 +1,22 @@
@@ -6294,7 +6310,7 @@ index 972d401b68..4415dd3ebd 100644
 +            }),
 +            SettingsPageItem::SettingItem(SettingItem {
 +                title: "View Project Terminals",
-+                description: "Allow paired devices to inspect terminals open in this configured project. Disabled by default.",
++                description: "Allow paired devices to inspect terminals open in this configured project. This is read-only unless Send Terminal Input is also enabled. Changes apply immediately. Disabled by default.",
 +                field: Box::new(SettingField {
 +                    organization_override: None,
 +                    json_path: Some("zedlink.allow_terminal_read"),
@@ -6317,7 +6333,7 @@ index 972d401b68..4415dd3ebd 100644
 +            }),
 +            SettingsPageItem::SettingItem(SettingItem {
 +                title: "Send Terminal Input",
-+                description: "Allow paired devices to type into project terminals already open in Zed. Disabled by default.",
++                description: "Allow paired devices to type into project terminals already open in Zed. Requires View Project Terminals. Changes apply immediately. Disabled by default.",
 +                field: Box::new(SettingField {
 +                    organization_override: None,
 +                    json_path: Some("zedlink.allow_terminal_input"),

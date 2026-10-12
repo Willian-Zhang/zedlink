@@ -912,7 +912,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.3"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.4"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1071,11 +1071,23 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, "#changes-list .change-action").click()
                 wait.until(lambda driver: len(probe.change_operations) == 1)
                 browser.find_element(By.ID, "context-terminal-tab").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "terminal-mode").text == "INTERACTIVE")
+                browser.find_element(By.CSS_SELECTOR, "#task-launcher > summary").click()
                 wait.until(lambda driver: "Build fixture" in driver.find_element(By.ID, "task-select").text)
+                assert browser.find_element(By.ID, "terminal-select").is_displayed()
                 assert not browser.find_element(By.ID, "run-task").get_attribute("disabled")
                 browser.find_element(By.ID, "run-task").click()
                 wait.until(lambda driver: len(probe.task_runs) >= 1)
                 assert "ready" in browser.find_element(By.ID, "terminal-output").text
+                browser.find_element(By.CSS_SELECTOR, "#task-launcher > summary").click()
+                terminal_input = browser.find_element(By.ID, "terminal-input")
+                terminal_input.send_keys("echo terminal-ui")
+                browser.find_element(By.CSS_SELECTOR, "#terminal-input-form button").click()
+                wait.until(lambda driver: any(json.loads(row).get("input") == "echo terminal-ui\n"
+                                              for row in probe.terminal_inputs.values()))
+                assert browser.find_element(By.ID, "terminal-preview").value_of_css_property("background-color") in (
+                    "rgb(2, 3, 3)", "rgba(2, 3, 3, 1)")
+                browser.save_screenshot("/tmp/zedlink-browser-terminal.png")
                 browser.find_element(By.ID, "context-debug-tab").click()
                 wait.until(lambda driver: "Debug fixture" in driver.find_element(By.ID, "debugger-select").text)
                 launches_before_browser = len(probe.debugger_launches)
@@ -1336,6 +1348,15 @@ def main():
                 assert mobile_header["pageWidth"] <= mobile_header["viewport"] + 1, mobile_header
                 mobile_composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,viewport:innerWidth}")
                 assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and mobile_composer["height"] <= 54 and mobile_composer["radius"] == "13px", mobile_composer
+                browser.find_element(By.ID, "show-context").click()
+                browser.find_element(By.ID, "context-terminal-tab").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "terminal-mode").text == "INTERACTIVE")
+                mobile_terminal = browser.execute_script("const panel=document.getElementById('context-panel').getBoundingClientRect(); const consoleBox=document.getElementById('terminal-preview').getBoundingClientRect(); return {left:panel.left,right:panel.right,width:innerWidth,pageWidth:document.documentElement.scrollWidth,consoleWidth:consoleBox.width}")
+                assert mobile_terminal["left"] >= 0 and mobile_terminal["right"] <= mobile_terminal["width"] + 1, mobile_terminal
+                assert mobile_terminal["right"] - mobile_terminal["left"] >= mobile_terminal["width"] - 1, mobile_terminal
+                assert mobile_terminal["pageWidth"] <= mobile_terminal["width"] + 1 and mobile_terminal["consoleWidth"] <= mobile_terminal["width"], mobile_terminal
+                browser.save_screenshot("/tmp/zedlink-browser-terminal-mobile.png")
+                browser.find_element(By.ID, "close-context").click()
                 probe.edit_review = {"changed_files": 3, "lines_added": 18, "lines_removed": 4}
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_element(By.ID, "edit-review").is_displayed())

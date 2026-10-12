@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.3";
+const UI_BUILD = "2026.10.12.4";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -619,6 +619,12 @@ function identity(result) {
     error.code = "IDENTITY_CHANGED";
     throw error;
   }
+}
+
+async function refreshCapabilities() {
+  const info = await rpc("instance.info");
+  identity(info);
+  state.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
 }
 function canStopTurn() {
   return state.live && !!state.threadId && Number.isInteger(state.turnId)
@@ -1900,6 +1906,7 @@ async function loadGitDiff() {
 }
 
 async function loadTerminals() {
+  await refreshCapabilities();
   await loadTaskCatalog();
   if (!state.capabilities.includes("terminal.list")) {
     state.terminals = [];
@@ -1930,6 +1937,8 @@ async function loadTaskCatalog() {
 
 function renderTaskCatalog() {
   const select = $("task-select");
+  const supported = state.capabilities.includes("task.catalog");
+  $("task-launcher").classList.toggle("hidden", !supported);
   const prior = select.value;
   select.replaceChildren();
   for (const task of state.taskCatalog) {
@@ -1941,16 +1950,16 @@ function renderTaskCatalog() {
   if (!state.taskCatalog.length) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = state.capabilities.includes("task.catalog") ? "No configured tasks" : "Task launching disabled";
+    option.textContent = supported ? "No configured tasks" : "Task launching unavailable";
     select.append(option);
   }
   if (state.taskCatalog.some((task) => task.task_id === prior)) select.value = prior;
   const enabled = state.capabilities.includes("task.run") && state.taskCatalog.length > 0;
   select.disabled = !enabled;
   $("run-task").disabled = !enabled;
-  $("task-help").textContent = state.capabilities.includes("task.catalog")
+  $("task-help").textContent = supported
     ? "Runs the selected task through Zed's configured task inventory."
-    : "Enable Start Configured Tasks in desktop ZedLink settings, then restart patched Zed.";
+    : "Enable Start Configured Tasks in ZedLink settings.";
 }
 
 async function runConfiguredTask(event) {
@@ -2111,35 +2120,31 @@ async function loadTerminalSnapshot() {
 }
 
 function renderTerminals() {
-  const list = $("terminal-list");
-  list.replaceChildren();
+  const select = $("terminal-select");
+  const prior = state.selectedTerminalId;
+  select.replaceChildren();
   const supported = state.capabilities.includes("terminal.list");
+  const canInput = state.capabilities.includes("terminal.input");
+  $("terminal-mode").textContent = supported ? (canInput ? "Interactive" : "Read only") : "Access off";
+  $("terminal-mode").dataset.state = supported ? (canInput ? "interactive" : "readonly") : "off";
   $("terminal-help").textContent = supported
-    ? "These are the terminals already open in this Zed project. Input and task controls follow the permissions configured in desktop Zed."
-    : "Enable View Project Terminals in desktop ZedLink settings, then restart patched Zed.";
+    ? (canInput ? "Live output and input from the selected terminal in desktop Zed." : "Terminal output is available. Enable Send Terminal Input in ZedLink settings to type here.")
+    : "Enable View Project Terminals in ZedLink settings. Changes now apply without restarting Zed.";
   for (const terminal of state.terminals) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "context-row";
-    const label = document.createElement("span");
-    label.textContent = terminal.title || "Terminal";
-    const status = document.createElement("small");
-    status.textContent = terminal.task?.status?.state?.toUpperCase() || "TERMINAL";
-    row.append(label, status);
-    row.addEventListener("click", async () => {
-      state.selectedTerminalId = terminal.terminal_id;
-      renderTerminals();
-      await loadTerminalSnapshot().catch((error) => notice(error.message));
-    });
-    if (terminal.terminal_id === state.selectedTerminalId) row.setAttribute("aria-current", "true");
-    list.append(row);
+    const option = document.createElement("option");
+    option.value = terminal.terminal_id;
+    const status = terminal.task?.status?.state;
+    option.textContent = `${terminal.title || "Terminal"}${status ? ` · ${status}` : ""}`;
+    select.append(option);
   }
   if (!state.terminals.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = supported ? "No terminal is open for this project in Zed." : "Terminal access is unavailable.";
-    list.append(empty);
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = supported ? "No terminal open in Zed" : "Terminal access unavailable";
+    select.append(option);
   }
+  select.disabled = !supported || !state.terminals.length;
+  if (state.terminals.some((terminal) => terminal.terminal_id === prior)) select.value = prior;
   $("terminal-preview").classList.toggle("hidden", !state.selectedTerminalId);
 }
 
@@ -2147,24 +2152,16 @@ function renderTerminalSnapshot() {
   const snapshot = state.terminalSnapshot;
   if (!snapshot || snapshot.terminal?.terminal_id !== state.selectedTerminalId) return;
   $("terminal-title").textContent = snapshot.terminal.title || "Terminal";
-  $("terminal-output").textContent = snapshot.content || "";
-  $("terminal-output").scrollTop = $("terminal-output").scrollHeight;
-  $("terminal-input").disabled = !state.capabilities.includes("terminal.input");
-  $("terminal-input").placeholder = state.capabilities.includes("terminal.input")
-    ? "Type into this Zed terminal"
-    : "Terminal input is disabled in Zed settings";
-  let stop = $("terminal-stop");
-  if (!stop) {
-    stop = document.createElement("button");
-    stop.id = "terminal-stop";
-    stop.type = "button";
-    stop.className = "danger";
-    $("terminal-preview").querySelector("header").append(stop);
-    stop.addEventListener("click", stopSelectedTask);
-  }
+  const output = $("terminal-output");
+  const followOutput = !output.textContent || output.scrollHeight - output.scrollTop - output.clientHeight < 36;
+  output.textContent = snapshot.content || "";
+  if (followOutput) output.scrollTop = output.scrollHeight;
+  const canInput = state.capabilities.includes("terminal.input");
+  $("terminal-input-form").classList.toggle("hidden", !canInput);
+  $("terminal-read-only").classList.toggle("hidden", canInput);
+  $("terminal-input").disabled = !canInput;
   const running = snapshot.terminal.task?.status?.state === "running";
-  stop.textContent = "Stop task";
-  stop.classList.toggle("hidden", !running || !state.capabilities.includes("task.stop"));
+  $("terminal-stop").classList.toggle("hidden", !running || !state.capabilities.includes("task.stop"));
 }
 
 async function sendTerminalInput(event) {
@@ -2222,6 +2219,7 @@ function renderActivityIndex() {
 }
 
 function switchContextTab(tab) {
+  $("context-panel").classList.toggle("terminal-context", tab === "terminal");
   for (const name of ["files", "changes", "terminal", "debug", "activity"]) {
     $(`context-${name}-tab`).setAttribute("aria-selected", String(name === tab));
     $(name === "activity" ? "context-activity-view" : `context-${name}`).classList.toggle("hidden", name !== tab);
@@ -3738,7 +3736,20 @@ $("context-changes-tab").addEventListener("click", () => switchContextTab("chang
 $("context-terminal-tab").addEventListener("click", () => switchContextTab("terminal"));
 $("context-debug-tab").addEventListener("click", () => switchContextTab("debug"));
 $("context-activity-tab").addEventListener("click", () => switchContextTab("activity"));
-$("refresh-terminal").addEventListener("click", () => loadTerminalSnapshot().catch((error) => notice(error.message)));
+$("terminal-select").addEventListener("change", async (event) => {
+  state.selectedTerminalId = event.target.value || null;
+  state.terminalSnapshot = null;
+  renderTerminals();
+  if (state.selectedTerminalId) await loadTerminalSnapshot().catch((error) => notice(error.message));
+});
+$("refresh-terminal").addEventListener("click", () => loadTerminals().catch((error) => notice(error.message)));
+$("terminal-stop").addEventListener("click", stopSelectedTask);
+$("copy-terminal").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("terminal-output").textContent || "");
+    notice("Terminal output copied.");
+  } catch { notice("Terminal output could not be copied."); }
+});
 $("terminal-input-form").addEventListener("submit", sendTerminalInput);
 $("task-run-form").addEventListener("submit", runConfiguredTask);
 $("debugger-launch-form").addEventListener("submit", launchConfiguredDebugger);
