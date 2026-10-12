@@ -1,11 +1,6 @@
 name: Android smoke
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "android/**"
-      - ".github/workflows/android-smoke.yml"
   workflow_dispatch:
 
 permissions:
