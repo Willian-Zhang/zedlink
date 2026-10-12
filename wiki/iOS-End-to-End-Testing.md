@@ -22,7 +22,7 @@ xcrun simctl list devices available
 bash tools/test_ios_local.sh unit 'platform=iOS Simulator,id=<disposable simulator UUID>'
 ```
 
-Install Xcode and XcodeGen first. The runner prints its derived-data directory. The unsigned simulator app is under `Build/Products/Debug-iphonesimulator/ZedLink.app`. Install it on your selected disposable simulator:
+Install Xcode with the iOS 17 SDK or newer and XcodeGen first; the app requires iOS 17 or newer. The runner prints its derived-data directory. The unsigned simulator app is under `Build/Products/Debug-iphonesimulator/ZedLink.app`. Install it on your selected disposable simulator:
 
 ```sh
 xcrun simctl install '<simulator UUID>' '<derived-data directory>/Build/Products/Debug-iphonesimulator/ZedLink.app'
@@ -30,6 +30,8 @@ xcrun simctl launch '<simulator UUID>' dev.zedlink.app
 ```
 
 For the physical iPhone, open the generated `ios/ZedLink.xcodeproj`, select your development team and connected iPhone, and Run the `ZedLink` scheme. Signing is required; simulator artifacts cannot install on a phone. Keep hosted workflows idle while the Actions budget is constrained.
+
+Before the first device test, confirm that the phone can reach the gateway's trusted HTTPS hostname, pair this installation, and explicitly expose the disposable thread in desktop Zed. Grant local-network access when requested; microphone/speech and camera permissions are needed only for dictation and QR scanning. Test a clean install separately from an upgrade that should retain existing connection profiles.
 
 ## Pair a disposable native session
 
@@ -61,12 +63,12 @@ The runner forwards test variables with Apple's documented [`TEST_RUNNER_` conve
 
 | Check | Expected result |
 | --- | --- |
-| Session → Back → session | Tabs hide in chat and restore at Sessions; title and Workspace stay usable |
+| Session → Back → session | Tabs hide in chat and restore at Sessions; title and Workspace stay usable; unsent image/file attachments remain attached |
 | iPhone 15 Pro keyboard, landscape, large text | Composer and approval controls remain reachable; Send/Stop/Workspace dismiss input focus |
 | Long streaming thread | Scroll up without being pulled down; Latest resumes following; earlier-history loading preserves readable content |
 | Files/search/diff | Search finds the expected source and line; viewer opens real file content; Wrap/Expand/Find work; partial results are labeled |
 | Exact approvals | Approve/Deny affects only the pending native request; repeated taps are blocked; a desktop decision is reconciled |
-| Connection interruption | Stale controls disable and errors remain visible; return/background recovery reconciles without a second prompt |
+| Connection interruption | Stale controls disable and errors remain visible; return/background recovery reconciles without a second prompt; retry retains the original text, files and images |
 | Switch connections/targets during a read | Old file/diff/search/terminal responses do not populate the new session |
 | Terminal/task/debugger | Enable each permission separately; run a harmless command/task in the disposable project; compare output and DAP state with desktop Zed |
 | Images/model settings | Image becomes a removable draft attachment; unsupported models disable images; model changes occur in Zed |

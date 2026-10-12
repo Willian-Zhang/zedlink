@@ -124,6 +124,9 @@ import Combine
         let previousThread = sameProfile ? selectedThreadID : nil
         let previousPending = sameProfile ? pending : nil
         let previousTarget = sameProfile ? targetID : nil
+        let previousScope = operationScope
+        let previousAttachments = attachments
+        let previousContextPaths = contextPaths
         disconnect()
         if !sameProfile { draft = "" }
         let current = generation
@@ -162,12 +165,22 @@ import Combine
             epoch = nextEpoch
             capabilities = Set(info["capabilities"] as? [String] ?? [])
             restorePending(for: nextProfile)
-            if let previousPending, pending?.id == previousPending.id {
-                pending?.text = previousPending.text
+            if let previousPending, selectedTarget.id == previousTarget,
+               let restored = pending, restored.id == previousPending.id,
+               restored.instanceID == previousPending.instanceID,
+               restored.epoch == previousPending.epoch,
+               restored.threadID == previousPending.threadID {
+                // Keep the exact in-memory retry payload, including uploads and context.
+                // Persisted identity alone intentionally cannot reconstruct that payload.
+                pending = previousPending
             }
             try await loadThreads()
             if let previousThread, threads.contains(where: { $0.id == previousThread }) {
                 selectedThreadID = previousThread
+                if operationScope == previousScope {
+                    attachments = previousAttachments
+                    contextPaths = previousContextPaths
+                }
                 try await loadSnapshot(previousThread)
                 try await loadCommands(previousThread)
             }
@@ -267,24 +280,32 @@ import Combine
 
     func select(_ id: String) async {
         guard threads.contains(where: { $0.id == id }) else { return }
-        selectedThreadID = id
-        attachments = []; contextPaths = []; supportsImages = nil; threadSettings = nil
-        diffContent = ""; diffLoading = false; diffRequest = UUID()
-        previewRequest = UUID(); previewReadable = false; previewLoading = false; previewContent = ""; previewTitle = ""
-        projectFolderEntries = nil; directoryRequest = UUID()
-        projectFiles = []; projectFilesTruncated = false
-        snapshot = nil
-        commands = []
-        if let profile {
-            draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, targetID: targetID, threadID: id)) ?? ""
+        if selectedThreadID != id {
+            selectedThreadID = id
+            attachments = []; contextPaths = []; supportsImages = nil; threadSettings = nil
+            diffContent = ""; diffLoading = false; diffRequest = UUID()
+            previewRequest = UUID(); previewReadable = false; previewLoading = false; previewContent = ""; previewTitle = ""
+            projectFolderEntries = nil; directoryRequest = UUID()
+            projectFiles = []; projectFilesTruncated = false
+            snapshot = nil
+            commands = []
+            if let profile {
+                draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, targetID: targetID, threadID: id)) ?? ""
+            }
         }
+        let scope = operationScope
         do {
             try await loadSnapshot(id)
+            guard scope == operationScope else { return }
             try await loadCommands(id)
+            guard scope == operationScope else { return }
             issue = ""
             startEventStream(generation)
         }
-        catch { issue = error.localizedDescription; state = .stale }
+        catch {
+            guard scope == operationScope else { return }
+            issue = error.localizedDescription; state = .stale
+        }
     }
 
     private func startEventStream(_ current: UUID) {
