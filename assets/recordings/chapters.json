@@ -1,0 +1,34 @@
+[
+  {
+    "at": 1.129,
+    "title": "Choose a conversation"
+  },
+  {
+    "at": 7.248,
+    "title": "Send a prompt to the same Zed agent"
+  },
+  {
+    "at": 15.77,
+    "title": "Follow the response as it streams"
+  },
+  {
+    "at": 24.153,
+    "title": "Browse the project and read a file"
+  },
+  {
+    "at": 36.605,
+    "title": "Approve a command before it runs"
+  },
+  {
+    "at": 54.202,
+    "title": "Delegate work to a parallel agent"
+  },
+  {
+    "at": 70.524,
+    "title": "Revisit completed work in Agent history"
+  },
+  {
+    "at": 84.961,
+    "title": "Keep the conversation moving"
+  }
+]

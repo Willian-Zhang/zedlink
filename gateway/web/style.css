@@ -126,7 +126,7 @@ input[type=search] { appearance: none; }
 .session-pin[aria-pressed="true"] { color: var(--ink); }
 .thread-item.active { border-left-color: var(--ink); background: #141618; }
 .thread-item.running { border-left-color: #78a8e8; background: linear-gradient(90deg, #101820 0, transparent 72%); }
-.thread-item strong { display: -webkit-box; overflow: hidden; margin-top: 9px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .93rem; font-weight: 600; line-height: 1.35; }
+.thread-item strong { clear: both; display: -webkit-box; overflow: hidden; margin-top: 9px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .93rem; font-weight: 600; line-height: 1.35; }
 .thread-item small { display: block; overflow: hidden; margin-top: 8px; color: var(--subtle); font-size: .69rem; text-overflow: ellipsis; white-space: nowrap; }
 .thread-badge { color: var(--subtle); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .63rem; letter-spacing: .12em; }
 .thread-status { display: inline-flex; float: right; align-items: center; gap: 7px; color: var(--online); font-size: .69rem; }

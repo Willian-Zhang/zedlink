@@ -1,0 +1,7 @@
+{
+  "native_thread": true,
+  "native_terminal_tests": 3,
+  "native_child_history": true,
+  "provider": "scripted loopback demo",
+  "owner_workspace_used": false
+}

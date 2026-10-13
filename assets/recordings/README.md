@@ -1,24 +1,42 @@
-# ZedLink walkthrough recording
+# Product recording
 
-The main README uses a GitHub-hosted attachment for inline playback. The [repository MP4](zedlink-walkthrough.mp4) remains the reproducible source artifact.
+The main README uses a GitHub-hosted attachment for inline playback. The [MP4](zedlink-in-action.mp4) in this directory is the reproducible source artifact.
 
-https://github.com/user-attachments/assets/b188b55f-f55f-4d20-813a-5b956c1d6eff
+https://github.com/user-attachments/assets/eb599434-e283-4828-a300-e5e77d1c93f4
 
-Continuous, silent H.264 footage at 1440 × 900 and 30 frames/second shows browser controls being clicked, prompts being typed, thinking and response updates, directory navigation, syntax-highlighted file contents, changes, and terminal input/output. Pointer movement and click rings make the interactions visible. There are no caption overlays or held screenshots.
+## Sequence
 
-The production browser UI runs in a fresh Firefox profile against a disposable zedlink-demo project and loopback TLS gateway. Conversation streaming and terminal results are synthetic fixture data, including the displayed test results. This recording demonstrates presentation and controls; it is not evidence of a live model, real command execution, or a native mobile round trip.
+1. Choose an exposed conversation.
+2. Type a prompt and submit it through the browser.
+3. Follow the native thread's streamed response.
+4. Open Workspace, browse a folder, and read a source file.
+5. Request tests, review the native approval, and allow the command.
+6. Delegate a review to a native child agent and open its reader.
+7. Revisit the completed child through Agent history.
+8. Return to the main conversation.
 
-No footage is taken from the user's running Zed, urizen project, or physical desktop. The recording contains no OS branding, pairing codes, model credentials, or private routes.
+The recording uses the production browser, HTTPS gateway and maintained native Zed bridge in a disposable **Orbit Notes** project and new profiles. The model is a scripted loopback demo provider: its wording and timing are controlled for the recording. The terminal command actually executes three Python unit tests in that disposable project. Child creation, streaming, approval and history use native Zed paths. This is not a recording of the owner's local GLM or a native iOS/Android app.
+
+Only the isolated kiosk is captured. The owner's desktop, running Zed, urizen project, credentials and operating-system branding are excluded. Pairing is completed before recording so no pairing code appears. The footage is captured continuously at 60 fps, with pointer motion, click cues, readable pauses and chapter headings in a separate band above the application. No screenshot slideshow or playback speed-up is used.
+
+## Design references
+
+- [VHS](https://github.com/charmbracelet/vhs): scripted typing, deliberate pauses and reproducible recording sources.
+- [Gum](https://github.com/charmbracelet/gum): visible user interaction and focused examples beside the relevant feature.
+- [asciinema](https://github.com/asciinema/asciinema): readable playback, explicit recording steps and embedded presentation.
+
+These informed the recording structure; no footage or graphics were copied.
 
 ## Regenerate locally
 
-Use the dependencies listed in the [screenshot capture instructions](../screenshots/README.md), plus imageio-ffmpeg and Xvfb. Build the gateway locally, then record only a separate virtual display:
+Requires the existing browser test dependencies, Xvfb, xdotool, Pillow and imageio-ffmpeg, plus rebuilt gateway and patched Zed binaries.
 
 ```sh
 cargo build --manifest-path gateway/Cargo.toml --offline
+RUSTUP_TOOLCHAIN=stable cargo build --manifest-path zed-source/Cargo.toml -p zed --offline
 ZEDLINK_SCREENSHOT_ISOLATED_DISPLAY=1 env -u WAYLAND_DISPLAY \
-  xvfb-run -a -s '-screen 0 1440x900x24' \
-  python3 tools/capture_readme_screenshots.py --record
+  xvfb-run -a -s '-screen 0 1280x800x24' \
+  python3 tools/record_readme_demo.py
 ```
 
-The script records the isolated browser continuously and writes the MP4 plus a poster. Temporary gateway state, certificates, project files, and browser profiles are removed after capture. It does not capture the active desktop or start the user's Zed. No hosted CI is required.
+Outputs: `zedlink-in-action.mp4`, `walkthrough-poster.png`, `chapters.json` and `native-demo-evidence.json`. Temporary project files, TLS certificates, model service, gateway state and native/browser profiles are cleaned up. No hosted CI is required. The provenance file contains assertions about this disposable run; it does not stand in for release/device validation.
