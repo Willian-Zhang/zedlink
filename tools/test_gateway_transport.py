@@ -190,9 +190,9 @@ class ProbeFixture:
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "thread_id": params["thread_id"],
                               "agent": ({"id": "codex-acp", "name": "Codex", "kind": "external_acp"}
-                                        if params["thread_id"] == "fixture-second"
+                                        if params["thread_id"] == "fixture-second" or (params["thread_id"] == "fixture-created" and any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values()))
                                         else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
-                              "title": ("Second synthetic thread" if params["thread_id"] == "fixture-second"
+                              "title": ("Second synthetic thread" if params["thread_id"] == "fixture-second" or (params["thread_id"] == "fixture-created" and any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values()))
                                         else "Created from browser" if params["thread_id"] == "fixture-created"
                                         else "Synthetic test thread"),
                               "status": "Generating" if self.active_turn_id is not None else "Idle",
@@ -232,7 +232,7 @@ class ProbeFixture:
                         {"name": "help", "description": "Show agent help", "category": "agent", "requires_argument": False},
                     ]}
                 elif method in ("thread.settings", "thread.settings.update"):
-                    external = params["thread_id"] == "fixture-second"
+                    external = params["thread_id"] == "fixture-second" or (params["thread_id"] == "fixture-created" and any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values()))
                     if method == "thread.settings.update" and external:
                         error = {"code": "UNSUPPORTED_CAPABILITY"}
                     elif method == "thread.settings.update":
