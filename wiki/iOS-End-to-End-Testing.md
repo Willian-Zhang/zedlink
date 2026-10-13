@@ -107,7 +107,7 @@ Before distribution, test these additions with a disposable project:
 
 ## Validation limitations
 
-Local Linux checks cover Swift syntax, shell syntax, public working-tree checks, and the disposable gateway/browser transport fixture. They do not compile SwiftUI or run iOS XCTest. This revision still requires a Mac build and the simulator/physical-device checks above before being considered validated for distribution.
+Local Linux checks cover Swift syntax, shell syntax, public working-tree checks, and the disposable gateway/browser transport fixture. They do not compile SwiftUI or run iOS XCTest. The Sessions revision also passed a hosted Mac simulator build, 25 unit tests and the isolated Sessions UI test ([Actions results](https://github.com/tjnull/zedlink/actions/runs/38340097403)). Android passed compilation, 14 unit tests and lint ([Actions results](https://github.com/tjnull/zedlink/actions/runs/38340102231)). The physical-device and native-agent acceptance checks above remain required before distribution.
 
 
 ## Sessions redesign
@@ -117,6 +117,14 @@ Sessions now uses a compact workstation/workspace selector, search by session or
 Approval/input counts use the existing `thread.approvals` and `thread.elicitations` reads, cached for five seconds while the native session list is open. Unsupported counts remain unknown, not fabricated zeroes. All reads are scoped to the current connection, workspace, instance and epoch. Pins persist locally by gateway/workspace/conversation; New activity means a change observed during this client run, not an unread transcript count or an invented server timestamp. The browser retains its visible sidebar and uses the same filters, grouping and status vocabulary. Android stops following the transcript when the user scrolls back and offers Latest in a separate row.
 
 The manual **iOS build and Sessions preview** workflow compiles Debug for an isolated iPhone simulator, runs native unit tests and `SessionsPreviewUITests`, and captures both appearances. `--zedlink-demo` is Debug-only, bypasses gateway/model access, disables opening the sample conversations and labels the screen DEMO PREVIEW. It does not load a user's desktop Zed project. Screenshots prove simulator presentation only.
+
+### Simulator preview
+
+![Sessions in dark appearance](https://raw.githubusercontent.com/tjnull/zedlink/main/assets/screenshots/ios-sessions-dark.png)
+
+[Light appearance](https://raw.githubusercontent.com/tjnull/zedlink/main/assets/screenshots/ios-sessions-light.png) · [Capture provenance](https://github.com/tjnull/zedlink/blob/main/assets/screenshots/README.md)
+
+These images are from the successful **589b158** build. Its disabled sample rows appear dimmed; real sessions are enabled. The subsequent preview-only correction (**0bcc0f3**) is pushed but its capture job was refused by GitHub account billing/spending limits before any steps ran. No new build or screenshot of that correction is claimed.
 
 Additional acceptance checks:
 

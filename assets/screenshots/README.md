@@ -32,3 +32,11 @@ Requires the locally built patched Zed binary, Xvfb, xdotool, and ImageMagick `i
 `code-review.png` is an older synthetic UI capture retained for documentation compatibility; the current README uses `file-browser.png` instead.
 
 The [interactive interface walkthrough](../recordings/README.md) uses this same isolated browser fixture; it contains no host desktop or OS branding.
+
+## Native iOS Sessions captures
+
+`ios-sessions-dark.png` and `ios-sessions-light.png` are actual SwiftUI captures from an isolated hosted iPhone simulator at revision **589b158** ([successful build and tests](https://github.com/tjnull/zedlink/actions/runs/38340097403)). They show Debug-only sample **Orbit Notes** sessions, not a live gateway or model. No owner project, host desktop or Linux branding appears.
+
+The captures include the explicit DEMO PREVIEW label. Sample conversation navigation was disabled in that build, which dims those rows; real connected session rows remain enabled. Revision **0bcc0f3** preserves normal colors while preventing sample navigation through hit testing. GitHub refused its capture run before starting because of account billing/spending limits ([blocked run](https://github.com/tjnull/zedlink/actions/runs/38340876963)); these images therefore do not claim to show that final preview-only correction.
+
+Regenerate using the manual **iOS build and Sessions preview** workflow once runner access is available. The workflow compiles the app, runs unit and Sessions UI tests, launches `--zedlink-demo`, and captures both appearances using `simctl`. Simulator presentation is not evidence of a physical phone/native-agent round trip.
