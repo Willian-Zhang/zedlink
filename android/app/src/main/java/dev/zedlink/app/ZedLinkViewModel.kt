@@ -53,6 +53,8 @@ data class AppState(
     val debuggerCatalog: List<NativeDebugScenario> = emptyList(),
     val debuggerSessions: List<NativeDebuggerSession> = emptyList(),
     val notificationsEnabled: Boolean = false,
+    val appearance: String = "dark",
+    val updatingModel: Boolean = false,
     val projectFolderEntries: List<NativeProjectFile>? = null,
     val projectFolderTruncated: Boolean = false,
     val projectFilesTruncated: Boolean = false,
@@ -67,6 +69,15 @@ data class AppState(
 class ZedLinkViewModel(application: Application) : AndroidViewModel(application) {
     var state by mutableStateOf(AppState())
         private set
+    var notificationRevision by mutableStateOf(0)
+        private set
+    var notificationMessage by mutableStateOf("")
+        private set
+    fun notificationPermissionResult(allowed: Boolean) {
+        notificationRevision++
+        notificationMessage = if (allowed) "" else "Permission was not granted. Allow notifications in Android Settings."
+        if (allowed) enableNotifications()
+    }
     val approvalNotifications = ApprovalNotifications(application)
     fun enableNotifications() { approvalNotifications.enable(); state = state.copy(notificationsEnabled = true); approvalNotifications.update(state) }
     fun disableNotifications() { approvalNotifications.disable(); state = state.copy(notificationsEnabled = false) }
@@ -83,10 +94,16 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     init {
         val saved = loadProfiles()
         val preferred = loadProfile(saved)
-        state = state.copy(profile = preferred, profiles = saved, notificationsEnabled = approvalNotifications.enabled)
+        state = state.copy(profile = preferred, profiles = saved, notificationsEnabled = approvalNotifications.enabled, appearance = preferences.getString("appearance", "dark") ?: "dark")
         preferred?.let { profile ->
             if (TokenVault.read(application, profile.gatewayId) != null) connect()
         }
+    }
+
+    fun setAppearance(value: String) {
+        if (value !in setOf("system", "dark", "light")) return
+        preferences.edit().putString("appearance", value).apply()
+        state = state.copy(appearance = value)
     }
 
     fun applyPairingLink(text: String): Pair<ConnectionProfile, String?> = GatewayClient.profileFromPairingLink(text)
@@ -393,13 +410,19 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun forget(profile: ConnectionProfile) {
-        if (state.profile?.gatewayId == profile.gatewayId) { pollJob?.cancel(); client = null }
+        val active = state.profile?.gatewayId == profile.gatewayId
+        if (active) {
+            approvalNotifications.clear()
+            pollJob?.cancel(); eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; client = null
+        }
         TokenVault.clear(getApplication(), profile.gatewayId)
         val remaining = loadProfiles().filterNot { it.gatewayId == profile.gatewayId }
         persistProfiles(remaining)
-        val next = if (state.profile?.gatewayId == profile.gatewayId) remaining.firstOrNull() else state.profile
+        if (!active) { state = state.copy(profiles = remaining); return }
+        val next = remaining.firstOrNull()
         preferences.edit().putString("active_gateway", next?.gatewayId).apply()
-        state = AppState(profile = next, profiles = remaining, status = if (next == null) "Pair this device" else "Offline")
+        state = AppState(profile = next, profiles = remaining, appearance = state.appearance,
+            notificationsEnabled = approvalNotifications.enabled, status = if (next == null) "Pair this device" else "Offline")
     }
 
     private suspend fun poll() {
@@ -531,6 +554,9 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun loadAuxiliaryState(id: String) {
         val activeClient = client ?: return
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, id)
+        fun current() = scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        if (!current()) return
         val base = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", id)
         var elicitations = emptyList<NativeElicitation>()
         var queued = emptyList<NativeQueueEntry>()
@@ -538,6 +564,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         var settings: NativeThreadSettings? = null
         if ("thread.elicitations" in state.capabilities) {
             val result = activeClient.rpc("thread.elicitations", JSONObject(base.toString()))
+            if (!current()) return
             elicitations = result.optJSONArray("elicitations").objects().mapNotNull { row ->
                 if (row.optString("status") != "pending") return@mapNotNull null
                 val request = row.optJSONObject("request") ?: return@mapNotNull null
@@ -566,16 +593,19 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         }
         if ("thread.queue" in state.capabilities) {
             val result = activeClient.rpc("thread.queue", JSONObject(base.toString()))
+            if (!current()) return
             queued = result.optJSONArray("entries").objects().map { row ->
                 NativeQueueEntry(row.optInt("index"), row.optString("preview", "Attachment"), row.optBoolean("steer"))
             }
         }
         if ("thread.edit_review" in state.capabilities) {
             val result = activeClient.rpc("thread.edit_review", JSONObject(base.toString()))
+            if (!current()) return
             if (result.optBoolean("pending")) review = NativeEditReview(result.optInt("changed_files"), result.optInt("lines_added"), result.optInt("lines_removed"))
         }
         if ("thread.settings" in state.capabilities) {
             val result = activeClient.rpc("thread.settings", JSONObject(base.toString()))
+            if (!current()) return
             val selected = result.optJSONObject("model")
             val usage = result.optJSONObject("context_usage")
             settings = NativeThreadSettings(selected?.optString("id"), selected?.optString("provider_id"),
@@ -584,7 +614,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     if (modelId.isBlank() || providerId.isBlank()) null else NativeModelOption("$providerId\n$modelId", modelId, providerId, row.optString("name", modelId))
                 }, usage?.optInt("used_tokens"), usage?.optInt("max_tokens"))
         }
-        if (state.selectedThreadId == id) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review, threadSettings = settings)
+        if (current()) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review, threadSettings = settings)
     }
 
     fun respondElicitation(item: NativeElicitation, action: String, content: JSONObject = JSONObject()) = viewModelScope.launch {
@@ -639,9 +669,18 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectModel(option: NativeModelOption) = viewModelScope.launch {
         val threadId = state.selectedThreadId ?: return@launch
-        try { client?.rpc("thread.settings.update", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
-            .put("thread_id", threadId).put("provider_id", option.providerId).put("model_id", option.modelId)); loadAuxiliaryState(threadId) }
-        catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+        val frozenClient = client ?: return@launch
+        if (!state.live || state.snapshot?.threadId != threadId || state.snapshot?.status != "Idle" || state.updatingModel ||
+            "thread.settings.update" !in state.capabilities || state.threadSettings?.models?.contains(option) != true) return@launch
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, threadId)
+        fun current() = scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        state = state.copy(updatingModel = true)
+        try {
+            frozenClient.rpc("thread.settings.update", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3])
+                .put("thread_id", threadId).put("provider_id", option.providerId).put("model_id", option.modelId))
+            if (current()) loadAuxiliaryState(threadId)
+        } catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty()) }
+        finally { state = state.copy(updatingModel = false) }
     }
 
     fun loadProjectContext() = viewModelScope.launch {

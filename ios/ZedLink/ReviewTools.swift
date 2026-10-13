@@ -186,7 +186,7 @@ struct SessionModelControls: View {
                                     Spacer()
                                     if model.id == "\(settings.providerID ?? "")\n\(settings.modelID ?? "")" { Image(systemName: "checkmark") }
                                 }
-                            }.disabled(session.state != .live || !session.capabilities.contains("thread.settings.update"))
+                            }.disabled(session.state != .live || session.snapshot?.status != "Idle" || session.updatingModel || !session.capabilities.contains("thread.settings.update"))
                         }
                         if let used = settings.usedTokens, let max = settings.maxTokens { LabeledContent("Context", value: "\(used) / \(max)") }
                     }

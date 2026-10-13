@@ -20,6 +20,23 @@ class ApprovalNotifications(private val context: Context) {
     private var current = emptySet<String>()
     private var scope = ""
     val enabled get() = preferences.getBoolean("enabled", false)
+    data class DeliveryStatus(val allowed: Boolean, val message: String, val requestable: Boolean = false)
+    fun deliveryStatus(): DeliveryStatus {
+        if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            return DeliveryStatus(false, "Permission not granted in Android Settings", requestable = true)
+        if (!manager.areNotificationsEnabled()) return DeliveryStatus(false, "Blocked in Android Settings")
+        if (manager.getNotificationChannel("zedlink-approvals")?.importance == NotificationManager.IMPORTANCE_NONE)
+            return DeliveryStatus(false, "Agent approval channel is blocked")
+        return DeliveryStatus(true, "Allowed")
+    }
+    fun sendTest() {
+        check(enabled && deliveryStatus().allowed) { "Enable alerts and allow notifications in Android Settings first." }
+        manager.createNotificationChannel(NotificationChannel("zedlink-approvals", "Agent approvals", NotificationManager.IMPORTANCE_HIGH))
+        manager.notify("zedlink-test", 2, Notification.Builder(context, "zedlink-approvals")
+            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("ZedLink")
+            .setContentText("Test notification. No Agent approval is requested.")
+            .setVisibility(Notification.VISIBILITY_PRIVATE).setAutoCancel(true).build())
+    }
     fun enable() { preferences.edit().putBoolean("enabled", true).apply() }
     fun disable() { preferences.edit().putBoolean("enabled", false).apply(); clear() }
     fun clear() {
@@ -29,7 +46,7 @@ class ApprovalNotifications(private val context: Context) {
         intent.getStringExtra("zedlink_notification_receipt")?.let(receipts::remove)
 
     fun update(state: AppState) {
-        if (!enabled || (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)) {
+        if (!enabled || !deliveryStatus().allowed) {
             clear(); return
         }
         val snapshot = state.snapshot ?: return

@@ -51,29 +51,13 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
-private val Black = Color.Black
-private val Surface = Color(0xFF0D0E10)
-private val Raised = Color(0xFF151719)
-private val Line = Color(0xFF2B2D30)
-private val Ink = Color(0xFFF3F3F1)
-private val Muted = Color(0xFFA2A5AA)
-private val Subtle = Color(0xFF797C82)
-private val Blue = Color(0xFFD5E7FF)
-private val Green = Color(0xFF79C79B)
-private val Warning = Color(0xFFE2BC80)
-
-private val scheme = darkColorScheme(
-    primary = Ink, onPrimary = Black, background = Black, onBackground = Ink,
-    surface = Surface, onSurface = Ink, outline = Line, secondary = Blue,
-)
-
 private enum class Tab { Sessions, Connections, Settings }
 
 @Composable
 fun ZedLinkApp(model: ZedLinkViewModel) {
     val state = model.state
     var tab by remember { mutableStateOf(Tab.Sessions) }
-    MaterialTheme(colorScheme = scheme, typography = Typography()) {
+    ZedLinkTheme(state.appearance) {
         Surface(modifier = Modifier.fillMaxSize(), color = Black) {
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
                 Box(Modifier.weight(1f)) {
@@ -81,7 +65,7 @@ fun ZedLinkApp(model: ZedLinkViewModel) {
                         state.selectedThreadId != null -> ConversationScreen(state, model)
                         tab == Tab.Sessions -> SessionsScreen(state, model) { tab = Tab.Connections }
                         tab == Tab.Connections -> ConnectionsScreen(state, model)
-                        else -> SettingsScreen(state, model)
+                        else -> SettingsScreen(state, model) { tab = Tab.Connections }
                     }
                 }
                 if (state.selectedThreadId == null) {
@@ -245,6 +229,8 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     var showRename by remember { mutableStateOf(false) }
     var showUnexpose by remember { mutableStateOf(false) }
     var showContext by remember { mutableStateOf(false) }
+    var showAgentSettings by remember { mutableStateOf(false) }
+    if (showAgentSettings) AgentSettingsDialog(state, model) { showAgentSettings = false }
     var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
     Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).border(1.dp, Line).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -260,6 +246,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
             Box {
                 IconButton(onClick = { showActions = true }) { Icon(Icons.Default.MoreVert, "Session actions", tint = Ink) }
                 DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                    DropdownMenuItem(text = { Text("Agent settings") }, onClick = { showActions = false; showAgentSettings = true })
                     if (state.delivery.isNotBlank()) DropdownMenuItem(text = { Text(state.delivery) }, enabled = false, onClick = {})
                     DropdownMenuItem(text = { Text("Rename session") }, leadingIcon = { Icon(Icons.Default.Edit, null) },
                         enabled = "thread.rename" in state.capabilities,
@@ -277,7 +264,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
             model.prepareSubagentTask(); showCommands = false
         }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); showCommands = false }
         if (state.delivery.isNotBlank() && (!state.live || state.sending || state.delivery.startsWith("Delivery unknown"))) Text(state.delivery, color = Warning, fontSize = 11.sp,
-            modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(8.dp))
+            modifier = Modifier.fillMaxWidth().background(Surface).padding(8.dp))
         if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
         Composer(state, model, { showCommands = !showCommands })
     }
@@ -368,8 +355,8 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
             }
             state.terminalSnapshot?.let { snapshot ->
                 TextButton(onClick = { fullTerminal = true }) { Icon(Icons.Default.Fullscreen, null); Text("Open full-screen terminal") }
-                Column(Modifier.fillMaxWidth().border(1.dp, Line).background(Color(0xFF020303))) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).background(Color(0xFF08090A)).padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.fillMaxWidth().border(1.dp, Line).background(Black)) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).background(Surface).padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(7.dp).background(Green))
                         Spacer(Modifier.width(8.dp))
                         Text(snapshot.terminal.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
@@ -380,12 +367,12 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                     val verticalTerminalScroll = rememberScrollState()
                     val horizontalTerminalScroll = rememberScrollState()
                     SelectionContainer {
-                        Text(terminalText(snapshot), color = Color(0xFFD9DEDB), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                        Text(terminalText(snapshot), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
                             modifier = Modifier.fillMaxWidth().height(280.dp).verticalScroll(verticalTerminalScroll).padding(13.dp))
                     }
                 }
                 if ("terminal.input" in state.capabilities) {
-                    Row(Modifier.fillMaxWidth().border(1.dp, Line).background(Color(0xFF08090A)).padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().border(1.dp, Line).background(Surface).padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("›", color = Green, fontFamily = FontFamily.Monospace, fontSize = 17.sp)
                         Spacer(Modifier.width(8.dp))
                         BasicTextField(value = terminalInput, onValueChange = { terminalInput = it }, singleLine = true,
@@ -542,7 +529,7 @@ private fun ElicitationCard(item: NativeElicitation, model: ZedLinkViewModel) {
     var validation by remember(item.id, scope) { mutableStateOf("") }
     val submitting = (scope + item.id).joinToString("\n") in model.state.resolvingElicitations
     val enabled = model.state.live && "elicitation.respond" in model.state.capabilities && !submitting
-    Column(Modifier.fillMaxWidth().background(Color(0xFF1C1915)).border(1.dp, Warning).padding(14.dp)) {
+    Column(Modifier.fillMaxWidth().background(Surface).border(1.dp, Warning).padding(14.dp)) {
         Text("INPUT REQUESTED", color = Warning, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(item.message, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
         item.url?.let { Text(it, color = Blue, fontSize = 12.sp) }
@@ -648,7 +635,7 @@ private fun Message(entry: NativeEntry, thinkingLive: Boolean = false) {
             }
         }
         else -> Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(entry.label.uppercase(), color = if (entry.kind == EntryKind.ASSISTANT) Color(0xFFB8C5D1) else Subtle,
+            Text(entry.label.uppercase(), color = if (entry.kind == EntryKind.ASSISTANT) Blue else Subtle,
                 fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
             if (entry.reasoning.isNotEmpty()) {
                 TextButton(onClick = { reasoningExpanded = !reasoningExpanded }, shape = androidx.compose.ui.graphics.RectangleShape) {
@@ -683,7 +670,7 @@ private fun MarkdownLikeText(text: String, modifier: Modifier = Modifier) {
 
 @Composable
 private fun ApprovalCard(approval: NativeApproval, respond: (NativeApproval, NativeApprovalDecision) -> Unit) {
-    Column(Modifier.fillMaxWidth().background(Color(0xFF1C1915)).border(1.dp, Warning).padding(14.dp)) {
+    Column(Modifier.fillMaxWidth().background(Surface).border(1.dp, Warning).padding(14.dp)) {
         Text(if (approval.authorizationKind == "action_choice") "CHOOSE AN ACTION" else "PERMISSION REQUESTED",
             color = Warning, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(approval.toolName, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 7.dp))
@@ -761,6 +748,8 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
 
 @Composable
 private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
+    var removing by remember { mutableStateOf<ConnectionProfile?>(null) }
+    removing?.let { profile -> ForgetAccessDialog(profile, { removing = null }) { model.forget(profile); removing = null } }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val scanner = remember {
@@ -798,7 +787,7 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
                         TextButton(onClick = { model.connect(profile) }) {
                             Text(if (state.profile?.gatewayId == profile.gatewayId && state.live) "RECONNECT" else "CONNECT")
                         }
-                        TextButton(onClick = { model.forget(profile) }) { Text("FORGET", color = Color(0xFFE6A0A0)) }
+                        TextButton(onClick = { removing = profile }) { Text("FORGET", color = MaterialTheme.colorScheme.error) }
                     }
                 }
             }
@@ -837,43 +826,6 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
     }
 }
 
-@Composable
-private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
-    val activity = LocalActivity.current as? MainActivity
-    var modelMenu by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) {
-        Header("Settings", "ZedLink for Android")
-        state.threadSettings?.let { settings ->
-            SectionHeading("SELECTED AGENT SESSION", "")
-            Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                OutlinedButton(onClick = { modelMenu = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text(settings.models.firstOrNull { it.modelId == settings.modelId && it.providerId == settings.providerId }?.name ?: "Select model")
-                }
-                DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }) {
-                    settings.models.forEach { option -> DropdownMenuItem(
-                        text = { Text("${option.name} · ${option.providerId}") },
-                        onClick = { modelMenu = false; model.selectModel(option) }) }
-                }
-            }
-            if (settings.usedTokens != null && settings.maxTokens != null) SettingRow("Context", "${settings.usedTokens} / ${settings.maxTokens} tokens")
-        }
-        TextButton(onClick = { if (state.notificationsEnabled) model.disableNotifications() else activity?.enableApprovalNotifications() }) {
-            Text(if (state.notificationsEnabled) "Disable approval notifications" else "Enable lock-screen and paired watch alerts")
-        }
-        Text("Local alerts require this app to receive updates. Background FCM is not configured. Use browser push while suspended; Wear OS may mirror phone alerts.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(16.dp))
-        SettingRow("Appearance", "OLED dark")
-        SettingRow("Runtime", "Native Zed Agent")
-        SettingRow("Connection", state.profile?.endpoint ?: "Not paired")
-        Text("ZedLink displays only explicitly exposed native threads. It does not contain a model client or remote shell.", color = Muted,
-            modifier = Modifier.padding(16.dp))
-        if (state.profile != null) FlatButton("FORGET THIS DEVICE", Modifier.padding(16.dp), action = model::forget)
-    }
-}
-
-@Composable private fun SettingRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().border(1.dp, Line).padding(16.dp)) { Text(label, color = Muted); Spacer(Modifier.weight(1f)); Text(value, fontSize = 12.sp) }
-}
-
 @Composable private fun Header(title: String, subtitle: String, action: @Composable () -> Unit = {}) {
     Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) { Text(title, fontSize = 31.sp, fontWeight = FontWeight.Bold); Text(subtitle, color = Muted, fontSize = 12.sp) }
@@ -882,12 +834,12 @@ private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
     Rule()
 }
 @Composable private fun SectionHeading(label: String, value: String) { Row(Modifier.fillMaxWidth().padding(16.dp, 22.dp, 16.dp, 9.dp)) { Text(label, style = monoLabel()); Spacer(Modifier.weight(1f)); Text(value, color = Subtle, style = monoLabel()) } }
-@Composable private fun Notice(text: String) { Text(text, color = Warning, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(11.dp)) }
+@Composable private fun Notice(text: String) { Text(text, color = Warning, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().background(Surface).padding(11.dp)) }
 @Composable private fun Rule(start: androidx.compose.ui.unit.Dp = 0.dp) { HorizontalDivider(Modifier.padding(start = start), color = Line, thickness = 1.dp) }
 @Composable private fun FlatInput(value: String, change: (String) -> Unit, hint: String, modifier: Modifier = Modifier) { BasicTextField(value, change, modifier.fillMaxWidth().heightIn(min = 48.dp).border(1.dp, Line).background(Surface).padding(13.dp), textStyle = TextStyle(color = Ink), cursorBrush = SolidColor(Ink), decorationBox = { inner -> Box { if (value.isEmpty()) Text(hint, color = Subtle); inner() } }) }
 @Composable private fun FlatButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, action: () -> Unit) { Button(action, modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = enabled, shape = androidx.compose.ui.graphics.RectangleShape, colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Black)) { Text(label, fontWeight = FontWeight.Bold) } }
 @Composable private fun FlatIconButton(label: String, action: () -> Unit) { Box(Modifier.size(44.dp).border(1.dp, Line).clickable(onClick = action), contentAlignment = Alignment.Center) { Text(label, fontFamily = FontFamily.Monospace, fontSize = 20.sp) } }
-private fun monoLabel() = TextStyle(color = Subtle, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, letterSpacing = 1.sp)
+@Composable private fun monoLabel() = TextStyle(color = Subtle, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, letterSpacing = 1.sp)
 
 
 @Composable
@@ -974,26 +926,30 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
 
 
 private fun terminalColor(hex: String): Color? = if (Regex("#[0-9a-fA-F]{6}").matches(hex)) Color(0xff000000L or hex.drop(1).toLong(16)) else null
-private fun terminalText(snapshot: NativeTerminalSnapshot?): AnnotatedString = buildAnnotatedString {
-    if (snapshot == null) return@buildAnnotatedString
-    val runs = snapshot.styledRuns.ifEmpty { listOf(NativeTerminalRun(snapshot.content, "", "", false, false, false, false)) }
-    runs.forEach { run ->
-        val start = length
-        append(run.text)
-        val foreground = terminalColor(run.foreground) ?: Ink
-        addStyle(SpanStyle(color = if (run.dim) foreground.copy(alpha = 0.7f) else foreground,
-            background = terminalColor(run.background) ?: Color.Unspecified,
-            fontWeight = if (run.bold) FontWeight.Bold else FontWeight.Normal,
-            fontStyle = if (run.italic) FontStyle.Italic else FontStyle.Normal,
-            textDecoration = if (run.underline) TextDecoration.Underline else TextDecoration.None), start, length)
-        var index = 0
-        while (index < run.text.length) {
-            val code = run.text.codePointAt(index)
-            val size = Character.charCount(code)
-            if (code in 0xe5fa..0xe6b7 || code in 0xe700..0xe8ef || code in 0xf000..0xf2e0 || code in 0xf400..0xf533 || code in 0xf0001..0xf1af0) {
-                addStyle(SpanStyle(fontFamily = FontFamily(Font(R.font.terminal_icons))), start + index, start + index + size)
+@Composable private fun terminalText(snapshot: NativeTerminalSnapshot?): AnnotatedString {
+    val defaultInk = Ink
+    return buildAnnotatedString {
+        if (snapshot == null) return@buildAnnotatedString
+        val runs = snapshot.styledRuns.ifEmpty { listOf(NativeTerminalRun(snapshot.content, "", "", false, false, false, false)) }
+        runs.forEach { run ->
+            val start = length
+            append(run.text)
+            val foreground = terminalColor(run.foreground) ?: defaultInk
+            addStyle(SpanStyle(color = if (run.dim) foreground.copy(alpha = 0.7f) else foreground,
+                background = terminalColor(run.background) ?: Color.Unspecified,
+                fontWeight = if (run.bold) FontWeight.Bold else FontWeight.Normal,
+                fontStyle = if (run.italic) FontStyle.Italic else FontStyle.Normal,
+                textDecoration = if (run.underline) TextDecoration.Underline else TextDecoration.None), start, length)
+            var index = 0
+            while (index < run.text.length) {
+                val code = run.text.codePointAt(index)
+                val size = Character.charCount(code)
+                if (code in 0xe5fa..0xe6b7 || code in 0xe700..0xe8ef || code in 0xf000..0xf2e0 || code in 0xf400..0xf533 || code in 0xf0001..0xf1af0) {
+                    addStyle(SpanStyle(fontFamily = FontFamily(Font(R.font.terminal_icons))), start + index, start + index + size)
+                }
+                index += size
             }
-            index += size
         }
     }
+
 }

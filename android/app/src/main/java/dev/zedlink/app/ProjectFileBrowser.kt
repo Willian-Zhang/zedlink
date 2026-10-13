@@ -47,7 +47,10 @@ fun ProjectFileBrowser(state: AppState, model: ZedLinkViewModel, close: () -> Un
                 if (reading) {
                     if (state.previewLoading) { LinearProgressIndicator(Modifier.fillMaxWidth()); Spacer(Modifier.weight(1f)) }
                     else {
-                        val content = remember(state.previewContent) { highlightedSource(state.previewContent) }
+                        val stringColor = Green
+                        val keywordColor = Blue
+                        val commentColor = Muted
+                        val content = remember(state.previewContent, stringColor, keywordColor, commentColor) { highlightedSource(state.previewContent, stringColor, keywordColor, commentColor) }
                         SelectionContainer(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
                             .then(if (wrap) Modifier else Modifier.horizontalScroll(rememberScrollState()))) {
                             Text(content, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
@@ -86,13 +89,13 @@ fun ProjectFileBrowser(state: AppState, model: ZedLinkViewModel, close: () -> Un
     }
 }
 
-private fun highlightedSource(source: String) = buildAnnotatedString {
+private fun highlightedSource(source: String, stringColor: Color, keywordColor: Color, commentColor: Color) = buildAnnotatedString {
     append(source)
     val pattern = Regex("""(?m)(//[^\n]*|#[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:fn|func|let|var|const|class|struct|enum|import|from|def|return|if|else|for|while|public|private|fun|val|true|false|null|nil|async|await)\b|\b\d+(?:\.\d+)?\b)""")
     pattern.findAll(source).take(10000).forEach { match ->
         val token = match.value
-        val color = if (token.startsWith("//") || token.startsWith("#")) Color.Gray
-            else if (token.startsWith('"') || token.startsWith('\'')) Color(0xff9ac79b) else Color(0xff91c8ee)
+        val color = if (token.startsWith("//") || token.startsWith("#")) commentColor
+            else if (token.startsWith('"') || token.startsWith('\'')) stringColor else keywordColor
         addStyle(SpanStyle(color = color), match.range.first, match.range.last + 1)
     }
 }

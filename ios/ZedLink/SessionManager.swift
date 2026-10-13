@@ -659,8 +659,13 @@ import Combine
         } catch { issue = error.localizedDescription }
     }
 
+    @Published private(set) var updatingModel = false
+
     func selectModel(_ option: NativeModelOption) async {
-        guard state == .live, capabilities.contains("thread.settings.update"), let client, let threadID = selectedThreadID else { return }
+        guard state == .live, snapshot?.status == "Idle", !updatingModel, capabilities.contains("thread.settings.update"), let client, let threadID = selectedThreadID, snapshot?.threadID == threadID,
+              threadSettings?.models.contains(where: { $0.id == option.id }) == true else { return }
+        updatingModel = true
+        defer { updatingModel = false }
         let scope = operationScope
         do {
             _ = try await client.rpc("thread.settings.update", params: [

@@ -10,10 +10,14 @@ import Combine
     private var scope = ""
     @Published private(set) var status = "Checking permission…"
     @Published private(set) var lastError = ""
+    @Published private(set) var permitted = false
+    @Published private(set) var blocked = false
     var enabled: Bool { UserDefaults.standard.bool(forKey: "zedlink.approvalNotifications") }
 
     func refreshStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
+        permitted = [.authorized, .provisional, .ephemeral].contains(settings.authorizationStatus)
+        blocked = settings.authorizationStatus == .denied
         switch settings.authorizationStatus {
         case .denied: status = "Blocked in iPhone Settings"
         case .notDetermined: status = "Permission not requested"
@@ -59,7 +63,7 @@ import Combine
 
     func disable() {
         UserDefaults.standard.set(false, forKey: "zedlink.approvalNotifications")
-        status = "Local approval alerts disabled"
+        status = blocked ? "Blocked in iPhone Settings" : "Local approval alerts disabled"
         clear()
     }
 

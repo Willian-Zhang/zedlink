@@ -134,3 +134,30 @@ Additional acceptance checks:
 - Start work in a different session while viewing the list: New activity should appear only after an observed update. The first load must not mark every conversation unread.
 - Disconnect the route: stop activity animation and label retained state Last known. Restore connectivity and verify authoritative reconciliation.
 - On Android, read earlier output while the agent streams. Preserve the viewport; Latest explicitly resumes following and never overlays a message.
+
+## Native Settings refactor (October 13, 2026)
+
+Global Settings now contains device appearance, notification setup, connection/access diagnostics and Help & about. Session model/context controls live in the conversation's **Agent settings**, not global preferences. iOS Settings is extracted into `SettingsView.swift`; Android Settings into `SettingsScreen.kt`, with appearance tokens in `AppTheme.kt`. Neither client configures model credentials or owns a model runtime.
+
+Android now persists System/Dark/Light and adapts the shared app colors and file highlighting. Settings scrolls and wraps values rather than forcing endpoints into a single horizontal row. Notification setup checks the Android permission, app-level blocking and approval-channel blocking, and offers a harmless test notification and system settings link. iOS exposes permission-aware Enable/Test/Disable controls. Both distinguish local delivery from unconfigured native background push.
+
+Diagnostics shows observed connection state and the selected workspace's advertised file, terminal, debugger and clipboard access. Disconnected retained access is labeled Last known; absent information is Unknown. Access permissions remain configured in desktop Zed. Version/build comes from app metadata rather than a fixed runtime label.
+
+Android removal requires confirmation describing the credential and all local addresses for that gateway. It is local removal, not server revocation. Removing an inactive gateway preserves the active conversation; removing the active gateway cancels its polling/event transport and clears local notifications. Appearance remains saved.
+
+### Checks before compiling/distributing
+
+Native compilation, simulator/emulator rendering and physical-device checks for this refactor are **NOT RUN** on the Linux development host. No hosted Actions were dispatched. Earlier successful Actions runs cover earlier revisions only.
+
+On a Mac, use the existing `bash tools/test_ios_local.sh build` and explicit disposable simulator commands described above. Android's existing manual workflow uses `gradle -p android --no-daemon testDebugUnitTest assembleDebug lintDebug`; run it locally with the configured SDK/toolchain. Hosted validation requires separate owner approval.
+
+Use isolated profiles and disposable projects:
+
+1. Open Settings with no connection, a connected gateway and a disconnected gateway. Inspect Unknown versus Last known access; verify different workspace permissions are not mixed.
+2. Switch System/Dark/Light, relaunch, and change the system theme. Check Settings, session rows, conversation Markdown, approvals, files and terminal readability with large text and landscape. Native terminal colors supplied by Zed retain their original styling.
+3. Grant/deny notification permission, block the app and approval channel in Android Settings, then return. Status and available actions must reflect the OS. Test notifications must contain no approval actions or private content.
+4. Open Agent settings in an idle native session, change an advertised model, and compare with desktop Zed. Offline, generating, unknown and in-flight states must not permit model changes. Switch workspace/connection during a read/update and verify no stale settings appear.
+5. Cancel removal and confirm all profiles remain. Remove an inactive gateway and ensure the current conversation continues. Confirm active removal removes all linked local addresses and retains the appearance preference; pair again explicitly.
+6. Scroll Settings on a small device with large text. Reach all controls without endpoint overflow or navigation obscuring content.
+
+APNs/FCM delivery, watch mirroring, actual approval notifications and physical same-thread round trips remain separate acceptance gates.

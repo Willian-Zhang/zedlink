@@ -14,11 +14,11 @@ class MainActivity : ComponentActivity() {
     private val model: ZedLinkViewModel by viewModels()
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
-        if (allowed) model.enableNotifications()
+        model.notificationPermissionResult(allowed)
     }
     fun enableApprovalNotifications() {
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        else model.enableNotifications()
+        else model.notificationPermissionResult(true)
     }
     private fun handleNotification(intent: Intent) {
         model.approvalNotifications.consume(intent)?.let { (data, action) -> model.handleApprovalNotification(data, action) }
