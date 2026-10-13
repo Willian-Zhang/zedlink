@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.activity.compose.LocalActivity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.buildAnnotatedString
@@ -838,7 +839,7 @@ private fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
 
 @Composable
 private fun SettingsScreen(state: AppState, model: ZedLinkViewModel) {
-    val activity = LocalContext.current as? MainActivity
+    val activity = LocalActivity.current as? MainActivity
     var modelMenu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Header("Settings", "ZedLink for Android")

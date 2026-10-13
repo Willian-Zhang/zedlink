@@ -108,3 +108,21 @@ Before distribution, test these additions with a disposable project:
 ## Validation limitations
 
 Local Linux checks cover Swift syntax, shell syntax, public working-tree checks, and the disposable gateway/browser transport fixture. They do not compile SwiftUI or run iOS XCTest. This revision still requires a Mac build and the simulator/physical-device checks above before being considered validated for distribution.
+
+
+## Sessions redesign
+
+Sessions now uses a compact workstation/workspace selector, search by session or agent name, All / Needs attention / Running / Pinned filters, and flat grouped rows. Rows identify the native agent and distinguish approval/input requests, retries, failed idle turns, generating turns, ready and unknown state. Unknown does not become Working. Opening a conversation still hides the main navigation.
+
+Approval/input counts use the existing `thread.approvals` and `thread.elicitations` reads, cached for five seconds while the native session list is open. Unsupported counts remain unknown, not fabricated zeroes. All reads are scoped to the current connection, workspace, instance and epoch. Pins persist locally by gateway/workspace/conversation; New activity means a change observed during this client run, not an unread transcript count or an invented server timestamp. The browser retains its visible sidebar and uses the same filters, grouping and status vocabulary. Android stops following the transcript when the user scrolls back and offers Latest in a separate row.
+
+The manual **iOS build and Sessions preview** workflow compiles Debug for an isolated iPhone simulator, runs native unit tests and `SessionsPreviewUITests`, and captures both appearances. `--zedlink-demo` is Debug-only, bypasses gateway/model access, disables opening the sample conversations and labels the screen DEMO PREVIEW. It does not load a user's desktop Zed project. Screenshots prove simulator presentation only.
+
+Additional acceptance checks:
+
+- Verify agent names against Zed, including Codex and Claude Code; inspect failed/retrying turns separately from ready sessions.
+- Create a real pending approval and input request in an exposed disposable thread; verify counts, open the conversation and resolve only that exact request.
+- Pin a session, relaunch, change private routes to the same gateway, and switch to another gateway/workspace with matching thread IDs. Pins must not leak between different gateway/workspace identities.
+- Start work in a different session while viewing the list: New activity should appear only after an observed update. The first load must not mark every conversation unread.
+- Disconnect the route: stop activity animation and label retained state Last known. Restore connectivity and verify authoritative reconciliation.
+- On Android, read earlier output while the agent streams. Preserve the viewport; Latest explicitly resumes following and never overlays a message.

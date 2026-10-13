@@ -817,12 +817,12 @@ import Combine
         guard let client, capabilities.contains(method), let selectedThreadID else {
             issue = "Enable Remote Clipboard in desktop ZedLink settings."; return nil
         }
-        let scope = [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID]
+        let scope = operationScope
         var params: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": selectedThreadID]
         if let text { guard text.utf8.count <= 65536, !text.contains("\0") else { issue = "Clipboard exceeds 64 KiB or contains a null character."; return nil }; params["text"] = text }
         do {
             let result = try await client.rpc(method, params: params)
-            guard scope == [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", self.selectedThreadID ?? ""] else { return nil }
+            guard scope == operationScope else { return nil }
             if text != nil { return text }
             guard let value = result["text"] as? String, value.utf8.count <= 65536 else { throw GatewayFailure.invalidResponse }
             return value

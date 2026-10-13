@@ -31,7 +31,10 @@ jobs:
             -parallel-testing-enabled NO -only-testing:ZedLinkTests \
             -only-testing:ZedLinkUITests/SessionsPreviewUITests CODE_SIGNING_ALLOWED=NO test
       - name: Capture dark and light Sessions previews
+        if: always()
         run: |
+          test -d /tmp/zedlink-preview-derived/Build/Products/Debug-iphonesimulator/ZedLink.app
+          xcrun simctl install "$ZEDLINK_PREVIEW_DEVICE" /tmp/zedlink-preview-derived/Build/Products/Debug-iphonesimulator/ZedLink.app
           mkdir -p /tmp/zedlink-preview
           xcrun simctl status_bar "$ZEDLINK_PREVIEW_DEVICE" override --time '9:41' --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState charged --batteryLevel 100
           for theme in dark light; do

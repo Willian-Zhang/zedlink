@@ -192,7 +192,7 @@ class ProbeFixture:
                               "agent": ({"id": "codex-acp", "name": "Codex", "kind": "external_acp"}
                                         if params["thread_id"] == "fixture-second" or (params["thread_id"] == "fixture-created" and any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values()))
                                         else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
-                              "title": ("Second synthetic thread" if params["thread_id"] == "fixture-second" or (params["thread_id"] == "fixture-created" and any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values()))
+                              "title": ("Second synthetic thread" if params["thread_id"] == "fixture-second"
                                         else "Created from browser" if params["thread_id"] == "fixture-created"
                                         else "Synthetic test thread"),
                               "status": "Generating" if self.active_turn_id is not None else "Idle",
