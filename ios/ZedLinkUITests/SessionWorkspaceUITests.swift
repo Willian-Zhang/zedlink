@@ -13,8 +13,8 @@ final class SessionWorkspaceUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 20), "Disposable test thread is unavailable; verify pairing, route, and exposure.")
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "composer").firstMatch.waitForExistence(timeout: 15))
-        XCTAssertFalse(app.tabBars.buttons["Connections"].exists)
-        XCTAssertFalse(app.tabBars.buttons["Settings"].exists)
+        XCTAssertFalse(app.buttons["connections-tab"].exists)
+        XCTAssertFalse(app.buttons["settings-tab"].exists)
         return app
     }
 
@@ -30,14 +30,15 @@ final class SessionWorkspaceUITests: XCTestCase {
         }
         app.buttons["close-workspace"].tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "composer").firstMatch.waitForExistence(timeout: 5))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.tabBars.buttons["Connections"].waitForExistence(timeout: 5))
+        app.buttons["back-to-sessions"].tap()
+        XCTAssertTrue(app.buttons["connections-tab"].waitForExistence(timeout: 5))
     }
 
     func testComposerKeyboardDismissesOnWorkspaceNavigation() throws {
         let app = try openDisposableSession()
         app.descendants(matching: .any).matching(identifier: "composer").firstMatch.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.toolbars.buttons["Done"].exists)
         app.buttons["open-workspace"].tap()
         XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
         app.buttons["close-workspace"].tap()

@@ -6,6 +6,7 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("zedlink.appearance") private var appearance = "dark"
     @State private var selectedTab = 0
+    @State private var sessionsPath: [String] = []
 
     private var preferredColorScheme: ColorScheme? {
         switch appearance {
@@ -17,23 +18,31 @@ import SwiftUI
 
     var body: some Scene {
         WindowGroup {
-            TabView(selection: $selectedTab) {
-                SessionsView()
-                    .tabItem { Label("Sessions", systemImage: "bolt.horizontal.circle") }
-                    .tag(0)
-                ConnectionsView()
-                    .tabItem { Label("Connections", systemImage: "network") }
-                    .tag(1)
-                SettingsView()
-                    .tabItem { Label("Settings", systemImage: "gearshape") }
-                    .tag(2)
+            Group {
+                switch selectedTab {
+                case 1: ConnectionsView()
+                case 2: SettingsView()
+                default: SessionsView(navigationPath: $sessionsPath)
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selectedTab != 0 || sessionsPath.isEmpty {
+                    VStack(spacing: 0) {
+                        Hairline()
+                        HStack(spacing: 0) {
+                            navigationButton("Sessions", symbol: "bolt.horizontal", tab: 0)
+                            navigationButton("Connections", symbol: "network", tab: 1)
+                            navigationButton("Settings", symbol: "gearshape", tab: 2)
+                        }
+                    }.background(ZLTheme.background)
+                }
             }
             .environmentObject(profiles)
             .environmentObject(session)
             .preferredColorScheme(preferredColorScheme)
             .tint(ZLTheme.focus)
-            .toolbarBackground(ZLTheme.background, for: .navigationBar, .tabBar)
-            .toolbarBackground(.visible, for: .navigationBar, .tabBar)
+            .toolbarBackground(ZLTheme.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .onChange(of: selectedTab) { _, _ in dismissZedLinkKeyboard() }
             .task {
                 ApprovalNotifications.shared.configure()
@@ -52,5 +61,20 @@ import SwiftUI
                 }
             }
         }
+    }
+
+    private func navigationButton(_ title: String, symbol: String, tab: Int) -> some View {
+        Button { selectedTab = tab } label: {
+            VStack(spacing: 4) {
+                Image(systemName: symbol).font(.body)
+                Text(title).font(.caption)
+            }.frame(maxWidth: .infinity, minHeight: 52)
+                .foregroundStyle(selectedTab == tab ? ZLTheme.ink : ZLTheme.muted)
+                .overlay(alignment: .top) {
+                    if selectedTab == tab { Rectangle().fill(ZLTheme.ink).frame(height: 2) }
+                }
+        }.buttonStyle(.plain)
+            .accessibilityIdentifier(title.lowercased() + "-tab")
+            .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
     }
 }

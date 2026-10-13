@@ -83,9 +83,8 @@ fun ZedLinkApp(model: ZedLinkViewModel) {
                         else -> SettingsScreen(state, model)
                     }
                 }
-                BottomTabs(tab, state.selectedThreadId != null) { next ->
-                    if (state.selectedThreadId != null) model.closeThread()
-                    tab = next
+                if (state.selectedThreadId == null) {
+                    BottomTabs(tab, false) { next -> tab = next }
                 }
             }
         }
@@ -248,7 +247,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     var showUnexpose by remember { mutableStateOf(false) }
     var showContext by remember { mutableStateOf(false) }
     var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).border(1.dp, Line).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = model::closeThread) { Icon(Icons.Default.ArrowBack, "Sessions", tint = Ink) }
             Column(Modifier.weight(1f)) {
@@ -616,7 +615,7 @@ private fun Message(entry: NativeEntry, thinkingLive: Boolean = false) {
         EntryKind.USER -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
             Spacer(Modifier.width(42.dp))
             Column(Modifier.weight(1f).wrapContentWidth(Alignment.End).widthIn(max = 760.dp)
-                .background(Raised, RoundedCornerShape(12.dp, 12.dp, 3.dp, 12.dp)).padding(horizontal = 14.dp, vertical = 11.dp)) {
+                .background(Raised).padding(horizontal = 14.dp, vertical = 11.dp)) {
                 Text(entry.label.uppercase(), color = Subtle, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.SemiBold)
                 SelectionContainer { MarkdownLikeText(entry.body) }
@@ -653,15 +652,7 @@ private fun ToolCard(entry: NativeEntry) {
 
 @Composable
 private fun MarkdownLikeText(text: String, modifier: Modifier = Modifier) {
-    val parts = text.split("```")
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        parts.forEachIndexed { index, part ->
-            if (part.isBlank()) return@forEachIndexed
-            if (index % 2 == 1) Box(Modifier.fillMaxWidth().background(Black).border(1.dp, Line).horizontalScroll(rememberScrollState()).padding(11.dp)) {
-                Text(part.substringAfter('\n', part), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp, softWrap = false)
-            } else Text(part, color = Ink, fontSize = 15.sp, lineHeight = 23.sp)
-        }
-    }
+    NativeMarkdown(text, modifier, Ink, Muted, Line, Surface)
 }
 
 @Composable
@@ -721,7 +712,7 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
         }
     }
     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
-        .border(1.dp, Line, RoundedCornerShape(14.dp)).background(Surface, RoundedCornerShape(14.dp)).padding(5.dp),
+        .border(1.dp, Line).background(Surface).padding(5.dp),
         verticalAlignment = Alignment.Bottom) {
         FlatIconButton("/", commands)
         BasicTextField(state.draft, model::setDraft, Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp).padding(11.dp),

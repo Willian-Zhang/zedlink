@@ -1,6 +1,23 @@
 import XCTest
 
 final class OnboardingUITests: XCTestCase {
+    func testLightThemeAndFlatNavigation() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-zedlink.appearance", "light"]
+        app.launch()
+        XCTAssertTrue(app.buttons["settings-tab"].waitForExistence(timeout: 10))
+        app.buttons["settings-tab"].tap()
+        XCTAssertTrue(app.buttons["Enable local approval alerts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Open iPhone notification settings"].exists)
+        for _ in 0..<4 {
+            if app.staticTexts["Appearance"].exists { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(app.staticTexts["Appearance"].exists)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "Light-settings-flat-navigation"; image.lifetime = .keepAlways; add(image)
+    }
+
     func testSessionsKeyboardDismissesWhenLeavingSearch() {
         let app = XCUIApplication()
         app.launch()
@@ -16,7 +33,7 @@ final class OnboardingUITests: XCTestCase {
         searchKey.tap()
         XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
 
-        app.tabBars.buttons["Connections"].tap()
+        app.buttons["connections-tab"].tap()
         XCTAssertTrue(app.staticTexts["No connections"].waitForExistence(timeout: 5))
     }
 
@@ -25,7 +42,7 @@ final class OnboardingUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.staticTexts["Choose a connection"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Connections"].tap()
+        app.buttons["connections-tab"].tap()
         XCTAssertTrue(app.staticTexts["No connections"].waitForExistence(timeout: 5))
         app.buttons["add-connection"].tap()
 

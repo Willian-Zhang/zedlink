@@ -137,8 +137,8 @@ func highlightedSource(_ source: String) -> AttributedString {
               let upper = AttributedString.Index(range.upperBound, within: result) else { continue }
         let attributedRange = lower..<upper
         let token = source[range]
-        result[attributedRange].foregroundColor = token.hasPrefix("//") || token.hasPrefix("#") ? .gray
-            : token.hasPrefix("\"") || token.hasPrefix("'") ? .green : .cyan
+        result[attributedRange].foregroundColor = token.hasPrefix("//") || token.hasPrefix("#") ? ZLTheme.muted
+            : token.hasPrefix("\"") || token.hasPrefix("'") ? ZLTheme.healthy : ZLTheme.focus
     }
     return result
 }

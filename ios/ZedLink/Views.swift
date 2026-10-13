@@ -10,7 +10,7 @@ struct SessionsView: View {
     @EnvironmentObject private var session: SessionManager
     @State private var search = ""
     @State private var showingNewSession = false
-    @State private var navigationPath: [String] = []
+    @Binding var navigationPath: [String]
     @FocusState private var searchFocused: Bool
 
     private var visibleThreads: [NativeThread] {
@@ -61,7 +61,7 @@ struct SessionsView: View {
             }
             .background(ZLTheme.background)
             .scrollDismissesKeyboard(.interactively)
-            .toolbar(.visible, for: .tabBar)
+            .toolbar(.visible, for: .navigationBar)
             .navigationTitle("ZedLink")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -83,12 +83,6 @@ struct SessionsView: View {
                 if let thread { searchFocused = false; navigationPath = [thread]; session.notificationThreadID = nil }
             }
             .refreshable { await session.refresh() }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { searchFocused = false }
-                }
-            }
         }
     }
 
@@ -260,41 +254,8 @@ struct ConversationView: View {
         }
         .background(ZLTheme.background)
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        .toolbar(.hidden, for: .tabBar)
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                VStack(spacing: 2) {
-                    Text(session.snapshot?.title ?? "Agent thread")
-                        .font(.headline).lineLimit(2).multilineTextAlignment(.center)
-                    if session.state != .live {
-                        ConnectionStatusView(state: session.state)
-                    }
-                }.accessibilityIdentifier("conversation-title")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { composerFocused = false; showingContext = true } label: { Image(systemName: "square.grid.2x2") }
-                    .accessibilityLabel("Workspace").accessibilityIdentifier("open-workspace")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Text("Connection: \(session.state.label)")
-                    Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
-                    Text(session.snapshot?.title ?? "Agent thread")
-                    Button("Rename session", systemImage: "pencil") {
-                        proposedTitle = session.snapshot?.title ?? ""
-                        showingRename = true
-                    }
-                    .disabled(!session.capabilities.contains("thread.rename"))
-                    Button("Stop exposing", systemImage: "eye.slash", role: .destructive) {
-                        showingUnexposeConfirmation = true
-                    }
-                    .disabled(!session.capabilities.contains("thread.unexpose"))
-                } label: { Image(systemName: "ellipsis.circle") }
-                .accessibilityLabel("Session actions")
-            }
-        }
+        .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
+        .toolbar(.hidden, for: .navigationBar)
         .task(id: threadID) { await session.select(threadID) }
         .onDisappear { composerFocused = false }
         .sheet(isPresented: $showingCommands) { CommandPicker() }
@@ -324,6 +285,34 @@ struct ConversationView: View {
                 rewindPoint = nil
             }
         } message: { Text("Messages and Agent edits after this point may be removed.") }
+    }
+
+    private var conversationHeader: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button { composerFocused = false; dismiss() } label: {
+                    Image(systemName: "arrow.left").frame(width: 44, height: 44)
+                }.accessibilityLabel("Back to sessions").accessibilityIdentifier("back-to-sessions")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.snapshot?.title ?? "Agent thread").font(.headline).lineLimit(2)
+                    if session.state != .live { ConnectionStatusView(state: session.state) }
+                }.frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("conversation-title")
+                Button { composerFocused = false; showingContext = true } label: {
+                    Image(systemName: "square.grid.2x2").frame(width: 44, height: 44)
+                }.accessibilityLabel("Workspace").accessibilityIdentifier("open-workspace")
+                Menu {
+                    Text("Connection: \(session.state.label)")
+                    Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
+                    Button("Rename session", systemImage: "pencil") {
+                        proposedTitle = session.snapshot?.title ?? ""; showingRename = true
+                    }.disabled(!session.capabilities.contains("thread.rename"))
+                    Button("Stop exposing", systemImage: "eye.slash", role: .destructive) { showingUnexposeConfirmation = true }
+                        .disabled(!session.capabilities.contains("thread.unexpose"))
+                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                    .accessibilityLabel("Session actions")
+            }.padding(.horizontal, 8).padding(.vertical, 4).buttonStyle(.plain)
+            Hairline()
+        }.background(ZLTheme.background).foregroundStyle(ZLTheme.ink)
     }
 
     private func conversation(_ snapshot: ThreadSnapshot) -> some View {
@@ -380,13 +369,17 @@ struct ConversationView: View {
             .simultaneousGesture(DragGesture().onChanged { _ in userScrolling = true; followsConversation = false }.onEnded { _ in userScrolling = false })
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
-            .overlay(alignment: .bottomTrailing) {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !followsConversation {
-                    Button {
-                        followsConversation = true; dismissZedLinkKeyboard()
-                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
-                    } label: { Label("Latest", systemImage: "arrow.down") }
-                        .buttonStyle(.borderedProminent).padding(12).accessibilityIdentifier("jump-to-latest")
+                    HStack {
+                        Spacer()
+                        Button {
+                            followsConversation = true; dismissZedLinkKeyboard()
+                            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        } label: { Label("Latest", systemImage: "arrow.down").font(.caption).frame(minHeight: 44) }
+                            .buttonStyle(.plain).accessibilityIdentifier("jump-to-latest")
+                    }.padding(.horizontal, 16).background(ZLTheme.background)
+                        .overlay(alignment: .top) { Hairline() }
                 }
             }
             .onChange(of: snapshot.lastSequence) { _, _ in
@@ -505,18 +498,12 @@ struct ConversationView: View {
                 }
             }
             .padding(4)
-            .background(ZLTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(ZLTheme.line, lineWidth: 1))
+            .background(ZLTheme.surface)
+            .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
         }
         .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
         .background(ZLTheme.background)
         .overlay(alignment: .top) { Hairline() }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { composerFocused = false }
-            }
-        }
     }
 
     private func agentProgress(_ snapshot: ThreadSnapshot) -> some View {
@@ -585,7 +572,9 @@ private struct NativeContextSheet: View {
                             } label: {
                                 Text(item.rawValue).font(.caption.weight(tab == item ? .semibold : .regular))
                                     .padding(.horizontal, 8).frame(minWidth: 44, minHeight: 44)
-                                    .background(tab == item ? ZLTheme.raised : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay(alignment: .bottom) {
+                                        if tab == item { Rectangle().fill(ZLTheme.ink).frame(height: 2) }
+                                    }
                             }
                             .buttonStyle(.plain)
                             .accessibilityAddTraits(tab == item ? .isSelected : [])
@@ -810,7 +799,6 @@ private struct NativeMessageView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 11)
                 .background(ZLTheme.raised)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
         case .tool:
@@ -980,7 +968,7 @@ private struct NativeElicitationView: View {
             }.disabled(session.state != .live)
         }
         .padding(14).frame(width: 330, alignment: .leading)
-        .background(ZLTheme.surface).overlay(RoundedRectangle(cornerRadius: 12).stroke(ZLTheme.warning.opacity(0.5)))
+        .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.5)))
     }
 }
 
@@ -1045,7 +1033,7 @@ private struct CommandPicker: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden).background(ZLTheme.background)
+            .listStyle(.plain).scrollContentBackground(.hidden).background(ZLTheme.background)
             .searchable(text: $search, prompt: "Search Zed commands")
             .task(id: photo) {
                 guard let photo else { return }
@@ -1113,8 +1101,8 @@ struct ConnectionsView: View {
                     }
                     .padding(.vertical, 7).listRowBackground(ZLTheme.surface)
                 }
-                if let active = session.profile, !session.targets.isEmpty {
-                    Section("Zed instances on \(active.name)") {
+                if session.profile != nil, !session.targets.isEmpty {
+                    Section("Workspaces") {
                         ForEach(session.targets) { target in
                             Button {
                                 Task { await session.selectTarget(target.id) }
@@ -1129,13 +1117,13 @@ struct ConnectionsView: View {
                                     if session.targetID == target.id { Image(systemName: "checkmark").foregroundStyle(ZLTheme.focus) }
                                 }
                             }
-                            .disabled(!target.available || session.targetID == target.id)
+                            .disabled(!target.available)
                             .accessibilityIdentifier("switch-target-\(target.id)")
                         }
                     }
                 }
             }
-            .scrollContentBackground(.hidden).background(ZLTheme.background)
+            .listStyle(.plain).scrollContentBackground(.hidden).background(ZLTheme.background)
             .navigationTitle("Connections")
             .toolbar {
                 Button { showingAdd = true } label: { Image(systemName: "plus") }
@@ -1162,7 +1150,7 @@ struct AddConnectionView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var session: SessionManager
-    @State private var name = "My Zed"
+    @State private var name = "Desktop"
     @State private var route: RouteKind = .tailscale
     @State private var endpoint = ""
     @State private var expectedID = ""
@@ -1351,7 +1339,11 @@ struct AddConnectionView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var session: SessionManager
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var notifications = ApprovalNotifications.shared
     @State private var notificationStatus = ""
+    @State private var notificationBusy = false
     @AppStorage("zedlink.appearance") private var appearance = "dark"
 
     var body: some View {
@@ -1373,14 +1365,34 @@ struct SettingsView: View {
                     }
                 }
                 Section("Approval notifications") {
-                    Button("Enable lock-screen and paired watch alerts") {
+                    Text(notifications.status).font(.caption).foregroundStyle(ZLTheme.muted)
+                    Button("Enable local approval alerts") {
+                        notificationBusy = true
                         Task {
-                            let allowed = await ApprovalNotifications.shared.enable()
-                            notificationStatus = allowed ? "Local approval alerts enabled." : "Notifications were not enabled. Review iPhone notification permissions."
+                            defer { notificationBusy = false }
+                            do {
+                                let allowed = try await notifications.enable()
+                                notificationStatus = allowed ? "Local approval alerts enabled." : "Permission was not granted. Open iPhone notification settings to allow alerts."
+                            } catch { notificationStatus = error.localizedDescription }
                         }
+                    }.disabled(notificationBusy)
+                    Button("Send test notification") {
+                        notificationBusy = true
+                        Task {
+                            defer { notificationBusy = false }
+                            do { try await notifications.sendTest(); notificationStatus = "Test alert scheduled in three seconds. Check Notification Center if a banner is hidden by Focus settings." }
+                            catch { notificationStatus = error.localizedDescription }
+                        }
+                    }.disabled(notificationBusy || !notifications.enabled)
+                    Button("Open iPhone notification settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                     }
-                    Button("Disable approval alerts") { ApprovalNotifications.shared.disable(); notificationStatus = "Local approval alerts disabled." }
+                    Button("Disable approval alerts") { notifications.disable(); notificationStatus = "Local approval alerts disabled." }
+                        .disabled(notificationBusy)
                     if !notificationStatus.isEmpty { Text(notificationStatus).font(.caption) }
+                    if !notifications.lastError.isEmpty, notifications.lastError != notificationStatus {
+                        Text(notifications.lastError).font(.caption).foregroundStyle(ZLTheme.danger)
+                    }
                     if let profile = session.profile, let url = URL(string: profile.endpoint) {
                         Link("Open browser for background push setup", destination: url)
                     }
@@ -1404,8 +1416,12 @@ struct SettingsView: View {
                     Text("Tailscale or another private route still requires verified HTTPS and device pairing.")
                 }
             }
-            .scrollContentBackground(.hidden).background(ZLTheme.background)
+            .listStyle(.plain).scrollContentBackground(.hidden).background(ZLTheme.background)
             .navigationTitle("Settings")
+            .task { await notifications.refreshStatus() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await notifications.refreshStatus() } }
+            }
         }
     }
 }
@@ -1473,7 +1489,8 @@ private struct NativeTerminalScreen: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(10)
                     Color.clear.frame(height: 1).id("terminal-bottom")
                     }
-                }.simultaneousGesture(DragGesture().onChanged { _ in followOutput = false })
+                }.background(Color.black).foregroundStyle(Color.white)
+                    .simultaneousGesture(DragGesture().onChanged { _ in followOutput = false })
                 .onChange(of: session.terminalSnapshot?.content) { _, _ in if followOutput { reader.scrollTo("terminal-bottom", anchor: .bottom) } }
                 .onChange(of: followOutput) { _, follow in if follow { reader.scrollTo("terminal-bottom", anchor: .bottom) } }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
@@ -1492,7 +1509,7 @@ private struct NativeTerminalScreen: View {
                                         await session.sendTerminalInput(key.1, appendReturn: false)
                                     }
                                 }.font(.system(size: 13, design: .monospaced)).frame(minWidth: 44, minHeight: 44)
-                                    .background(Color(red: 0.08, green: 0.09, blue: 0.10), in: RoundedRectangle(cornerRadius: 7)).disabled(sending || session.state != .live || session.terminalSnapshot == nil)
+                                    .background(ZLTheme.surface).disabled(sending || session.state != .live || session.terminalSnapshot == nil)
                             }
                         }.padding(6)
                     }

@@ -1,26 +1,65 @@
 import Foundation
 import UserNotifications
+import Combine
 
 /// Local delivery while the client receives native snapshots. APNs is not configured.
-@MainActor final class ApprovalNotifications: NSObject, UNUserNotificationCenterDelegate {
+@MainActor final class ApprovalNotifications: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = ApprovalNotifications()
     var handler: (([String: String], String) async -> Void)?
     private var currentIDs: Set<String> = []
     private var scope = ""
+    @Published private(set) var status = "Checking permission…"
+    @Published private(set) var lastError = ""
     var enabled: Bool { UserDefaults.standard.bool(forKey: "zedlink.approvalNotifications") }
 
-    func enable() async -> Bool {
+    func refreshStatus() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .denied: status = "Blocked in iPhone Settings"
+        case .notDetermined: status = "Permission not requested"
+        case .authorized, .provisional, .ephemeral:
+            status = enabled ? "Local approval alerts enabled" : "Local approval alerts disabled"
+        @unknown default: status = "Permission status unavailable"
+        }
+    }
+
+    func enable() async throws -> Bool {
         let center = UNUserNotificationCenter.current()
+        lastError = ""
         do {
+            let settings = await center.notificationSettings()
+            if settings.authorizationStatus == .denied {
+                throw GatewayFailure.native("Notifications are blocked. Open iPhone notification settings and allow alerts for ZedLink.")
+            }
             let allowed = try await center.requestAuthorization(options: [.alert, .sound, .badge])
             UserDefaults.standard.set(allowed, forKey: "zedlink.approvalNotifications")
             configure()
+            await refreshStatus()
             return allowed
-        } catch { return false }
+        } catch {
+            lastError = error.localizedDescription
+            await refreshStatus()
+            throw error
+        }
+    }
+
+    func sendTest() async throws {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard enabled, settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional || settings.authorizationStatus == .ephemeral else {
+            throw GatewayFailure.native("Enable local approval alerts and allow notifications in iPhone Settings first.")
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "ZedLink"
+        content.body = "Test notification. No Agent approval is requested."
+        content.sound = .default
+        try await center.add(UNNotificationRequest(identifier: "zedlink-test", content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 3, repeats: false)))
     }
 
     func disable() {
         UserDefaults.standard.set(false, forKey: "zedlink.approvalNotifications")
+        status = "Local approval alerts disabled"
         clear()
     }
 
@@ -68,7 +107,14 @@ import UserNotifications
                 data["approve"] = allow.optionID; data["deny"] = deny.optionID
             } else { content.categoryIdentifier = "ZEDLINK_REVIEW" }
             content.userInfo = data
-            center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
+                guard let error else { return }
+                let message = error.localizedDescription
+                Task { @MainActor in
+                    self.lastError = message
+                    self.currentIDs.remove(id)
+                }
+            }
         }
         let removed = Array(currentIDs.subtracting(nextIDs))
         center.removePendingNotificationRequests(withIdentifiers: removed)

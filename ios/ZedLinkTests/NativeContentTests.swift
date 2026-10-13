@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import ZedLink
 
 final class NativeContentTests: XCTestCase {
@@ -116,5 +117,44 @@ final class MobileReviewTests: XCTestCase {
         draft.removeAll()
         XCTAssertEqual(pending.attachments, [image])
         XCTAssertEqual(pending.attachments[0].payload["data"] as? String, "AQI=")
+    }
+}
+
+final class MarkdownRenderingTests: XCTestCase {
+    @MainActor
+    func testLightThemeTextAndAccentContrast() {
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        func luminance(_ color: Color) -> Double {
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            XCTAssertTrue(UIColor(color).resolvedColor(with: traits).getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+            func linear(_ component: CGFloat) -> Double {
+                let value = Double(component)
+                return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(red * alpha + 1 - alpha) + 0.7152 * linear(green * alpha + 1 - alpha) + 0.0722 * linear(blue * alpha + 1 - alpha)
+        }
+        for color in [ZLTheme.ink, ZLTheme.muted, ZLTheme.focus, ZLTheme.healthy, ZLTheme.warning, ZLTheme.danger] {
+            XCTAssertGreaterThanOrEqual(1.05 / (luminance(color) + 0.05), 4.5)
+        }
+    }
+
+    func testParagraphsAndNestedListMarkersRemainSeparate() {
+        XCTAssertEqual(MarkdownDocument.parse("Intro\ncontinued\n\n## List\n- **Bold**\n  - Nested `code`\n1. First\n\nFinal paragraph"), [
+            .paragraph("Intro\ncontinued"), .heading(2, "List"), .item("•", 0, "**Bold**"),
+            .item("•", 2, "Nested `code`"), .item("1.", 0, "First"), .paragraph("Final paragraph")
+        ])
+    }
+    func testAlignedTablePreservesEmptyAndEscapedCells() {
+        XCTAssertEqual(MarkdownDocument.parse("| Feature | Status | Notes |\n| :--- | :---: | ---: |\n| Bullets | ✅ | a\\|b |\n| Files | | `x|y` |"), [
+            .table(["Feature", "Status", "Notes"], [["Bullets", "✅", "a|b"], ["Files", "", "`x|y`"]], [.leading, .center, .trailing])
+        ])
+    }
+    func testStreamingFencedCodeStaysLiteral() {
+        XCTAssertEqual(MarkdownDocument.parse("```rust\n- literal\n| not a table |"), [.code("rust", "- literal\n| not a table |")])
+        XCTAssertEqual(MarkdownDocument.parse("~~~\nhello\n~~~\nAfter"), [.code("", "hello"), .paragraph("After")])
+    }
+    func testListContinuationAndMalformedTableRemainReadable() {
+        XCTAssertEqual(MarkdownDocument.parse("a | b\n-- | nope"), [.paragraph("a | b\n-- | nope")])
+        XCTAssertEqual(MarkdownDocument.parse("- long\n  continued\n- next"), [.item("•", 0, "long\ncontinued"), .item("•", 0, "next")])
     }
 }

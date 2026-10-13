@@ -4,7 +4,9 @@
 
 ## What changed
 
-Conversations hide the app tabs and use a compact title/status, a rounded composer, expandable edit review, and a Workspace sheet with Files, Changes, Terminal, Debug, and Activity. Reading older messages pauses following; **Latest** returns to streamed output. Errors appear in the session/workspace. Approval actions disable while disconnected or submitting.
+Conversations hide the main navigation row and use an opaque flat header with Back, title/status, Workspace and session actions. The composer, message surfaces, workspace tabs and settings lists use flat styling. Workspace includes Files, Changes, Terminal, Debug, and Activity. Reading older messages pauses following; **Latest** appears in a separate row below the transcript so it does not cover messages. Errors appear in the session/workspace. Approval actions disable while disconnected or submitting.
+
+Light mode uses adaptive text/accent colors; the terminal preserves a black surface for the native terminal's ANSI palette. The prompt has no keyboard Done toolbar. **Connections → Workspaces** selects a configured Zed target. iOS and Android render paragraphs, headings, nested bullet/numbered lists, block quotes, fenced code and aligned Markdown tables as separate blocks. Wide tables scroll horizontally inside the transcript; cells wrap within their columns. Unfinished fenced code remains visible during streaming. These renderers cover these Markdown constructs; they are not complete CommonMark implementations.
 
 Files support filename filtering, native project-content search, and searching inside the selected file. The code/diff viewer supports line numbers, wrapping, colored added/deleted lines, copying, expansion, and partial-content notices. Workspace requests load the visible page's catalogs.
 
@@ -63,7 +65,7 @@ The runner forwards test variables with Apple's documented [`TEST_RUNNER_` conve
 
 | Check | Expected result |
 | --- | --- |
-| Session → Back → session | Tabs hide in chat and restore at Sessions; title and Workspace stay usable; unsent image/file attachments remain attached |
+| Session → Back → session | Main navigation disappears in chat and returns at Sessions; flat header and Workspace stay usable; unsent image/file attachments remain attached |
 | iPhone 15 Pro keyboard, landscape, large text | Composer and approval controls remain reachable; Send/Stop/Workspace dismiss input focus |
 | Long streaming thread | Scroll up without being pulled down; Latest resumes following; earlier-history loading preserves readable content |
 | Files/search/diff | Search finds the expected source and line; viewer opens real file content; Wrap/Expand/Find work; partial results are labeled |
@@ -74,8 +76,13 @@ The runner forwards test variables with Apple's documented [`TEST_RUNNER_` conve
 | Images/model settings | Image becomes a removable draft attachment; unsupported models disable images; model changes occur in Zed |
 | Voice/clipboard | Text remains editable before submission; pasting into terminal draft does not execute automatically |
 | VoiceOver/Reduce Motion/light mode | Navigation and actions have readable labels and usable controls; streaming does not require animation |
+| Markdown formatting | Paragraphs stay separate; nested lists retain markers and indentation; tables show headers, rows and aligned cells; fenced code does not become list/table content |
+| Scroll up / Latest | Latest occupies its own row below the transcript and never floats over message text |
+| Notification permission and test | Settings shows the actual permission status; Enable reports the actual error; test notification has no approval actions |
 
 Test Wi-Fi, cellular/Tailscale, background/return, and gateway restart separately. Record build revision, device/OS, route, expected effects, and actual results. Native APNs/background delivery is not configured without Apple credentials. Current native alerts are local while updates are received; use **Settings → Open browser for background push setup** for the existing browser push path. Watches may mirror supported phone notifications according to OS settings.
+
+In Settings, use **Enable local approval alerts**, then **Send test notification**. The test schedules a harmless alert after three seconds. Check Notification Center and Focus settings if a banner is hidden. If permission is denied, use **Open iPhone notification settings**; repeated permission requests cannot override a denial. Scheduling failures now appear in Settings rather than being silently discarded. See [Apple's notification authorization reference](https://developer.apple.com/documentation/usernotifications/unnotificationsettings/authorizationstatus). This test validates local delivery only; it does not test gateway approvals, watch mirroring or suspended-app push.
 
 ## Current evidence
 

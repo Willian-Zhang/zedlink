@@ -14,13 +14,16 @@ enum ZLTheme {
     static let line = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark ? UIColor(red: 43 / 255, green: 45 / 255, blue: 48 / 255, alpha: 1) : .separator
     })
-    static let ink = Color(red: 243 / 255, green: 243 / 255, blue: 241 / 255)
-    static let muted = Color(red: 162 / 255, green: 165 / 255, blue: 170 / 255)
-    static let subtle = Color(red: 121 / 255, green: 124 / 255, blue: 130 / 255)
-    static let healthy = Color(red: 121 / 255, green: 199 / 255, blue: 155 / 255)
-    static let warning = Color(red: 226 / 255, green: 188 / 255, blue: 128 / 255)
-    static let danger = Color(red: 0.92, green: 0.38, blue: 0.4)
-    static let focus = Color(red: 213 / 255, green: 231 / 255, blue: 1)
+    static let ink = Color(uiColor: .label)
+    static let muted = adaptive(UIColor(red: 0.64, green: 0.65, blue: 0.67, alpha: 1), UIColor(red: 0.36, green: 0.38, blue: 0.41, alpha: 1))
+    static let subtle = muted
+    private static func adaptive(_ dark: UIColor, _ light: UIColor) -> Color {
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
+    static let healthy = adaptive(UIColor(red: 0.47, green: 0.78, blue: 0.61, alpha: 1), UIColor(red: 0.10, green: 0.42, blue: 0.25, alpha: 1))
+    static let warning = adaptive(UIColor(red: 0.89, green: 0.74, blue: 0.50, alpha: 1), UIColor(red: 0.50, green: 0.32, blue: 0.07, alpha: 1))
+    static let danger = adaptive(UIColor(red: 0.92, green: 0.38, blue: 0.40, alpha: 1), UIColor(red: 0.72, green: 0.15, blue: 0.19, alpha: 1))
+    static let focus = adaptive(UIColor(red: 0.84, green: 0.91, blue: 1, alpha: 1), UIColor(red: 0.13, green: 0.30, blue: 0.61, alpha: 1))
 }
 
 @MainActor func dismissZedLinkKeyboard() {
