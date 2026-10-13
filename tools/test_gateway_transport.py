@@ -147,7 +147,9 @@ class ProbeFixture:
                                         "status": "Idle"})
                     if self.created_thread:
                         threads.append({"thread_id": "fixture-created", "title": "Created from browser",
-                                        "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"},
+                                        "agent": ({"id": "codex-acp", "name": "Codex", "kind": "external_acp"}
+                                                  if any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values())
+                                                  else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
                                         "status": "Idle"})
                     if self.no_threads:
                         threads = []
@@ -935,7 +937,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.13"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.14"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -979,8 +981,19 @@ def main():
                 assert "No sessions match" in browser.find_element(By.ID, "thread-list").text
                 search.send_keys(Keys.CONTROL, "a", Keys.DELETE)
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
-                assert browser.find_element(By.CSS_SELECTOR, ".thread-badge").text == "ZED AGENT"
-                browser.execute_script("document.querySelector('.thread-item').click()")
+                assert {item.text for item in browser.find_elements(By.CSS_SELECTOR, ".thread-badge")} == {"ZED AGENT", "CODEX"}
+                browser.find_element(By.CSS_SELECTOR, '.session-pin[aria-label="Pin Synthetic test thread"]').click()
+                browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="Pinned"]').click()
+                assert len(browser.find_elements(By.CSS_SELECTOR, ".thread-item")) == 1
+                assert "Synthetic test thread" in browser.find_element(By.ID, "thread-list").text
+                browser.refresh()
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, '.session-pin[aria-label="Unpin Synthetic test thread"]'))
+                browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="Pinned"]').click()
+                assert len(browser.find_elements(By.CSS_SELECTOR, ".thread-item")) == 1
+                browser.find_element(By.CSS_SELECTOR, '.session-pin[aria-label="Unpin Synthetic test thread"]').click()
+                assert "No sessions match" in browser.find_element(By.ID, "thread-list").text
+                browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="All"]').click()
+                browser.find_element(By.XPATH, '//button[contains(@class,"thread-item")][strong[text()="Synthetic test thread"]]').click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
                 wait.until(lambda driver: "Zed connected · live updates" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 browser.find_element(By.ID, "show-actions").click()
@@ -1200,7 +1213,7 @@ def main():
                 probe.entries[-1] = "## Assistant\n\n<thinking>\nChecking the fixture stream\n</thinking>\n\n**Synthetic fixture reply.**\n\n"
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.running .thread-progress"))
-                wait.until(lambda driver: "Working" in driver.execute_script(
+                wait.until(lambda driver: "Generating" in driver.execute_script(
                     "return document.querySelector('.thread-status.busy')?.textContent || ''"))
                 browser.save_screenshot("/tmp/zedlink-browser-active-session.png")
                 wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "transcript-entries").text)

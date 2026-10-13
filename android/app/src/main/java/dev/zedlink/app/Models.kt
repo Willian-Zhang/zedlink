@@ -107,7 +107,7 @@ data class ThreadSnapshot(
     val approvals: List<NativeApproval>,
     val rewindPoints: List<NativeRewindPoint>,
     val subagents: List<NativeSubagent>,
-) { val isBusy: Boolean get() = status != "Idle" || currentTurnId != null }
+) { val isBusy: Boolean get() = status == "Generating" || currentTurnId != null }
 
 enum class EntryKind { USER, ASSISTANT, TOOL, PLAN, APPROVAL, CONTEXT, OTHER }
 

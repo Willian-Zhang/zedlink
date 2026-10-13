@@ -284,10 +284,11 @@ import Combine
 
     private func loadThreads() async throws {
         guard let client else { return }
+        let scope = operationScope
         let result = try await client.rpc("thread.list")
+        guard scope == operationScope else { return }
         try checkIdentity(result)
         guard let rows = result["threads"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
-        let scope = operationScope
         var loaded = rows.compactMap { row -> NativeThread? in
             guard let id = row["thread_id"] as? String else { return nil }
             var thread = NativeThread(id: id, title: row["title"] as? String ?? "Untitled Agent thread",
@@ -301,6 +302,7 @@ import Combine
         if selectedThreadID == nil {
             // Read-only counts, cached for five seconds; no new adapter operation.
             for index in loaded.indices {
+                guard scope == operationScope else { return }
                 var thread = loaded[index]
                 if let cached = summaryCache[thread.id], Date().timeIntervalSince(cached.0) < 5,
                    cached.1.currentTurnID == thread.currentTurnID, cached.1.status == thread.status {
@@ -309,6 +311,7 @@ import Combine
                     let params: [String: Any] = ["thread_id": thread.id, "instance_id": instanceID ?? "", "epoch": epoch ?? ""]
                     if capabilities.contains("thread.approvals") {
                         let result = try await client.rpc("thread.approvals", params: params)
+                        guard scope == operationScope else { return }
                         thread.approvalCount = (result["approvals"] as? [[String: Any]])?.count
                     }
                     if capabilities.contains("thread.elicitations") {

@@ -388,7 +388,9 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun forget() {
-        approvalNotifications.clear() state.profile?.let(::forget) }
+        approvalNotifications.clear()
+        state.profile?.let(::forget)
+    }
 
     fun forget(profile: ConnectionProfile) {
         if (state.profile?.gatewayId == profile.gatewayId) { pollJob?.cancel(); client = null }
@@ -431,13 +433,16 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun loadThreads() {
         val rpcClient = client ?: return
         val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch)
-        val result = rpcClient.rpc("thread.list"); checkIdentity(result)
+        val result = rpcClient.rpc("thread.list")
+        if (scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch)) return
+        checkIdentity(result)
         val threads = result.optJSONArray("threads").objects().mapNotNull { row ->
             val id = row.optString("thread_id"); if (id.isBlank()) null else NativeThread(
                 id, row.optString("title", "Untitled Agent thread"), row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"),
                 row.optJSONObject("agent")?.optString("name")?.takeIf { it.isNotBlank() } ?: "Zed Agent",
                 row.optJSONObject("retry_status") != null, row.optBoolean("had_error") || row.optJSONObject("agent_error") != null)
         }.map { thread ->
+            if (scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch)) return
             if (state.selectedThreadId != null) thread else {
                 val cacheKey = (scope + thread.id).joinToString("\n")
                 val cached = sessionCounts[cacheKey]
@@ -446,6 +451,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     val params = JSONObject().put("thread_id", thread.id).put("instance_id", state.instanceId).put("epoch", state.epoch)
                     val approvals = if ("thread.approvals" in state.capabilities) rpcClient.rpc("thread.approvals", params).optJSONArray("approvals")?.length() else null
+                    if (scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch)) return
                     val inputs = if ("thread.elicitations" in state.capabilities) rpcClient.rpc("thread.elicitations", params).optJSONArray("elicitations").objects().count { it.optString("status") == "pending" } else null
                     thread.copy(approvalCount = approvals, inputCount = inputs).also { sessionCounts[cacheKey] = System.currentTimeMillis() to it }
                 }

@@ -1140,7 +1140,9 @@ async function connect() {
 }
 
 async function loadThreads() {
+  const scope = JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch]);
   const result = await rpc("thread.list");
+  if (scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
   identity(result);
   if (!Array.isArray(result.threads)) throw new Error("Invalid thread list.");
   const priorSelected = state.threads.find((thread) => thread.thread_id === state.threadId);
@@ -1153,8 +1155,8 @@ async function loadThreads() {
     nextSelected.status, nextSelected.current_turn_id, nextSelected.had_error,
     nextSelected.agent_error, nextSelected.retry_status,
   ]) : null;
-  const scope = JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch]);
   for (const thread of result.threads) {
+    if (scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
     const key = sessionKey(thread);
     const cached = sessionSummaryCache.get(key);
     if (cached && Date.now() - cached.at < 5000 && cached.turn === thread.current_turn_id && cached.status === thread.status && cached.epoch === state.epoch) {
