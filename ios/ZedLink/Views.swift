@@ -811,7 +811,7 @@ private struct ActivityPanel: View {
     }
 }
 
-private struct NativeMessageView: View {
+struct NativeMessageView: View {
     let message: NativeEntryPresentation
     let thinkingLive: Bool
 

@@ -151,6 +151,7 @@ struct AddConnectionView: View {
     @State private var busy = false
     @State private var showingScanner = false
     @State private var showingIdentity = false
+    @State private var observedID = "" // the gateway identity seen by the last Test; never kept in the draft
 
     private var candidate: ConnectionProfile {
         ConnectionProfile(id: draft.id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), route: route,
