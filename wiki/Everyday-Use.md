@@ -77,3 +77,6 @@ Use **Load earlier activity** to page backward through the child transcript, and
 An updated patched Zed bridge is needed for child history offsets and paging. Older bridges show a truncation notice. After rebuilding, let active work finish before restarting patched Zed; restart the gateway to serve its rebuilt browser assets, and rebuild the mobile apps. No running agent is restarted automatically by this change.
 
 Child-history bridge verified at fork revision `56cc1e513670e8a516be795baeb9367f6710e02b`. Native app compilation and physical-device verification remain pending.
+
+
+Completed children leave the active conversation rows automatically. Open **Session actions → Agent history** in the native apps, or **+ → Agent history** in the browser, to read them again. Pending approvals stay visible even if a child no longer reports an active turn. Finishing does not close a child reader you deliberately opened. History is scoped to the selected conversation and the runtime's advertised child list.

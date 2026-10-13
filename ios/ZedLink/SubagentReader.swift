@@ -62,3 +62,30 @@ struct SubagentReader: View {
 }
 
 private struct ChildTranscriptEntry: Identifiable { let id: Int; let markdown: String }
+
+struct SubagentHistoryView: View {
+    @EnvironmentObject private var session: SessionManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var childID: String?
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Text("Agent history").font(.headline); Spacer(); Button("Close") { dismiss() } }.padding(16)
+            Hairline()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(session.snapshot?.subagents ?? []) { child in
+                        Button { childID = child.id } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(child.title).font(.subheadline)
+                                Text(child.status).font(.caption).foregroundStyle(ZLTheme.muted)
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                        }.buttonStyle(.plain)
+                        Hairline()
+                    }
+                    if session.snapshot?.subagents.isEmpty != false { Text("No parallel agents in this conversation yet.").foregroundStyle(ZLTheme.muted).padding(16) }
+                }
+            }
+        }.background(ZLTheme.background).foregroundStyle(ZLTheme.ink)
+        .sheet(isPresented: Binding(get: { childID != nil }, set: { if !$0 { childID = nil } })) { if let id = childID { SubagentReader(childID: id) } }
+    }
+}

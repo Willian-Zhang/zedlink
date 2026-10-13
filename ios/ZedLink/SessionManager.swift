@@ -523,8 +523,12 @@ import Combine
             childHistory[child.id] = (operationScope, child.entryStartIndex, child.entryStartIndex + child.entries.count, child.entries)
             return child
         }
+        let nativeTitle = result["title"] as? String
+        let title = nativeTitle.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            ?? (snapshot?.threadID == id ? snapshot?.title : nil)
+            ?? threads.first(where: { $0.id == id })?.title ?? "Untitled Agent thread"
         snapshot = ThreadSnapshot(threadID: id,
-                                  title: result["title"] as? String ?? "Untitled Agent thread",
+                                  title: title,
                                   status: result["status"] as? String ?? "Unknown",
                                   currentTurnID: result["current_turn_id"] as? Int,
                                   instanceID: instanceID ?? "", epoch: epoch ?? "",

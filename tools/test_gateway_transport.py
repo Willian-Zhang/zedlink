@@ -946,7 +946,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.13.16"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.13.17"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1012,12 +1012,13 @@ def main():
                 assert "Task:" in prompt.get_attribute("value")
                 prompt.send_keys(Keys.CONTROL, "a", Keys.DELETE)
                 wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, "#subagents .subagent")) == 2)
-                assert "2 total" in browser.find_element(By.CSS_SELECTOR, ".subagents-head").text
+                assert "1 active" in browser.find_element(By.CSS_SELECTOR, ".subagents-head").text
+                assert not browser.find_element(By.CSS_SELECTOR, ".subagent.archived").is_displayed()
                 assert "Checking concurrent gateway behavior" in browser.find_element(By.ID, "subagents").get_attribute("textContent")
                 assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") is None
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active summary").click()
                 assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") == "true"
-                browser.execute_script("window.childReader = document.querySelector('.subagent.active'); window.childEntry = window.childReader.querySelector('.subagent-entries').firstElementChild;")
+                browser.execute_script("window.titleMutations = 0; window.titleObserver = new MutationObserver(() => window.titleMutations++); window.titleObserver.observe(document.getElementById('thread-title'), { childList: true, subtree: true, characterData: true }); window.childReader = document.querySelector('.subagent.active'); window.childEntry = window.childReader.querySelector('.subagent-entries').firstElementChild;")
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-history").click()
                 wait.until(lambda driver: "Earlier child activity" in driver.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-entries").text)
                 time.sleep(3.5)
@@ -1028,6 +1029,8 @@ def main():
                 wait.until(lambda driver: "Streaming child update" in driver.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-entries").text)
                 assert len(browser.find_elements(By.CSS_SELECTOR, "#subagents .subagent")) == 2
                 assert browser.execute_script("return window.childReader === document.querySelector('.subagent.active') && window.childHistoryEntry === window.childReader.querySelector('.subagent-entries').firstElementChild && window.childReader.open;")
+                assert browser.execute_script("return window.titleMutations") == 0, "Unchanged native title must not replace its text node on each snapshot"
+                browser.execute_script("window.titleObserver.disconnect()")
                 probe.subagents.pop()
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-controls button").click()
                 assert "parallel agent" in browser.find_element(By.ID, "approvals").text.casefold()
@@ -1041,6 +1044,17 @@ def main():
                 wait.until(lambda driver: probe.subagent_cancellations == 1)
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".subagent.active"))
                 browser.find_element(By.CSS_SELECTOR, ".subagent[open] .subagent-controls button").click()
+                wait.until(lambda driver: not driver.find_element(By.ID, "subagents").is_displayed())
+                browser.find_element(By.ID, "show-actions").click()
+                browser.find_element(By.ID, "action-agent-history").click()
+                wait.until(lambda driver: driver.find_element(By.ID, "subagent-archive").is_displayed())
+                archive_rows = browser.find_elements(By.CSS_SELECTOR, "#subagent-archive .agent-history-row")
+                assert len(archive_rows) == 2
+                archive_rows[1].click()
+                wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, ".subagent.archived[open]").is_displayed())
+                assert "layout review is complete" in browser.find_element(By.CSS_SELECTOR, ".subagent.archived[open] .subagent-entries").text
+                browser.find_element(By.CSS_SELECTOR, ".subagent[open] .subagent-controls button").click()
+                wait.until(lambda driver: not driver.find_element(By.ID, "subagents").is_displayed())
                 probe.elicitations = [{"elicitation_id": "fixture-input", "status": "pending", "request": {
                     "message": "Choose a release channel", "mode": "form",
                     "requestedSchema": {"type": "object", "required": ["channel"],

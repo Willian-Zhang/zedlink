@@ -237,6 +237,25 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     var showRename by remember { mutableStateOf(false) }
     var showUnexpose by remember { mutableStateOf(false) }
     var showContext by remember { mutableStateOf(false) }
+    var showAgentHistory by remember { mutableStateOf(false) }
+    var historyChildId by remember(state.selectedThreadId) { mutableStateOf<String?>(null) }
+    var lastKnownTitle by remember(state.selectedThreadId, state.instanceId, state.epoch) { mutableStateOf(state.threads.firstOrNull { it.id == state.selectedThreadId }?.title ?: "Agent thread") }
+    LaunchedEffect(snapshot?.title) { if (snapshot?.threadId == state.selectedThreadId) snapshot?.title?.takeIf { it.isNotBlank() }?.let { lastKnownTitle = it } }
+    if (showAgentHistory) Dialog(onDismissRequest = { showAgentHistory = false }) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).background(Black)) {
+            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Agent history", modifier = Modifier.weight(1f)); TextButton(onClick = { showAgentHistory = false }) { Text("Close") }
+            }
+            LazyColumn { items(snapshot?.subagents.orEmpty(), key = { it.id }) { child ->
+                TextButton(onClick = { historyChildId = child.id; showAgentHistory = false }, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth()) { Text(child.title); Text(child.status, color = Muted, style = monoLabel()) }
+                }
+            }
+                if (snapshot?.subagents.isNullOrEmpty()) item { Text("No parallel agents in this conversation yet.", modifier = Modifier.padding(16.dp), color = Muted) }
+            }
+        }
+    }
+    historyChildId?.let { id -> SubagentReader(id, model) { historyChildId = null } }
     var showAgentSettings by remember { mutableStateOf(false) }
     if (showAgentSettings) AgentSettingsDialog(state, model) { showAgentSettings = false }
     var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
@@ -244,7 +263,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).border(1.dp, Line).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = model::closeThread) { Icon(Icons.Default.ArrowBack, "Sessions", tint = Ink) }
             Column(Modifier.weight(1f)) {
-                Text(snapshot?.title ?: "Loading native thread", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(lastKnownTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (snapshot?.isBusy == true) "ZED IS WORKING" else "NATIVE THREAD READY", color = if (snapshot?.isBusy == true) Blue else Green,
                     fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
@@ -254,6 +273,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
             Box {
                 IconButton(onClick = { showActions = true }) { Icon(Icons.Default.MoreVert, "Session actions", tint = Ink) }
                 DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                    DropdownMenuItem(text = { Text("Agent history") }, onClick = { showActions = false; showAgentHistory = true })
                     DropdownMenuItem(text = { Text("Agent settings") }, onClick = { showActions = false; showAgentSettings = true })
                     if (state.delivery.isNotBlank()) DropdownMenuItem(text = { Text(state.delivery) }, enabled = false, onClick = {})
                     DropdownMenuItem(text = { Text("Rename session") }, leadingIcon = { Icon(Icons.Default.Edit, null) },
@@ -493,10 +513,11 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
                 Text("LOAD EARLIER CONVERSATION · ${snapshot.entryStartIndex} REMAINING", color = Muted)
             }
         }
-        if (snapshot.subagents.isNotEmpty()) item("child-heading") {
+        val activeChildren = snapshot.subagents.filter { child -> child.isActive || snapshot.approvals.any { it.subagentId == child.id } }
+        if (activeChildren.isNotEmpty()) item("child-heading") {
             Text("PARALLEL AGENTS · ${snapshot.subagents.count { it.isActive }} ACTIVE", color = Muted, style = monoLabel(), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
-        items(snapshot.subagents, key = { "subagent:${it.id}" }) { child ->
+        items(activeChildren, key = { "subagent:${it.id}" }) { child ->
             val needsApproval = snapshot.approvals.any { it.subagentId == child.id }
             Row(Modifier.fillMaxWidth().clickable { selectedChildId = child.id }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (needsApproval) { Icon(Icons.Default.Warning, contentDescription = "Approval needed", tint = Warning); Spacer(Modifier.width(10.dp)) }

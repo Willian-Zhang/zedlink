@@ -769,3 +769,7 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
 @media (max-width: 700px) { .subagent[open] { inset: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); } .subagent[open] > summary { min-height: 60px; } }
 
 .subagent-latest { flex-shrink: 0; min-height: 44px; border-top: 1px solid var(--line); }
+
+.subagent.archived:not([open]) { display: none; }
+.agent-history-row { display: block; width: 100%; min-height: 44px; padding: 12px; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; white-space: normal; }
+@media (max-width: 700px) { .conversation-head .state-pill { display: inline-flex; visibility: hidden; } .conversation-head .state-pill.working, .conversation-head .state-pill.offline { visibility: visible; } }

@@ -205,6 +205,8 @@ struct ConversationView: View {
     @State private var showingContext = false
     @State private var reviewExpanded = false
     @State private var selectedChildID: String?
+    @State private var showingAgentHistory = false
+    @State private var lastKnownTitle = ""
     @State private var showingModelControls = false
     @State private var dismissedSlashDraft = ""
     @State private var followsConversation = true
@@ -232,7 +234,15 @@ struct ConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
         .toolbar(.hidden, for: .navigationBar)
-        .task(id: threadID) { await session.select(threadID) }
+        .task(id: threadID) {
+            lastKnownTitle = session.threads.first { $0.id == threadID }?.title ?? "Agent thread"
+            await session.select(threadID)
+            if let snapshot = session.snapshot, snapshot.threadID == threadID, !snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lastKnownTitle = snapshot.title }
+        }
+        .onChange(of: session.snapshot?.title) { _, title in
+            if session.snapshot?.threadID == threadID, let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lastKnownTitle = title }
+        }
+        .sheet(isPresented: $showingAgentHistory) { SubagentHistoryView() }
         .onDisappear { composerFocused = false }
         .sheet(isPresented: Binding(get: { selectedChildID != nil }, set: { if !$0 { selectedChildID = nil } })) {
             if let id = selectedChildID { SubagentReader(childID: id) }
@@ -277,7 +287,7 @@ struct ConversationView: View {
                     Image(systemName: "arrow.left").frame(width: 44, height: 44)
                 }.accessibilityLabel("Back to sessions").accessibilityIdentifier("back-to-sessions")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.snapshot?.title ?? "Agent thread").font(.headline).lineLimit(2)
+                    Text(lastKnownTitle.isEmpty ? "Agent thread" : lastKnownTitle).font(.headline).lineLimit(2)
                     if session.state != .live { ConnectionStatusView(state: session.state) }
                 }.frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("conversation-title")
                 Button { composerFocused = false; showingContext = true } label: {
@@ -286,6 +296,7 @@ struct ConversationView: View {
                 Menu {
                     Text("Connection: \(session.state.label)")
                     if !session.delivery.isEmpty { Menu("Recent delivery status") { Text(session.delivery) } }
+                    Button("Agent history", systemImage: "person.2") { composerFocused = false; showingAgentHistory = true }
                     Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
                     Button("Rename session", systemImage: "pencil") {
                         proposedTitle = session.snapshot?.title ?? ""; showingRename = true
@@ -303,10 +314,11 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if !snapshot.subagents.isEmpty {
+                    let activeChildren = snapshot.subagents.filter { child in child.isActive || snapshot.pendingApprovals.contains { $0.subagentID == child.id } }
+                    if !activeChildren.isEmpty {
                         Text("PARALLEL AGENTS · \(snapshot.subagents.filter(\.isActive).count) ACTIVE")
                             .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted).padding(.horizontal, 16).padding(.top, 8)
-                        ForEach(snapshot.subagents) { child in
+                        ForEach(activeChildren) { child in
                             let needsApproval = snapshot.pendingApprovals.contains { $0.subagentID == child.id }
                             Button { composerFocused = false; selectedChildID = child.id } label: {
                                 HStack(spacing: 10) {

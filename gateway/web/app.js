@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.13.16";
+const UI_BUILD = "2026.10.13.17";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -356,7 +356,8 @@ function renderMobileSessionMeta() {
         ? (/tool|execut|run/i.test(state.threadStatus) ? "Running tools" : /wait|pending|queue/i.test(state.threadStatus) ? "Waiting" : "Generating")
         : state.desktopReachable === false ? "Zed unavailable"
           : state.live ? "Live" : "Reconnecting";
-  $("mobile-session-meta").textContent = `${model} · ${activity}`;
+  const text = `${model} · ${activity}`;
+  if ($("mobile-session-meta").textContent !== text) $("mobile-session-meta").textContent = text;
 }
 
 function renderNotificationState(status) {
@@ -2820,7 +2821,7 @@ function renderSubagents(subagents) {
   const next = validSubagents(subagents);
   state.subagents = next;
   const panel = $("subagents");
-  panel.classList.toggle("hidden", !next.length);
+  panel.classList.toggle("hidden", !next.some((agent) => subagentIsActive(agent) || agent.pending_approvals?.length) && !panel.querySelector(".subagent[open]"));
   if (!next.length) { panel.replaceChildren(); return; }
   let head = panel.querySelector(".subagents-head");
   if (!head) {
@@ -2830,7 +2831,7 @@ function renderSubagents(subagents) {
     const grid = document.createElement("div"); grid.className = "subagent-grid"; panel.append(grid);
   }
   const activeCount = next.filter(subagentIsActive).length;
-  head.lastChild.textContent = `${activeCount} active · ${next.length} total`;
+  head.lastChild.textContent = `${activeCount} active`;
   const grid = panel.querySelector(".subagent-grid");
   const existing = new Map([...grid.children].map((row) => [row.dataset.sessionId, row]));
   for (const agent of next) {
@@ -2866,12 +2867,13 @@ function renderSubagents(subagents) {
       latest.onclick = () => { body.scrollTop = body.scrollHeight; latest.hidden = true; };
       body.addEventListener("scroll", () => { latest.hidden = body.scrollHeight - body.scrollTop - body.clientHeight < 80; });
       details.addEventListener("toggle", () => {
+        panel.classList.toggle("hidden", !state.subagents.some((item) => subagentIsActive(item) || item.pending_approvals?.length) && !panel.querySelector(".subagent[open]"));
         if (details.open && !details.readerOpened) { details.readerOpened = true; body.scrollTop = body.scrollHeight; }
       });
       details.append(summary, body, latest); grid.append(details);
     }
     existing.delete(agent.session_id);
-    details.className = `subagent ${subagentIsActive(agent) ? "active" : ""}`;
+    details.className = `subagent ${subagentIsActive(agent) ? "active" : ""} ${!subagentIsActive(agent) && !agent.pending_approvals?.length ? "archived" : ""}`;
     details.querySelector(".subagent-names strong").textContent = agent.title || agent.label || "Zed subagent";
     const latest = agent.entries_markdown.at(-1) || "";
     details.querySelector(".subagent-names small").textContent = agent.pending_approvals?.length ? "Approval needed" : latest.replace(/[#*`<>]/g, "").replace(/\s+/g, " ").slice(0, 160) || "Waiting for activity…";
@@ -3639,14 +3641,17 @@ async function snapshot() {
     const assistants = container.querySelectorAll(".message.assistant");
     assistants[assistants.length - 1]?.querySelectorAll("details.thinking-block").forEach((details) => { details.open = true; });
   }
-  $("thread-title").textContent = result.title || "Untitled Agent thread";
-  $("thread-title").title = result.title || "Untitled Agent thread";
+  const title = typeof result.title === "string" && result.title.trim() ? result.title : $("thread-title").textContent;
+  if ($("thread-title").textContent !== title) $("thread-title").textContent = title;
+  if ($("thread-title").title !== title) $("thread-title").title = title;
   $("thread-meta").textContent = state.renderedEntryStart > 0
     ? `Showing ${state.renderedEntries.length} of ${state.totalEntries} entries · Earlier history available`
     : `${state.totalEntries} conversation entries · Thread ${result.thread_id.slice(0, 12)}…`;
   const failed = !busy && !state.retryStatus && (result.had_error === true || !!state.threadError);
   $("thread-state").textContent = state.retryStatus ? "Retrying" : failed ? "Request failed" : result.status;
-  $("thread-state").className = `state-pill ${result.status === "Idle" && !failed ? "online" : ""} ${failed ? "offline" : ""}`;
+  $("thread-state").classList.toggle("online", result.status === "Idle" && !failed);
+  $("thread-state").classList.toggle("offline", failed);
+  $("thread-state").classList.toggle("working", busy);
   // Thinking and tool output are rendered in their exact transcript positions.
   // Keep the former aggregate activity surface hidden to avoid duplicate or reordered content.
   $("activity").classList.add("hidden");
@@ -4537,4 +4542,26 @@ $("action-clipboard").addEventListener("click", () => { $("action-menu").classLi
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") document.querySelectorAll(".subagent[open]").forEach((reader) => { reader.open = false; reader.querySelector("summary").focus(); });
+});
+
+$("action-agent-history").addEventListener("click", () => {
+  $("action-menu").classList.add("hidden"); $("show-actions").setAttribute("aria-expanded", "false");
+  let dialog = $("subagent-archive");
+  if (!dialog) { dialog = document.createElement("dialog"); dialog.id = "subagent-archive"; dialog.className = "clipboard-dialog"; document.body.append(dialog); }
+  dialog.replaceChildren(); dialog.setAttribute("aria-label", "Agent history");
+  const header = document.createElement("header"); const title = document.createElement("h2"); title.textContent = "Agent history";
+  const close = document.createElement("button"); close.textContent = "×"; close.setAttribute("aria-label", "Close agent history"); close.onclick = () => dialog.close(); header.append(title, close); dialog.append(header);
+  const scope = [targetScope(), state.instanceId, state.epoch, state.threadId].join("|");
+  for (const agent of state.subagents) {
+    const button = document.createElement("button"); button.className = "agent-history-row";
+    button.textContent = `${agent.title || agent.label || "Agent"} · ${agent.status}`;
+    button.onclick = () => {
+      dialog.close();
+      if (scope !== [targetScope(), state.instanceId, state.epoch, state.threadId].join("|")) return;
+      const reader = [...$("subagents").querySelectorAll(".subagent")].find((row) => row.dataset.sessionId === agent.session_id);
+      if (reader) { $("subagents").classList.remove("hidden"); reader.open = true; reader.querySelector("summary").focus(); }
+    }; dialog.append(button);
+  }
+  if (!state.subagents.length) { const empty = document.createElement("p"); empty.textContent = "No parallel agents in this conversation yet."; dialog.append(empty); }
+  dialog.showModal();
 });

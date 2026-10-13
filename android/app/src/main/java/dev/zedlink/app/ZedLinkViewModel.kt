@@ -622,7 +622,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 })
         }
         state = state.copy(snapshot = ThreadSnapshot(
-            id, result.optString("title", "Untitled Agent thread"), result.optString("status", "Unknown"),
+            id, result.optString("title").takeIf { it.isNotBlank() && it != "null" }
+                ?: state.snapshot?.takeIf { it.threadId == id }?.title ?: state.threads.firstOrNull { it.id == id }?.title ?: "Untitled Agent thread", result.optString("status", "Unknown"),
             result.optIntOrNull("current_turn_id"), state.instanceId.orEmpty(), state.epoch.orEmpty(),
             result.optInt("last_sequence"), mergedEntries,
             mergedStart, totalEntries, mergedStart > 0,
