@@ -69,7 +69,7 @@ struct SessionsView: View {
                                     NavigationLink(value: thread.id) {
                                         SessionRow(thread: thread, live: session.state == .live, updated: library.updated.contains(key(thread)))
                                     }.buttonStyle(.plain).accessibilityIdentifier("thread-" + thread.id)
-                                        .disabled(session.demoPreview)
+                                        .allowsHitTesting(!session.demoPreview)
                                         .simultaneousGesture(TapGesture().onEnded { searchFocused = false; library.seen(key(thread)) })
                                     Button { library.toggle(key(thread)) } label: {
                                         Image(systemName: library.pins.contains(key(thread)) ? "pin.fill" : "pin")
