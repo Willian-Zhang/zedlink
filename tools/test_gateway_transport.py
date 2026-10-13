@@ -981,7 +981,7 @@ def main():
                 assert "No sessions match" in browser.find_element(By.ID, "thread-list").text
                 search.send_keys(Keys.CONTROL, "a", Keys.DELETE)
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
-                assert {item.text for item in browser.find_elements(By.CSS_SELECTOR, ".thread-badge")} == {"ZED AGENT", "CODEX"}
+                assert {item.get_attribute("textContent") for item in browser.find_elements(By.CSS_SELECTOR, ".thread-badge")} == {"ZED AGENT", "CODEX"}, browser.find_element(By.ID, "thread-list").get_attribute("textContent")
                 browser.find_element(By.CSS_SELECTOR, '.session-pin[aria-label="Pin Synthetic test thread"]').click()
                 browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="Pinned"]').click()
                 assert len(browser.find_elements(By.CSS_SELECTOR, ".thread-item")) == 1

@@ -7,9 +7,11 @@ final class SessionActivityTests: XCTestCase {
     func testAuthoritativeAttentionRetryFailureAndUnknown() {
         var thread = NativeThread(id: "fixture", title: "Demo", status: "Unknown", currentTurnID: nil)
         XCTAssertEqual(SessionActivity(thread), .unknown)
-        thread.status = "Idle"; XCTAssertEqual(SessionActivity(thread), .ready)
+        thread = NativeThread(id: "fixture", title: "Demo", status: "Idle", currentTurnID: nil)
+        XCTAssertEqual(SessionActivity(thread), .ready)
         thread.failed = true; XCTAssertEqual(SessionActivity(thread), .failed)
-        thread.status = "Generating"; XCTAssertEqual(SessionActivity(thread), .generating)
+        thread = NativeThread(id: "fixture", title: "Demo", status: "Generating", currentTurnID: nil, failed: true)
+        XCTAssertEqual(SessionActivity(thread), .generating)
         thread.retrying = true; XCTAssertEqual(SessionActivity(thread), .retrying)
         thread.inputCount = 1; XCTAssertEqual(SessionActivity(thread), .input)
         thread.approvalCount = 2; XCTAssertEqual(SessionActivity(thread), .approval)
@@ -26,7 +28,7 @@ final class SessionActivityTests: XCTestCase {
         var thread = NativeThread(id: "id", title: "Demo", status: "Idle", currentTurnID: nil)
         library.observe([thread], profile: "a", target: "demo", selected: nil)
         XCTAssertTrue(library.updated.isEmpty)
-        thread.status = "Generating"
+        thread = NativeThread(id: "id", title: "Demo", status: "Generating", currentTurnID: nil)
         library.observe([thread], profile: "a", target: "demo", selected: nil)
         XCTAssertTrue(library.updated.contains(key)); library.seen(key); XCTAssertTrue(library.updated.isEmpty)
     }

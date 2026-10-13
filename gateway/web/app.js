@@ -117,6 +117,7 @@ const safeStore = {
 };
 
 function connection(message, status = "") {
+  const wasLive = state.live;
   state.live = status === "online";
   state.desktopReachable = status === "online" ? true : status === "offline" ? false : null;
   state.connectionMessage = message;
@@ -125,6 +126,7 @@ function connection(message, status = "") {
   updateComposerAction();
   showCreateAvailability();
   renderEmptyWorkspace();
+  if (wasLive !== state.live && state.threads.length) renderThreads();
 }
 function setHealthText(id, text, status = "") {
   const element = $(id);
