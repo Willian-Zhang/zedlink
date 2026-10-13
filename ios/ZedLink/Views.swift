@@ -204,6 +204,7 @@ struct ConversationView: View {
     @State private var showingUnexposeConfirmation = false
     @State private var showingContext = false
     @State private var reviewExpanded = false
+    @State private var selectedChildID: String?
     @State private var showingModelControls = false
     @State private var dismissedSlashDraft = ""
     @State private var followsConversation = true
@@ -233,6 +234,9 @@ struct ConversationView: View {
         .toolbar(.hidden, for: .navigationBar)
         .task(id: threadID) { await session.select(threadID) }
         .onDisappear { composerFocused = false }
+        .sheet(isPresented: Binding(get: { selectedChildID != nil }, set: { if !$0 { selectedChildID = nil } })) {
+            if let id = selectedChildID { SubagentReader(childID: id) }
+        }
         .sheet(isPresented: $showingCommands) { CommandPicker() }
         .sheet(isPresented: $showingModelControls) { SessionModelControls() }
         .confirmationDialog("Run desktop action?", isPresented: Binding(get: { session.localCommandConfirmation != nil }, set: { if !$0 { session.localCommandConfirmation = nil } })) {
@@ -299,15 +303,24 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(snapshot.subagents) { subagent in
-                        DisclosureGroup("\(subagent.title) · \(subagent.status)") {
-                            ForEach(Array(subagent.entries.enumerated()), id: \.offset) { _, entry in
-                                NativeMessageView(message: NativeEntryPresentation(entry, index: 0), thinkingLive: subagent.currentTurnID != nil).padding(.vertical, 4)
-                            }
-                            if subagent.currentTurnID != nil {
-                                Button("Stop parallel agent", role: .destructive) { Task { await session.cancelSubagent(subagent) } }
-                            }
-                        }.padding(12).background(ZLTheme.surface)
+                    if !snapshot.subagents.isEmpty {
+                        Text("PARALLEL AGENTS · \(snapshot.subagents.filter(\.isActive).count) ACTIVE")
+                            .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted).padding(.horizontal, 16).padding(.top, 8)
+                        ForEach(snapshot.subagents) { child in
+                            let needsApproval = snapshot.pendingApprovals.contains { $0.subagentID == child.id }
+                            Button { composerFocused = false; selectedChildID = child.id } label: {
+                                HStack(spacing: 10) {
+                                    if needsApproval { Image(systemName: "hand.raised").foregroundStyle(ZLTheme.warning) }
+                                    else if child.isActive { ProgressView().controlSize(.small) }
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(child.title).font(.subheadline).lineLimit(2)
+                                        Text("\(needsApproval ? "Approval needed" : child.status) · \(child.totalEntries > 0 ? child.totalEntries : child.entries.count) entries").font(.caption).foregroundStyle(ZLTheme.muted)
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                    Image(systemName: "chevron.right")
+                                }.padding(.horizontal, 16).padding(.vertical, 10)
+                            }.buttonStyle(.plain)
+                            Hairline()
+                        }
                     }
                     if snapshot.hasOlderEntries {
                         Button("Load earlier conversation · \(snapshot.entryStartIndex) remaining") {
@@ -373,7 +386,7 @@ struct ConversationView: View {
     private func approvalStack(_ approvals: [NativeApproval]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(approvals) { NativeApprovalView(approval: $0) }
+                ForEach(approvals, id: \.viewIdentity) { NativeApprovalView(approval: $0) }
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
         }
@@ -863,7 +876,7 @@ private struct ToolMessageView: View {
     }
 }
 
-private struct NativeApprovalView: View {
+struct NativeApprovalView: View {
     @EnvironmentObject private var session: SessionManager
     let approval: NativeApproval
     @State private var expanded = false

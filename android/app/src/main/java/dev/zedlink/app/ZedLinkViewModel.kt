@@ -282,6 +282,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectThread(id: String) = viewModelScope.launch {
+        if (state.selectedThreadId != id) childHistory.clear()
         if (state.threads.none { it.id == id }) return@launch
         val generation = connectionGeneration
         val draft = preferences.getString("draft.$id", "").orEmpty()
@@ -515,7 +516,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     if (eventRows.any { it.optString("kind") == "entry.removed" }) {
                         state = state.copy(snapshot = null)
                     }
-                    if (eventRows.isNotEmpty() || state.snapshot?.isBusy == true) loadSnapshot(selected)
+                    if (eventRows.isNotEmpty() || state.snapshot?.isBusy == true || (state.snapshot?.subagents?.isNotEmpty() == true && System.currentTimeMillis() - lastChildSnapshot > 3000)) loadSnapshot(selected)
                 }
                 if (state.selectedThreadId != null && System.currentTimeMillis() - lastCommandsRefresh >= 5000) loadCommands(state.selectedThreadId!!)
                 if (generation != connectionGeneration) return
@@ -633,8 +634,16 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             }, result.optJSONArray("subagents").objects().mapNotNull { row ->
                 val sessionId = row.optString("session_id")
                 if (sessionId.isBlank()) null else NativeSubagent(sessionId, row.optString("title", row.optString("label", "Parallel agent")),
-                    row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"), row.optJSONArray("entries_markdown").strings())
+                    row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"), row.optJSONArray("entries_markdown").strings(), row.optInt("entry_start_index"), row.optInt("total_entries"), row.optBoolean("entries_truncated"))
+            }.associateBy { it.id }.values.map { child ->
+                val history = childHistory[child.id]
+                val merged = if (history != null && history.scope == childScope() && history.start <= child.entryStartIndex && history.end >= child.entryStartIndex && history.end <= child.totalEntries)
+                    child.copy(entries = history.entries.take(child.entryStartIndex - history.start) + child.entries, entryStartIndex = history.start, entriesTruncated = history.start > 0)
+                else child
+                childHistory[child.id] = ChildHistory(childScope(), merged.entryStartIndex, merged.entryStartIndex + merged.entries.size, merged.entries)
+                merged
             }))
+        lastChildSnapshot = System.currentTimeMillis()
         approvalNotifications.update(state)
         loadAuxiliaryState(id)
     }
@@ -748,6 +757,32 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(snapshot = null)
             loadSnapshot(threadId)
         } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+    }
+
+    private data class ChildHistory(val scope: List<Any?>, val start: Int, val end: Int, val entries: List<String>)
+    private var lastChildSnapshot = 0L
+    private val childHistory = mutableMapOf<String, ChildHistory>()
+    var loadingChildHistory by mutableStateOf(false)
+        private set
+    private fun childScope(): List<Any?> = listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+
+    fun loadEarlierSubagent(childId: String) = viewModelScope.launch {
+        val child = state.snapshot?.subagents?.firstOrNull { it.id == childId } ?: return@launch
+        val threadId = state.selectedThreadId ?: return@launch
+        val activeClient = client ?: return@launch
+        if (loadingChildHistory || child.entryStartIndex <= 0) return@launch
+        val scope = childScope(); loadingChildHistory = true
+        try {
+            val result = activeClient.rpc("thread.history", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("thread_id", threadId).put("subagent_id", childId).put("before_entry_index", child.entryStartIndex))
+            if (scope != childScope() || result.optString("thread_id") != threadId || result.optString("subagent_id") != childId) return@launch
+            val start = result.optInt("entry_start_index", -1); val end = result.optInt("entry_end_index", -1)
+            val entries = result.optJSONArray("entries_markdown").strings()
+            if (start < 0 || end != child.entryStartIndex || start + entries.size != end) return@launch
+            childHistory[childId] = ChildHistory(scope, start, child.entryStartIndex + child.entries.size, entries + child.entries)
+            loadSnapshot(threadId)
+        } catch (error: Exception) { if (scope == childScope()) state = state.copy(issue = error.message.orEmpty()) }
+        finally { loadingChildHistory = false }
     }
 
     fun cancelSubagent(subagent: NativeSubagent) = viewModelScope.launch {

@@ -758,3 +758,14 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
 .terminal-tools.listening > summary { color: var(--warning); background: #30251b; border-radius: 8px; }
 
 .dictation-status { font-size: 12px; line-height: 1.4; color: var(--muted); padding: 6px 12px; overflow-wrap: anywhere; }
+
+/* Keep child activity outside the parent transcript while a reader is open. */
+.subagent[open] { position: fixed; inset: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); z-index: 90; display: flex; flex-direction: column; border: 1px solid var(--line); box-shadow: 0 0 0 100vmax #000b; }
+.subagent[open] > summary { flex-shrink: 0; }
+.subagent[open] .subagent-body { flex: 1; min-height: 0; max-height: none; overscroll-behavior: contain; }
+.subagent-controls { display: flex; flex-wrap: wrap; gap: 8px; padding-block: 8px; }
+.subagent-controls .subagent-stop { position: static; float: none; }
+.subagent-names small { max-width: 100%; }
+@media (max-width: 700px) { .subagent[open] { inset: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); } .subagent[open] > summary { min-height: 60px; } }
+
+.subagent-latest { flex-shrink: 0; min-height: 44px; border-top: 1px solid var(--line); }

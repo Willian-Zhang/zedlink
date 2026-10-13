@@ -77,6 +77,7 @@ struct NativeApproval: Identifiable, Equatable {
     let subagentID: String?
     let authorizationKind: String
     let decisions: [NativeApprovalDecision]
+    var viewIdentity: String { "\(subagentID ?? "root"):\(turnID ?? -1):\(id)" }
 }
 
 struct NativeApprovalDecision: Identifiable, Equatable {
@@ -163,6 +164,10 @@ struct NativeSubagent: Identifiable, Equatable {
     let status: String
     let currentTurnID: Int?
     let entries: [String]
+    var entryStartIndex = 0
+    var totalEntries = 0
+    var entriesTruncated = false
+    var isActive: Bool { currentTurnID != nil || ["pending", "running", "inprogress", "in progress", "waiting", "generating"].contains(status.lowercased()) }
 }
 struct NativeProjectFile: Identifiable, Equatable { let id: String; let kind: String; let size: Int? }
 struct NativeChange: Identifiable, Equatable { let id: String; let status: String; let staging: String }

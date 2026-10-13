@@ -66,3 +66,14 @@ The browser offers two input modes. **Command** composes a whole command or repl
 The native apps offer **Open full-screen terminal** from project context, a command/reply field, Return, and the same Esc, Tab, Ctrl C, and arrow shortcuts. Sending a shortcut first delivers any partially composed command without pressing Return. iOS includes a keyboard Hide action; Android includes a keyboard-dismiss button. Native apps currently compose text before submission; browser Keyboard mode additionally streams typing.
 
 These controls address the existing terminal through Zed. Terminal output is a bounded text snapshot with native foreground/background colors, bold, italic, underline, and dim styles, refreshed while the terminal view is open. Color requires the updated patched Zed; older bridges remain readable as plain text. A bundled font supplies Seti, Devicons, Font Awesome, Octicons, and Material Design shell icons, while emoji use the operating system font. Other custom shell glyphs may still need additional font coverage. Browser terminal rows preserve native columns instead of wrapping; long rows scroll inside the terminal. Cursor position and remote resize are not projected, so full-screen editors and other terminal UIs do not have full emulator fidelity. Do not use this as evidence that every interactive terminal program is supported.
+
+
+## Read parallel agents
+
+Parallel agents appear as compact rows with their native status and activity count. Open a row to read that child in its own view; the main conversation stays in place. Browser readers keep the same panel and unchanged transcript rows during polling. Native apps use a separate reader with the same Markdown and tool-output renderer as the conversation.
+
+Use **Load earlier activity** to page backward through the child transcript, and **Latest** to resume following updates after reading older content. Child approvals remain scoped to their owning agent: native readers show those approvals, and the browser's **Review approval** returns to the approval controls. **Continue agent** prepares an editable follow-up in the parent prompt; it does not automatically submit it. **Stop agent** appears only for a cancellable native turn and does not stop the parent or other children.
+
+An updated patched Zed bridge is needed for child history offsets and paging. Older bridges show a truncation notice. After rebuilding, let active work finish before restarting patched Zed; restart the gateway to serve its rebuilt browser assets, and rebuild the mobile apps. No running agent is restarted automatically by this change.
+
+Child-history bridge verified at fork revision `56cc1e513670e8a516be795baeb9367f6710e02b`. Native app compilation and physical-device verification remain pending.

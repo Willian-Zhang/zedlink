@@ -347,6 +347,7 @@ import Combine
         localExposureStopped = false
         guard threads.contains(where: { $0.id == id }) else { return }
         if selectedThreadID != id {
+            childHistory.removeAll()
             selectedThreadID = id
             attachments = []; contextPaths = []; supportsImages = nil; threadSettings = nil
             diffContent = ""; diffLoading = false; diffRequest = UUID()
@@ -445,9 +446,11 @@ import Combine
 
     private func loadSnapshot(_ id: String) async throws {
         guard let client else { return }
+        let scope = operationScope
         var params: [String: Any] = ["thread_id": id]
         if snapshot?.threadID == id { params["tail_entry_count"] = 16 }
         let result = try await client.rpc("thread.snapshot", params: params)
+        guard scope == operationScope else { return }
         try checkIdentity(result)
         guard result["thread_id"] as? String == id,
               let entries = result["entries_markdown"] as? [String],
@@ -508,7 +511,17 @@ import Combine
             return NativeSubagent(id: id, title: row["title"] as? String ?? row["label"] as? String ?? "Parallel agent",
                                   status: row["status"] as? String ?? "Unknown",
                                   currentTurnID: row["current_turn_id"] as? Int,
-                                  entries: row["entries_markdown"] as? [String] ?? [])
+                                  entries: row["entries_markdown"] as? [String] ?? [], entryStartIndex: row["entry_start_index"] as? Int ?? 0, totalEntries: row["total_entries"] as? Int ?? 0, entriesTruncated: row["entries_truncated"] as? Bool ?? false)
+        }
+        lastChildSnapshot = Date()
+        var seenChildren = Set<String>()
+        let uniqueSubagents = subagents.reversed().filter { seenChildren.insert($0.id).inserted }.reversed().map { child -> NativeSubagent in
+            var child = child
+            if let history = childHistory[child.id], history.scope == operationScope, history.end >= child.entryStartIndex && history.start <= child.entryStartIndex && history.end <= child.totalEntries {
+                child = NativeSubagent(id: child.id, title: child.title, status: child.status, currentTurnID: child.currentTurnID, entries: Array(history.entries.prefix(child.entryStartIndex - history.start)) + child.entries, entryStartIndex: history.start, totalEntries: child.totalEntries, entriesTruncated: history.start > 0)
+            }
+            childHistory[child.id] = (operationScope, child.entryStartIndex, child.entryStartIndex + child.entries.count, child.entries)
+            return child
         }
         snapshot = ThreadSnapshot(threadID: id,
                                   title: result["title"] as? String ?? "Untitled Agent thread",
@@ -521,7 +534,7 @@ import Combine
                                   activityEntries: result["activity_entries_markdown"] as? [String] ?? entries,
                                   truncated: result["truncated"] as? Bool ?? false,
                                   activityTruncated: result["activity_truncated"] as? Bool ?? false,
-                                  pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: subagents)
+                                  pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: uniqueSubagents)
         if let profile, let targetID, let instanceID, let epoch {
             ApprovalNotifications.shared.update(gateway: profile.gatewayID, target: targetID,
                 instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"))
@@ -660,6 +673,26 @@ import Combine
             snapshot = nil
             try await loadSnapshot(threadID)
         } catch { issue = error.localizedDescription }
+    }
+
+    private var lastChildSnapshot = Date.distantPast
+    private var childHistory: [String: (scope: [String], start: Int, end: Int, entries: [String])] = [:]
+    @Published private(set) var loadingChildHistory = false
+
+    func loadEarlierSubagent(_ childID: String) async {
+        guard !loadingChildHistory, let client, let threadID = selectedThreadID,
+              let child = snapshot?.subagents.first(where: { $0.id == childID }), child.entryStartIndex > 0 else { return }
+        let scope = operationScope
+        loadingChildHistory = true
+        defer { loadingChildHistory = false }
+        do {
+            let result = try await client.rpc("thread.history", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "subagent_id": childID, "before_entry_index": child.entryStartIndex])
+            guard scope == operationScope, result["thread_id"] as? String == threadID, result["subagent_id"] as? String == childID,
+                  let start = result["entry_start_index"] as? Int, let end = result["entry_end_index"] as? Int,
+                  let entries = result["entries_markdown"] as? [String], start >= 0, end == child.entryStartIndex, start + entries.count == end else { return }
+            childHistory[childID] = (scope, start, child.entryStartIndex + child.entries.count, entries + child.entries)
+            try await loadSnapshot(threadID)
+        } catch { if scope == operationScope { issue = error.localizedDescription } }
     }
 
     func cancelSubagent(_ subagent: NativeSubagent) async {
@@ -1098,7 +1131,7 @@ import Combine
                             snapshot = nil
                         }
                         try await loadSnapshot(id)
-                    } else if snapshot?.isBusy == true {
+                    } else if snapshot?.isBusy == true || (snapshot?.subagents.isEmpty == false && Date().timeIntervalSince(lastChildSnapshot) > 3) {
                         try await loadSnapshot(id)
                     } else if let sequence = result["last_sequence"] as? Int,
                               var old = snapshot, sequence >= old.lastSequence {

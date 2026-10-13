@@ -92,7 +92,10 @@ data class NativeThreadSettings(
     val thinkingEnabled: Boolean? = null, val thinkingSupported: Boolean = false, val thinkingCanDisable: Boolean = false,
 )
 data class NativeRewindPoint(val id: String, val entryIndex: Int, val entriesRemoved: Int)
-data class NativeSubagent(val id: String, val title: String, val status: String, val currentTurnId: Int?, val entries: List<String>)
+data class NativeSubagent(val id: String, val title: String, val status: String, val currentTurnId: Int?, val entries: List<String>,
+    val entryStartIndex: Int = 0, val totalEntries: Int = 0, val entriesTruncated: Boolean = false) {
+    val isActive: Boolean get() = currentTurnId != null || status.lowercase() in listOf("pending", "running", "inprogress", "in progress", "waiting", "generating")
+}
 data class NativeProjectFile(val id: String, val kind: String, val size: Int?)
 data class NativeChange(val id: String, val status: String, val staging: String)
 

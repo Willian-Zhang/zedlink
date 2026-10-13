@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.13.15";
+const UI_BUILD = "2026.10.13.16";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -1391,8 +1391,12 @@ function sessionActivity(thread) {
   if (thread.status === "Generating") return { label: "Generating", running: true };
   return { label: thread.status === "Idle" ? "Ready" : "Unknown" };
 }
+let threadsRenderSignature = "";
 function renderThreads() {
-  const list = $("thread-list"); list.replaceChildren();
+  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count]), state.threadId, state.live, sessionFilter, $("session-search").value, [...sessionPins()], [...sessionUpdated]]);
+  if (signature === threadsRenderSignature) return;
+  threadsRenderSignature = signature;
+  const list = $("thread-list"); const scrollTop = list.scrollTop; list.replaceChildren();
   const pins = sessionPins();
   const query = $("session-search").value.trim().toLocaleLowerCase();
   const visible = state.threads.filter((thread) => {
@@ -1430,6 +1434,7 @@ function renderThreads() {
       row.append(button, pin); list.append(row);
     }
   }
+  list.scrollTop = scrollTop;
   renderEmptyWorkspace();
 }
 $("session-filters").addEventListener("click", (event) => {
@@ -2799,9 +2804,11 @@ async function refreshAuxiliaryState() {
 
 function validSubagents(value) {
   if (!Array.isArray(value)) return [];
-  return value.filter((agent) => agent && typeof agent.session_id === "string"
+  const unique = new Map();
+  for (const agent of value.filter((agent) => agent && typeof agent.session_id === "string"
     && typeof agent.status === "string" && Array.isArray(agent.entries_markdown)
-    && agent.entries_markdown.every((entry) => typeof entry === "string"));
+    && agent.entries_markdown.every((entry) => typeof entry === "string"))) unique.set(agent.session_id, agent);
+  return [...unique.values()];
 }
 
 function subagentIsActive(agent) {
@@ -2811,93 +2818,113 @@ function subagentIsActive(agent) {
 
 function renderSubagents(subagents) {
   const next = validSubagents(subagents);
-  const signature = JSON.stringify([next, state.stoppingSubagent]);
-  if (signature === state.subagentsSignature) return;
-  const panel = $("subagents");
-  const disclosure = new Map(Array.from(panel.querySelectorAll(".subagent")).map((details) => [
-    details.dataset.sessionId,
-    { open: details.open, userToggled: details.dataset.userToggled === "true" },
-  ]));
   state.subagents = next;
-  state.subagentsSignature = signature;
-  panel.replaceChildren();
-  panel.classList.toggle("hidden", state.subagents.length === 0);
-  if (!state.subagents.length) return;
-  const head = document.createElement("div");
-  head.className = "subagents-head";
-  const title = document.createElement("strong");
-  title.textContent = "Parallel agents";
-  const activeCount = state.subagents.filter(subagentIsActive).length;
-  const count = document.createElement("span");
-  count.textContent = activeCount ? `${activeCount} active · ${state.subagents.length} total` : `${state.subagents.length} complete`;
-  head.append(title, count);
-  panel.append(head);
-  const grid = document.createElement("div");
-  grid.className = "subagent-grid";
-  for (const agent of state.subagents) {
-    const active = subagentIsActive(agent);
-    const details = document.createElement("details");
-    details.className = `subagent ${active ? "active" : ""}`;
-    details.dataset.sessionId = agent.session_id;
-    const previous = disclosure.get(agent.session_id);
-    details.open = previous?.userToggled ? previous.open : active;
-    details.dataset.userToggled = String(previous?.userToggled === true);
-    details.addEventListener("toggle", () => { details.dataset.userToggled = "true"; });
-    const summary = document.createElement("summary");
-    const indicator = document.createElement("span");
-    indicator.className = "subagent-indicator";
-    const names = document.createElement("span");
-    names.className = "subagent-names";
-    const name = document.createElement("strong");
-    name.textContent = agent.title || agent.label || "Zed subagent";
-    const id = document.createElement("small");
-    id.textContent = `Child ${agent.session_id.slice(0, 10)}…`;
-    names.append(name, id);
-    const status = document.createElement("span");
-    status.className = "subagent-status";
-    status.textContent = agent.status;
-    summary.append(indicator, names, status);
-    const body = document.createElement("div");
-    body.className = "subagent-body";
-    if (agent.entries_markdown.length) {
-      for (const [index, markdown] of agent.entries_markdown.entries()) body.append(makeEntry(markdown, index));
-    } else {
-      const waiting = document.createElement("p");
-      waiting.className = "muted";
-      waiting.textContent = active ? "Waiting for this agent’s first update…" : "No child transcript is loaded.";
-      body.append(waiting);
-    }
-    if (agent.entries_truncated) {
-      const note = document.createElement("p");
-      note.className = "subagent-note";
-      note.textContent = "Earlier child activity remains available in desktop Zed.";
-      body.prepend(note);
-    }
-    const followUp = document.createElement("button");
-    followUp.type = "button";
-    followUp.className = "quiet subagent-follow-up";
-    followUp.textContent = "Continue this agent";
-    followUp.addEventListener("click", (event) => {
-      event.preventDefault();
-      $("prompt").value = `Use the native spawn_agent tool with session_id "${agent.session_id}" to continue this existing child agent. Return its result in this conversation:\n\nTask: `;
-      $("prompt").dispatchEvent(new Event("input", { bubbles: true }));
-      $("prompt").focus();
-      $("prompt").setSelectionRange($("prompt").value.length, $("prompt").value.length);
-    });
-    body.prepend(followUp);
-    if (active && Number.isInteger(agent.current_turn_id) && state.capabilities.includes("subagent.cancel")) {
-      const stop = document.createElement("button");
-      stop.type = "button";
-      stop.className = "quiet subagent-stop";
-      stop.textContent = state.stoppingSubagent === agent.session_id ? "Stopping…" : "Stop agent";
-      stop.disabled = state.stoppingSubagent !== null;
-      stop.addEventListener("click", (event) => { event.preventDefault(); cancelSubagent(agent); });
-      body.prepend(stop);
-    }
-    details.append(summary, body);
-    grid.append(details);
+  const panel = $("subagents");
+  panel.classList.toggle("hidden", !next.length);
+  if (!next.length) { panel.replaceChildren(); return; }
+  let head = panel.querySelector(".subagents-head");
+  if (!head) {
+    head = document.createElement("div"); head.className = "subagents-head";
+    const title = document.createElement("strong"); title.textContent = "Parallel agents";
+    head.append(title, document.createElement("span")); panel.append(head);
+    const grid = document.createElement("div"); grid.className = "subagent-grid"; panel.append(grid);
   }
-  panel.append(grid);
+  const activeCount = next.filter(subagentIsActive).length;
+  head.lastChild.textContent = `${activeCount} active · ${next.length} total`;
+  const grid = panel.querySelector(".subagent-grid");
+  const existing = new Map([...grid.children].map((row) => [row.dataset.sessionId, row]));
+  for (const agent of next) {
+    let details = existing.get(agent.session_id);
+    if (!details) {
+      details = document.createElement("details"); details.dataset.sessionId = agent.session_id;
+      const summary = document.createElement("summary");
+      const indicator = document.createElement("span"); indicator.className = "subagent-indicator";
+      const names = document.createElement("span"); names.className = "subagent-names";
+      names.append(document.createElement("strong"), document.createElement("small"));
+      const status = document.createElement("span"); status.className = "subagent-status";
+      summary.append(indicator, names, status);
+      const body = document.createElement("div"); body.className = "subagent-body";
+      const controls = document.createElement("div"); controls.className = "subagent-controls";
+      const close = document.createElement("button"); close.className = "quiet"; close.textContent = "Back to conversation";
+      close.onclick = () => { details.open = false; summary.focus(); };
+      const older = document.createElement("button"); older.className = "quiet subagent-history"; older.textContent = "Load earlier activity";
+      older.onclick = () => loadSubagentHistory(agent.session_id, details);
+      const followUp = document.createElement("button"); followUp.className = "quiet subagent-follow-up"; followUp.textContent = "Continue this agent";
+      followUp.onclick = () => {
+        details.open = false;
+        $("prompt").value = `Use the native spawn_agent tool with session_id "${agent.session_id}" to continue this existing child agent. Return its result in this conversation:\n\nTask: `;
+        $("prompt").dispatchEvent(new Event("input", { bubbles: true })); $("prompt").focus();
+      };
+      const stop = document.createElement("button"); stop.className = "quiet subagent-stop"; stop.textContent = "Stop agent";
+      stop.onclick = () => { const current = state.subagents.find((item) => item.session_id === agent.session_id); if (current) cancelSubagent(current); };
+      const approvals = document.createElement("button"); approvals.className = "quiet subagent-approvals"; approvals.textContent = "Review approval";
+      approvals.onclick = () => { details.open = false; $("approvals").scrollIntoView({ block: "nearest" }); $("approvals").querySelector("button")?.focus(); };
+      controls.append(close, older, approvals, followUp, stop); body.append(controls);
+      const entries = document.createElement("div"); entries.className = "subagent-entries"; body.append(entries);
+      const note = document.createElement("p"); note.className = "subagent-note"; body.append(note);
+      const latest = document.createElement("button"); latest.className = "quiet subagent-latest"; latest.textContent = "Latest ↓";
+      latest.onclick = () => { body.scrollTop = body.scrollHeight; latest.hidden = true; };
+      body.addEventListener("scroll", () => { latest.hidden = body.scrollHeight - body.scrollTop - body.clientHeight < 80; });
+      details.addEventListener("toggle", () => {
+        if (details.open && !details.readerOpened) { details.readerOpened = true; body.scrollTop = body.scrollHeight; }
+      });
+      details.append(summary, body, latest); grid.append(details);
+    }
+    existing.delete(agent.session_id);
+    details.className = `subagent ${subagentIsActive(agent) ? "active" : ""}`;
+    details.querySelector(".subagent-names strong").textContent = agent.title || agent.label || "Zed subagent";
+    const latest = agent.entries_markdown.at(-1) || "";
+    details.querySelector(".subagent-names small").textContent = agent.pending_approvals?.length ? "Approval needed" : latest.replace(/[#*`<>]/g, "").replace(/\s+/g, " ").slice(0, 160) || "Waiting for activity…";
+    details.querySelector(".subagent-status").textContent = `${agent.status} · ${agent.total_entries ?? agent.entries_markdown.length} entries`;
+    details.querySelector(".subagent-approvals").hidden = !agent.pending_approvals?.length;
+    const stop = details.querySelector(".subagent-stop");
+    stop.hidden = !subagentIsActive(agent) || !Number.isInteger(agent.current_turn_id) || !state.capabilities.includes("subagent.cancel");
+    stop.disabled = state.stoppingSubagent !== null;
+    stop.textContent = state.stoppingSubagent === agent.session_id ? "Stopping…" : "Stop agent";
+    updateSubagentEntries(agent, details);
+  }
+  for (const stale of existing.values()) stale.remove();
+}
+
+function updateSubagentEntries(agent, details) {
+  const body = details.querySelector(".subagent-body");
+  const entries = details.querySelector(".subagent-entries");
+  const following = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  const start = agent.entry_start_index ?? 0;
+  const loaded = details.loadedEntries || new Map();
+  if (details.totalEntries > (agent.total_entries ?? Infinity)) loaded.clear();
+  agent.entries_markdown.forEach((text, index) => loaded.set(start + index, text));
+  details.loadedEntries = loaded; details.totalEntries = agent.total_entries;
+  const nodes = new Map([...entries.children].map((node) => [Number(node.dataset.entryIndex), node]));
+  for (const [index, markdown] of [...loaded].sort((a, b) => a[0] - b[0])) {
+    let node = nodes.get(index);
+    if (!node || node.entryMarkdown !== markdown) {
+      const replacement = makeEntry(markdown, index); replacement.dataset.entryIndex = index; replacement.entryMarkdown = markdown;
+      if (node) node.replaceWith(replacement); else entries.append(replacement);
+    }
+    nodes.delete(index);
+  }
+  for (const stale of nodes.values()) stale.remove();
+  // Prepending history must preserve order without moving unchanged nodes on live updates.
+  const ordered = [...entries.children].sort((a, b) => Number(a.dataset.entryIndex) - Number(b.dataset.entryIndex));
+  ordered.forEach((node, index) => { if (entries.children[index] !== node) entries.insertBefore(node, entries.children[index] || null); });
+  details.querySelector(".subagent-history").hidden = !state.capabilities.includes("thread.history") || !(Math.min(...loaded.keys()) > 0);
+  details.querySelector(".subagent-note").textContent = agent.entries_truncated && agent.entry_start_index == null ? "Earlier activity requires an updated desktop bridge." : !loaded.size ? "Waiting for this agent’s first update…" : "";
+  if (following && details.open) body.scrollTop = body.scrollHeight;
+}
+
+async function loadSubagentHistory(id, details) {
+  const scope = [targetScope(), state.instanceId, state.epoch, state.threadId].join("|");
+  const button = details.querySelector(".subagent-history"); if (button.disabled) return; button.disabled = true;
+  const before = Math.min(...details.loadedEntries.keys());
+  const body = details.querySelector(".subagent-body"); const height = body.scrollHeight; const top = body.scrollTop;
+  try {
+    const result = await rpc("thread.history", { ...baseThreadParams(), subagent_id: id, before_entry_index: before });
+    if (scope !== [targetScope(), state.instanceId, state.epoch, state.threadId].join("|") || !details.isConnected) return;
+    if (result.subagent_id !== id || result.thread_id !== state.threadId || !Array.isArray(result.entries_markdown) || !result.entries_markdown.every((entry) => typeof entry === "string") || !Number.isInteger(result.entry_start_index) || result.entry_start_index < 0 || result.entry_end_index !== before || result.entry_start_index + result.entries_markdown.length !== before) throw new Error("Child history belongs to another agent.");
+    updateSubagentEntries(result, details); body.scrollTop = top + body.scrollHeight - height;
+  } catch (error) { if (details.isConnected) notice(error.message); }
+  finally { button.disabled = false; }
 }
 
 async function cancelSubagent(agent) {
@@ -3557,10 +3584,11 @@ async function loadEarlierConversation() {
 async function snapshot() {
   if (!state.threadId) return;
   const threadId = state.threadId;
+  const snapshotScope = [targetScope(), state.instanceId, state.epoch, threadId].join("|");
   const params = { thread_id: threadId };
   if (state.renderedThreadId === threadId && state.renderedEntries.length) params.tail_entry_count = 16;
   const result = await rpc("thread.snapshot", params);
-  if (state.threadId !== threadId) return;
+  if (snapshotScope !== [targetScope(), state.instanceId, state.epoch, state.threadId].join("|")) return;
   identity(result);
   if (result.thread_id !== state.threadId || !Array.isArray(result.entries_markdown)
       || !result.entries_markdown.every((entry) => typeof entry === "string")) {
@@ -4506,3 +4534,7 @@ $("terminal-input").addEventListener("input", () => {
 
 $("action-recover").addEventListener("click", async () => { $("action-menu").classList.add("hidden"); await connect(); notice("Session refreshed. No commands or prompts were resent."); });
 $("action-clipboard").addEventListener("click", () => { $("action-menu").classList.add("hidden"); $("terminal-clipboard").click(); });
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") document.querySelectorAll(".subagent[open]").forEach((reader) => { reader.open = false; reader.querySelector("summary").focus(); });
+});

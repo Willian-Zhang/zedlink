@@ -24,12 +24,25 @@ def main():
     if os.environ.get('ZEDLINK_SLASH_ISOLATED_DISPLAY') != '1' or not os.environ.get('DISPLAY'):
         raise SystemExit('NOT RUN: use ZEDLINK_SLASH_ISOLATED_DISPLAY=1 under a new Xvfb display')
     markers = []
+    resumed_child = [None]
 
     class Handler(model.Handler):
         def do_POST(self):
             raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
             payload = json.loads(raw)
-            markers.append('isolated-skill-body-marker' in json.dumps(payload.get('messages', [])))
+            messages = payload.get('messages', [])
+            markers.append('isolated-skill-body-marker' in json.dumps(messages))
+            user_index = next((index for index in range(len(messages)-1, -1, -1) if messages[index].get('role') == 'user'), -1)
+            turn = messages[user_index:] if user_index >= 0 else []
+            if turn and 'NATIVE_CHILD_ROUND_TRIP' in json.dumps(turn[0]) and not any(message.get('role') == 'tool' for message in turn):
+                assert any(tool.get('function', {}).get('name') == 'spawn_agent' for tool in payload.get('tools', [])), 'Native profile must advertise spawn_agent'
+                arguments = {'label': 'Disposable child history check', 'message': 'Respond with a disposable child-history proof.'}
+                if resumed_child[0]: arguments['session_id'] = resumed_child[0]
+                self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.send_header('Connection', 'close'); self.end_headers()
+                chunks = [ {'choices': [{'index': 0, 'delta': {'tool_calls': [{'index': 0, 'id': 'disposable-' + uuid.uuid4().hex, 'type': 'function', 'function': {'name': 'spawn_agent', 'arguments': json.dumps(arguments)}}]}, 'finish_reason': None}]},
+                           {'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]} ]
+                for chunk in chunks: self.wfile.write(b'data: ' + json.dumps(chunk).encode() + b'\n\n')
+                self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush(); return
             self.rfile = io.BytesIO(raw)
             super().do_POST()
 
@@ -76,6 +89,11 @@ def main():
                         raise
                 thread = until(create)
                 identity = {**base, 'thread_id': thread}
+                parent_page = rpc(socket, 'thread.history', identity)
+                assert parent_page['thread_id'] == thread and parent_page.get('subagent_id') is None
+                try: rpc(socket, 'thread.history', {**identity, 'subagent_id': 'unrelated-child'})
+                except RuntimeError as error: assert 'SUBAGENT_NOT_FOUND' in str(error)
+                else: raise AssertionError('History escaped the exposed parent-child relationship')
                 commands = until(lambda: [row for row in rpc(socket, 'thread.commands', identity)['commands'] if row['category'] == 'skill'])
                 scoped = next(row for row in commands if row['name'].endswith(':review'))
                 assert 'Orbit Notes' in scoped['name'], 'Fixture must exercise a skill scope containing spaces'
@@ -94,6 +112,21 @@ def main():
                 assert len(markers) == count, 'Replay must not create another model request'
                 subprocess.run(['python3', str(ROOT / 'tools/test_native_browser_commands.py'),
                                 '--fixture-socket', socket, '--expected-thread-id', thread, '--command', scoped['name']], check=True)
+                rpc(socket, 'thread.send', {**identity, 'text': 'NATIVE_CHILD_ROUND_TRIP'})
+                def completed_child():
+                    snap = rpc(socket, 'thread.snapshot', {'thread_id': thread})
+                    return snap if snap['status'] == 'Idle' and snap.get('subagents') and snap['subagents'][0]['entries_markdown'] else None
+                child_snapshot = until(completed_child)
+                child = child_snapshot['subagents'][0]
+                child_page = rpc(socket, 'thread.history', {**identity, 'subagent_id': child['session_id'], 'before_entry_index': child['total_entries']})
+                assert child_page['subagent_id'] == child['session_id'] and child_page['thread_id'] == thread
+                assert child_page['entry_end_index'] == child['total_entries'] and child_page['entries_markdown']
+                resumed_child[0] = child['session_id']
+                old_total = child['total_entries']
+                rpc(socket, 'thread.send', {**identity, 'text': 'NATIVE_CHILD_ROUND_TRIP'})
+                child_snapshot = until(lambda: (snap if snap['subagents'][0]['total_entries'] > old_total else None) if (snap := completed_child()) else None)
+                assert len(child_snapshot['subagents']) == 1, 'Resuming one child must not duplicate its row or approvals'
+                print('PASS: actual native child history, parent-child scope and resumed-child deduplication')
                 settings['zedlink']['allow_session_creation'] = False
                 (profile / 'config/settings.json').write_text(json.dumps(settings))
                 until(lambda: 'thread.unexpose' not in rpc(socket, 'instance.info', {})['capabilities'])

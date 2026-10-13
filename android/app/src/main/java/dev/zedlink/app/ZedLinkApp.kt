@@ -474,6 +474,7 @@ private fun AgentProgress(status: String, canCancel: Boolean) {
 
 @Composable
 private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier: Modifier = Modifier) {
+    var selectedChildId by remember(snapshot.threadId) { mutableStateOf<String?>(null) }
     val list = rememberLazyListState()
     var rewindPoint by remember { mutableStateOf<NativeRewindPoint?>(null) }
     var following by remember(snapshot.threadId) { mutableStateOf(true) }
@@ -482,7 +483,7 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
             if (scrolling) following = !canScroll
         }
     }
-    LaunchedEffect(snapshot.lastSequence, following) {
+    LaunchedEffect(snapshot.entries, following) {
         if (following && snapshot.entries.isNotEmpty()) list.scrollToItem(maxOf(0, list.layoutInfo.totalItemsCount - 1))
     }
     Column(modifier.fillMaxWidth()) {
@@ -492,18 +493,21 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
                 Text("LOAD EARLIER CONVERSATION · ${snapshot.entryStartIndex} REMAINING", color = Muted)
             }
         }
-        items(snapshot.subagents, key = { "subagent:${it.id}" }) { subagent ->
-            var expanded by remember(subagent.id) { mutableStateOf(subagent.currentTurnId != null) }
-            Column(Modifier.fillMaxWidth().background(Surface).border(1.dp, Line).padding(12.dp)) {
-                Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
-                    Text("${subagent.title} · ${subagent.status}", modifier = Modifier.weight(1f))
-                    Text(if (expanded) "HIDE" else "VIEW", style = monoLabel())
+        if (snapshot.subagents.isNotEmpty()) item("child-heading") {
+            Text("PARALLEL AGENTS · ${snapshot.subagents.count { it.isActive }} ACTIVE", color = Muted, style = monoLabel(), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        }
+        items(snapshot.subagents, key = { "subagent:${it.id}" }) { child ->
+            val needsApproval = snapshot.approvals.any { it.subagentId == child.id }
+            Row(Modifier.fillMaxWidth().clickable { selectedChildId = child.id }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (needsApproval) { Icon(Icons.Default.Warning, contentDescription = "Approval needed", tint = Warning); Spacer(Modifier.width(10.dp)) }
+                else if (child.isActive) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(10.dp)) }
+                Column(Modifier.weight(1f)) {
+                    Text(child.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("${if (needsApproval) "Approval needed" else child.status} · ${if (child.totalEntries > 0) child.totalEntries else child.entries.size} entries", color = Muted, style = monoLabel())
                 }
-                if (expanded) {
-                    subagent.entries.forEach { Message(NativeEntry.parse(it), subagent.currentTurnId != null) }
-                    if (subagent.currentTurnId != null) TextButton(onClick = { model.cancelSubagent(subagent) }) { Text("STOP PARALLEL AGENT") }
-                }
+                Icon(Icons.Default.ChevronRight, contentDescription = "View agent activity")
             }
+            HorizontalDivider(color = Line)
         }
         itemsIndexed(snapshot.entries, key = { index, _ -> snapshot.entryStartIndex + index }) { index, markdown ->
             val absoluteIndex = snapshot.entryStartIndex + index
@@ -514,12 +518,15 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
                 }
             }
         }
-        items(snapshot.approvals, key = { it.id }) { ApprovalCard(it, model::respondApproval) }
+        items(snapshot.approvals, key = { "approval:${it.subagentId}:${it.turnId}:${it.id}" }) { ApprovalCard(it, model::respondApproval) }
         items(model.state.elicitations, key = { "elicitation:${it.id}" }) { ElicitationCard(it, model) }
         model.state.editReview?.let { review -> item("edit-review") { EditReviewCard(review, model) } }
         if (model.state.queuedMessages.isNotEmpty()) item("queue") { QueueCard(model.state.queuedMessages, model) }
     }
     if (!following) TextButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Latest ↓") }
+    }
+    selectedChildId?.let { id ->
+        SubagentReader(id, model) { selectedChildId = null }
     }
     rewindPoint?.let { point -> AlertDialog(
         onDismissRequest = { rewindPoint = null }, title = { Text("Rewind this conversation?") },
@@ -887,4 +894,41 @@ private fun terminalColor(hex: String): Color? = if (Regex("#[0-9a-fA-F]{6}").ma
         }
     }
 
+}
+
+@Composable
+private fun SubagentReader(childId: String, model: ZedLinkViewModel, dismiss: () -> Unit) {
+    val child = model.state.snapshot?.subagents?.firstOrNull { it.id == childId }
+    val list = rememberLazyListState()
+    var following by remember(childId) { mutableStateOf(true) }
+    LaunchedEffect(list) { snapshotFlow { list.isScrollInProgress to list.canScrollForward }.collect { (scrolling, canScroll) -> if (scrolling) following = !canScroll } }
+    LaunchedEffect(child?.entries, following) { if (following && list.layoutInfo.totalItemsCount > 0) list.scrollToItem(list.layoutInfo.totalItemsCount - 1) }
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Column(Modifier.fillMaxSize().background(Black).windowInsetsPadding(WindowInsets.safeDrawing)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = dismiss) { Text("← Back") }
+                Text(child?.title ?: "Agent unavailable", modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(child?.status.orEmpty(), color = Muted, style = monoLabel())
+            }
+            HorizontalDivider(color = Line)
+            if (child != null) {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list) {
+                    if (child.entryStartIndex > 0 && "thread.history" in model.state.capabilities) item("history") {
+                        TextButton(enabled = !model.loadingChildHistory, onClick = { following = false; model.loadEarlierSubagent(child.id) }) { Text(if (model.loadingChildHistory) "Loading…" else "Load earlier activity") }
+                    } else if (child.entriesTruncated) item("truncated") { Text("Earlier activity requires an updated desktop bridge.", color = Muted, modifier = Modifier.padding(16.dp)) }
+                    itemsIndexed(child.entries, key = { index, _ -> child.entryStartIndex + index }) { index, markdown ->
+                        Message(NativeEntry.parse(markdown), child.isActive && index == child.entries.lastIndex)
+                    }
+                    items(model.state.snapshot?.approvals?.filter { it.subagentId == childId }.orEmpty(), key = { "approval:${it.subagentId}:${it.turnId}:${it.id}" }) { ApprovalCard(it, model::respondApproval) }
+                    if (child.entries.isEmpty()) item("waiting") { Text("Waiting for the first activity…", color = Muted, modifier = Modifier.padding(16.dp)) }
+                }
+                if (!following) TextButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Latest ↓") }
+                HorizontalDivider(color = Line)
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = { model.setDraft("Use the native spawn_agent tool with session_id \"${child.id}\" to continue this existing child agent. Return its result in this conversation:\n\nTask: "); dismiss() }) { Text("Continue agent") }
+                    if (child.currentTurnId != null && "subagent.cancel" in model.state.capabilities) TextButton(onClick = { model.cancelSubagent(child) }) { Text("Stop agent", color = Warning) }
+                }
+            } else Spacer(Modifier.weight(1f))
+        }
+    }
 }

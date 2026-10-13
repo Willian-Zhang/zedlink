@@ -124,8 +124,11 @@ def main():
                     card.click()
                 assert any(card.get_attribute("data-thread-id") == args.expected_thread_id for card in browser.find_elements(By.CSS_SELECTOR, ".thread-item.active"))
                 wait.until(lambda driver: driver.find_element(By.ID, "prompt").is_enabled())
-                browser.find_element(By.ID, "show-actions").click()
-                browser.find_element(By.ID, "action-commands").click()
+                def open_command_menu(driver):
+                    button = driver.find_element(By.ID, "action-commands")
+                    if not button.is_displayed(): driver.find_element(By.ID, "show-actions").click()
+                    return button if button.is_displayed() else None
+                wait.until(open_command_menu).click()
                 command_button = wait.until(lambda driver: next((button for button in driver.find_elements(By.CSS_SELECTOR, ".command-option")
                                              if button.find_element(By.TAG_NAME, "strong").get_attribute("textContent") == "/" + args.command), None))
                 command_button.click()

@@ -78,7 +78,7 @@ class ProbeFixture:
              "status": "Generating", "current_turn_id": 31,
              "message_start_index": 0, "message_end_index": None,
              "entries_markdown": ["## Assistant\n\n<thinking>\nChecking concurrent gateway behavior\n</thinking>\n\nReviewing the transport fixture.\n\n"],
-             "entries_truncated": False,
+             "entries_truncated": True, "entry_start_index": 1, "total_entries": 2,
              "pending_approvals": [{"approval_id": "child-approval", "turn_id": 31,
                                       "subagent_id": "fixture-child-running", "tool_name": "terminal",
                                       "display": "Save modified fixture", "raw_input": {"path": "fixture.txt"},
@@ -211,14 +211,20 @@ class ProbeFixture:
                               "subagents": list(self.subagents),
                               "last_sequence": self.sequence}
                 elif method == "thread.history":
-                    before = params.get("before_entry_index", len(self.entries))
+                    history = self.entries
+                    if params.get("subagent_id"):
+                        child = next((item for item in self.subagents if item["session_id"] == params["subagent_id"]), None)
+                        if child is None:
+                            raise AssertionError("Fixture child does not exist")
+                        history = ["## Assistant\n\nEarlier child activity.\n\n"] + child["entries_markdown"]
+                    before = params.get("before_entry_index", len(history))
                     page_size = self.transcript_page_size or 128
                     start = max(0, before - page_size)
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
-                              "thread_id": params["thread_id"],
-                              "entries_markdown": list(self.entries[start:before]),
+                              "thread_id": params["thread_id"], "subagent_id": params.get("subagent_id"),
+                              "entries_markdown": list(history[start:before]),
                               "entry_start_index": start, "entry_end_index": before,
-                              "total_entries": len(self.entries), "has_older_entries": start > 0,
+                              "total_entries": len(history), "has_older_entries": start > 0,
                               "last_sequence": self.sequence}
                 elif method == "thread.events":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
@@ -940,7 +946,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.13.15"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.13.16"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1008,16 +1014,33 @@ def main():
                 wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, "#subagents .subagent")) == 2)
                 assert "2 total" in browser.find_element(By.CSS_SELECTOR, ".subagents-head").text
                 assert "Checking concurrent gateway behavior" in browser.find_element(By.ID, "subagents").get_attribute("textContent")
+                assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") is None
+                browser.find_element(By.CSS_SELECTOR, ".subagent.active summary").click()
                 assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") == "true"
+                browser.execute_script("window.childReader = document.querySelector('.subagent.active'); window.childEntry = window.childReader.querySelector('.subagent-entries').firstElementChild;")
+                browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-history").click()
+                wait.until(lambda driver: "Earlier child activity" in driver.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-entries").text)
+                time.sleep(3.5)
+                assert browser.execute_script("return window.childReader === document.querySelector('.subagent.active') && window.childEntry === window.childReader.querySelector('.subagent-entries').lastElementChild && window.childReader.open;")
+                browser.execute_script("window.childHistoryEntry = window.childReader.querySelector('.subagent-entries').firstElementChild;")
+                probe.subagents[0]["entries_markdown"][0] += "Streaming child update.\n"
+                probe.subagents.append(dict(probe.subagents[0]))
+                wait.until(lambda driver: "Streaming child update" in driver.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-entries").text)
+                assert len(browser.find_elements(By.CSS_SELECTOR, "#subagents .subagent")) == 2
+                assert browser.execute_script("return window.childReader === document.querySelector('.subagent.active') && window.childHistoryEntry === window.childReader.querySelector('.subagent-entries').firstElementChild && window.childReader.open;")
+                probe.subagents.pop()
+                browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-controls button").click()
                 assert "parallel agent" in browser.find_element(By.ID, "approvals").text.casefold()
                 assert "Save modified fixture" in browser.find_element(By.ID, "approvals").text
                 browser.find_element(By.CSS_SELECTOR, "#approvals .primary").click()
                 wait.until(lambda driver: probe.approval_decisions == 1)
                 assert probe.approval_responses[-1]["option_id"] == "save"
                 assert "decision" not in probe.approval_responses[-1]
+                browser.find_element(By.CSS_SELECTOR, ".subagent.active summary").click()
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active .subagent-stop").click()
                 wait.until(lambda driver: probe.subagent_cancellations == 1)
                 wait.until(lambda driver: not driver.find_elements(By.CSS_SELECTOR, ".subagent.active"))
+                browser.find_element(By.CSS_SELECTOR, ".subagent[open] .subagent-controls button").click()
                 probe.elicitations = [{"elicitation_id": "fixture-input", "status": "pending", "request": {
                     "message": "Choose a release channel", "mode": "form",
                     "requestedSchema": {"type": "object", "required": ["channel"],
