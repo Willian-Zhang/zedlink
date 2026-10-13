@@ -7,13 +7,8 @@ final class OnboardingUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["settings-tab"].waitForExistence(timeout: 10))
         app.buttons["settings-tab"].tap()
-        XCTAssertTrue(app.buttons["Enable local approval alerts"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Open iPhone notification settings"].exists)
-        for _ in 0..<4 {
-            if app.staticTexts["Appearance"].exists { break }
-            app.swipeUp()
-        }
-        XCTAssertTrue(app.staticTexts["Appearance"].exists)
+        XCTAssertTrue(app.staticTexts["Appearance"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Notifications"].exists || app.staticTexts["Notifications"].exists)
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = "Light-settings-flat-navigation"; image.lifetime = .keepAlways; add(image)
     }
@@ -50,6 +45,7 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Use pairing link from clipboard"].exists)
         XCTAssertTrue(app.textFields["gateway-endpoint"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["test-connection"].exists)
+        app.buttons["Gateway identity"].tap()
         XCTAssertTrue(app.textFields["expected-gateway-id"].exists)
         for _ in 0..<4 {
             if app.buttons["pair-and-save"].exists { break }
@@ -58,4 +54,21 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.secureTextFields["pairing-code"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["pair-and-save"].exists)
     }
+    /// Run only in an isolated simulator profile; never sends a pairing/network request.
+    func testConnectionDraftSurvivesClosingAndChangingTabs() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--zedlink-demo"]
+        app.launch()
+        app.buttons["connections-tab"].tap()
+        app.buttons["add-connection"].tap()
+        let endpoint = app.textFields["gateway-endpoint"]
+        XCTAssertTrue(endpoint.waitForExistence(timeout: 5))
+        endpoint.tap(); endpoint.typeText("https://demo.invalid")
+        app.buttons["Close"].tap()
+        app.buttons["settings-tab"].tap()
+        app.buttons["connections-tab"].tap()
+        app.buttons["add-connection"].tap()
+        XCTAssertEqual(app.textFields["gateway-endpoint"].value as? String, "https://demo.invalid")
+    }
+
 }

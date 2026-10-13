@@ -51,7 +51,7 @@ import Combine
     private var diffRequest = UUID()
     private var workspaceRequest = UUID()
     private var searchRequest = UUID()
-    var operationScope: [String] { [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID ?? ""] }
+    var operationScope: [String] { [generation.uuidString, profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID ?? ""] }
     func clearIssue() { issue = "" }
     func reportIssue(_ message: String) { issue = message }
     func addImage(_ data: Data) {
@@ -126,7 +126,7 @@ import Combine
     }
 
     func connect(_ nextProfile: ConnectionProfile, target requestedTargetID: String? = nil) async {
-        let sameProfile = profile?.id == nextProfile.id
+        let sameProfile = profile?.gatewayID.caseInsensitiveCompare(nextProfile.gatewayID) == .orderedSame
         let previousThread = sameProfile ? selectedThreadID : nil
         let previousPending = sameProfile ? pending : nil
         let previousTarget = sameProfile ? targetID : nil
@@ -142,9 +142,12 @@ import Combine
             guard let token = await CredentialVault.shared.read(nextProfile) else {
                 throw GatewayFailure.native("Pair this device first.")
             }
+            guard current == generation else { return }
             let discoveryClient = GatewayClient(profile: nextProfile, token: token)
             try await discoveryClient.verifyIdentity()
+            guard current == generation else { return }
             let registry = try await discoveryClient.rpc("instance.list")
+            guard current == generation else { return }
             guard let rows = registry["targets"] as? [[String: Any]], !rows.isEmpty else {
                 throw GatewayFailure.native("This gateway has no configured Zed targets.")
             }
@@ -180,10 +183,16 @@ import Combine
                 // Persisted identity alone intentionally cannot reconstruct that payload.
                 pending = previousPending
             }
+            if let previousPending, selectedTarget.id == previousTarget {
+                pending = previousPending
+                persistPending(for: nextProfile)
+                delivery = "Delivery unknown. Reconcile before retrying; the request was not resent."
+            }
             try await loadThreads()
+            guard current == generation else { return }
             if let previousThread, threads.contains(where: { $0.id == previousThread }) {
                 selectedThreadID = previousThread
-                if operationScope == previousScope {
+                if Array(operationScope.dropFirst(2)) == Array(previousScope.dropFirst(2)) {
                     attachments = previousAttachments
                     contextPaths = previousContextPaths
                 }

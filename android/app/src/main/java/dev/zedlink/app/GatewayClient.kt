@@ -19,14 +19,14 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
     suspend fun gatewayId(): String = request("/v1/gateway").getString("gateway_id")
 
     suspend fun verifyIdentity() {
-        if (gatewayId() != profile.gatewayId) throw GatewayException("Gateway identity changed. Pair this address again.")
+        if (!gatewayId().equals(profile.gatewayId, ignoreCase = true)) throw GatewayException("Gateway identity changed. Pair this address again.")
     }
 
     suspend fun pair(code: String, deviceName: String): Pair<String, String> {
         verifyIdentity()
         val body = JSONObject().put("code", code).put("device_name", deviceName)
         val result = request("/v1/pair", body)
-        if (result.optString("gateway_id") != profile.gatewayId) throw GatewayException("Pairing identity did not match.")
+        if (!result.optString("gateway_id").equals(profile.gatewayId, ignoreCase = true)) throw GatewayException("Pairing identity did not match.")
         val nextToken = result.optString("token")
         if (!nextToken.matches(Regex("[0-9a-f]{64}"))) throw GatewayException("Gateway returned an invalid credential.")
         return result.getString("device_id") to nextToken
@@ -67,6 +67,7 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
     }
 
     private suspend fun request(path: String, body: JSONObject? = null, authorized: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
+        ConnectionLinks.endpoint(origin)
         val url = URL(origin + path)
         if (url.protocol != "https") throw GatewayException("ZedLink requires a trusted HTTPS address.")
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -108,18 +109,7 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
     }
 
     companion object {
-        fun profileFromPairingLink(text: String): Pair<ConnectionProfile, String?> {
-            val uri = URI(text.trim())
-            if (uri.scheme != "https" || uri.host.isNullOrBlank()) throw GatewayException("Paste the trusted HTTPS pairing link.")
-            val fragment = uri.rawFragment.orEmpty().split('&').mapNotNull {
-                val parts = it.split('=', limit = 2)
-                if (parts.size == 2) java.net.URLDecoder.decode(parts[0], "UTF-8") to java.net.URLDecoder.decode(parts[1], "UTF-8") else null
-            }.toMap()
-            val gateway = fragment["gateway"].orEmpty()
-            if (gateway.isBlank()) throw GatewayException("Pairing link has no gateway identity.")
-            val port = if (uri.port == -1) "" else ":${uri.port}"
-            return ConnectionProfile("My Zed", "https://${uri.host}$port", gateway) to fragment["pair"]
-        }
+        fun profileFromPairingLink(text: String): Pair<ConnectionProfile, String?> = ConnectionLinks.parse(text)
 
         private fun apiMessage(code: String): String = when (code) {
             "UNAUTHENTICATED" -> "Device credential was revoked. Pair again."

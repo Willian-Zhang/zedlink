@@ -161,3 +161,31 @@ Use isolated profiles and disposable projects:
 6. Scroll Settings on a small device with large text. Reach all controls without endpoint overflow or navigation obscuring content.
 
 APNs/FCM delivery, watch mirroring, actual approval notifications and physical same-thread round trips remain separate acceptance gates.
+
+## Native Connections refactor (October 13, 2026)
+
+Connections now separates **Saved connections**, the selected connection's **Workspaces**, and **Add connection**. Tap a saved row for connect/reconnect, editing, address/identity details and removal. Rows show the user-selected route category and observed state only for the active profile; other saved profiles are not labeled online without a check. Route selection does not control another VPN app.
+
+Pairing is a dedicated screen: Scan QR or Paste pairing link, check HTTPS and expected gateway identity, then explicitly Pair and save. Scanning no longer automatically submits a pairing code. Advanced identity fields expand on demand. A credential for an already paired gateway can be reused for an explicitly added address after verifying that address's gateway identity. Editing a saved address cannot change its gateway identity.
+
+Pairing drafts survive tab navigation and scanner cancellation/failure in memory. Codes are masked, never logged or saved to preferences, and cleared after a successful save. They do not survive process termination. A successful pair saves access even when desktop Zed is unavailable; inspect the saved connection's diagnostic rather than pairing repeatedly.
+
+Android now persists profile IDs and route categories and retains multiple addresses for one gateway. Existing profiles without IDs load with a deterministic legacy ID; the previous active-gateway preference remains a migration fallback. Active selection is saved by profile ID, while credentials and workspace preference remain gateway-scoped. Reconnect selects the chosen address rather than silently keeping the prior endpoint. Android currently accepts gateway origin addresses only, with no proxy path prefix; unsupported prefixed addresses are rejected explicitly.
+
+Removing a saved connection removes only that profile/address. Other addresses retain the shared gateway credential; the last address removes its local credential. The Settings **Remove local access** action still removes all addresses and the credential for that gateway, with its own confirmation. Neither action revokes the remote device record or stops desktop Zed.
+
+Connection attempts and reads discard obsolete results after route/workspace changes. Repeated attempts are blocked while connecting or pairing. iOS retains uncertain sends when explicitly switching addresses of the same gateway and does not resubmit them automatically. This does not establish physical recovery or native runtime validation for the new revision.
+
+### Additional device acceptance
+
+1. Pair in a disposable profile, then add a second private address for the same gateway. Verify both rows remain, share authorization, and select the intended endpoint after relaunch.
+2. Edit one address/name/route category, check identity and save. Verify another gateway's certificate/identity never receives the saved credential. Test HTTPS failure, DNS failure, revoked pairing and unavailable desktop Zed separately.
+3. Enter a draft, close Add connection, switch tabs and reopen. Cancel camera scanning and paste an invalid link. Verify draft values remain and no pairing request is sent merely by scanning/testing.
+4. Double-tap Connect/Test/Pair; switch/reconnect after a slow response and remove access during an outstanding connection attempt. Confirm old responses cannot restore a removed connection or populate a different workspace.
+5. Remove one of two addresses and reconnect through the other. Remove the last address and verify pairing is required. Cancel both removal confirmations and verify no profiles/credentials change.
+6. Inspect small screens, landscape, large text, both appearances, VoiceOver/TalkBack and keyboard in pairing/details screens. Reach Back/Close and every input without overflow.
+7. Interrupt connectivity during a pending prompt, explicitly change private routes to the same gateway, and reconcile the original request. Confirm one native turn and no automatic duplicate send. Test gateway/Zed restarts separately.
+
+Local Kotlin policy/regression tests pass (18 tests total, including four new connection tests); Swift and changed Kotlin syntax checks pass. Native iOS/Android compilation, updated XCTest, camera/scanner, migration/credential storage and physical route switching are **NOT RUN** on this Linux host. No hosted Actions were dispatched.
+
+Also verify a Zed restart between pages: Android must discard the old indexed transcript before reading the new epoch. An explicit retry must remain bound to its original gateway/workspace/instance/epoch/thread and original context paths; it must not submit to a newly restarted instance. This source guard is not a completed native idempotency test.

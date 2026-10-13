@@ -8,6 +8,7 @@ import SwiftUI
     @AppStorage("zedlink.appearance") private var appearance = "dark"
     @State private var selectedTab = 0
     @State private var sessionsPath: [String] = []
+    @State private var connectionDraft = ConnectionDraft()
 
     private var preferredColorScheme: ColorScheme? {
         switch appearance {
@@ -21,7 +22,7 @@ import SwiftUI
         WindowGroup {
             Group {
                 switch selectedTab {
-                case 1: ConnectionsView()
+                case 1: ConnectionsView(draft: $connectionDraft)
                 case 2: SettingsView()
                 default: SessionsView(navigationPath: $sessionsPath)
                 }

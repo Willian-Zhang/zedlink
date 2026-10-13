@@ -4,6 +4,8 @@ data class ConnectionProfile(
     val name: String,
     val endpoint: String,
     val gatewayId: String,
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val route: String = "Private HTTPS",
 )
 
 data class ZedTarget(val id: String, val label: String, val available: Boolean)
