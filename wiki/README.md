@@ -11,6 +11,7 @@ This guide contains the detailed setup, operation, networking, security, develop
 
 ## Reference
 
+- [Agent commands](Agent-Commands.md)
 - [Troubleshooting](Troubleshooting.md)
 - [Security](Security.md)
 - [Development and testing](Development-and-Testing.md)

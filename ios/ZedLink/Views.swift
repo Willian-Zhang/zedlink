@@ -205,6 +205,7 @@ struct ConversationView: View {
     @State private var showingContext = false
     @State private var reviewExpanded = false
     @State private var showingModelControls = false
+    @State private var dismissedSlashDraft = ""
     @State private var followsConversation = true
     @State private var scrollHeight: CGFloat = 0
     @State private var userScrolling = false
@@ -234,6 +235,10 @@ struct ConversationView: View {
         .onDisappear { composerFocused = false }
         .sheet(isPresented: $showingCommands) { CommandPicker() }
         .sheet(isPresented: $showingModelControls) { SessionModelControls() }
+        .confirmationDialog("Run desktop action?", isPresented: Binding(get: { session.localCommandConfirmation != nil }, set: { if !$0 { session.localCommandConfirmation = nil } })) {
+            Button("Run /" + (session.localCommandConfirmation?.name ?? "")) { Task { await session.confirmLocalCommand() } }
+        } message: { Text(session.localCommandConfirmation?.confirmation ?? "Confirm this desktop action.") }
+        .onChange(of: session.localExposureStopped) { _, stopped in if stopped { dismiss() } }
         .sheet(isPresented: $showingContext) { NativeContextSheet() }
         .confirmationDialog("Clear uncertain delivery?", isPresented: $showingClearConfirmation) {
             Button("Clear locally", role: .destructive) { session.clearPending() }
@@ -441,6 +446,11 @@ struct ConversationView: View {
                     .lineLimit(2).accessibilityIdentifier("delivery-status")
             }
             if session.pending != nil { uncertainDelivery }
+            if session.draft.hasPrefix("/"), session.draft != dismissedSlashDraft, !session.draft.contains(where: { $0.isWhitespace }) {
+                NativeSlashSuggestions(commands: session.commands, query: String(session.draft.dropFirst())) { command in
+                    session.insertCommand(command); dismissedSlashDraft = session.draft
+                }.task { await session.refreshCommands() }
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 Button { composerFocused = false; showingCommands = true } label: {
                     Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
@@ -1008,6 +1018,8 @@ private struct CommandPicker: View {
                                     Text(command.category.uppercased()).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
                                 }
                                 Text(command.description).font(.footnote).foregroundStyle(.secondary)
+                                if let hint = command.inputHint { Text(hint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted) }
+                                if let warning = command.warning { Text(warning).font(.caption).foregroundStyle(ZLTheme.warning) }
                             }
                             .padding(.vertical, 4)
                         }
@@ -1016,7 +1028,8 @@ private struct CommandPicker: View {
                 }
             }
             .listStyle(.plain).scrollContentBackground(.hidden).background(ZLTheme.background)
-            .searchable(text: $search, prompt: "Search Zed commands")
+            .searchable(text: $search, prompt: "Search commands and skills")
+            .task { await session.refreshCommands() }
             .task(id: photo) {
                 guard let photo else { return }
                 loadingPhoto = true; defer { loadingPhoto = false }

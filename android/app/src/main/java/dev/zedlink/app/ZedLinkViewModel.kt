@@ -33,6 +33,7 @@ data class AppState(
     val selectedThreadId: String? = null,
     val snapshot: ThreadSnapshot? = null,
     val commands: List<NativeCommand> = emptyList(),
+    val localConfirmation: NativeCommand? = null,
     val createAgents: List<AgentOption> = emptyList(),
     val creatingThread: Boolean = false,
     val capabilities: Set<String> = emptySet(),
@@ -97,6 +98,10 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private var pendingText: String? = null
     private var pendingScope: List<String?>? = null
     private var pendingContextPaths: Set<String> = emptySet()
+    private var pendingLocalConfirmed = false
+    private var localConfirmationScope: List<String?>? = null
+    private var localConfirmationText = ""
+    private var lastCommandsRefresh = 0L
     private val preferences = application.getSharedPreferences("zedlink-profile", 0)
 
     init {
@@ -355,13 +360,27 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun prepareSubagentTask() = setDraft("Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ")
 
-    fun send() = viewModelScope.launch {
+    fun dismissLocalCommand() { state = state.copy(localConfirmation = null) }
+    fun confirmLocalCommand() {
+        if (state.localConfirmation == null || state.draft.trim() != localConfirmationText || localConfirmationScope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) { dismissLocalCommand(); return }
+        dismissLocalCommand(); send(localConfirmed = true)
+    }
+
+    fun send(localConfirmed: Boolean = false) = viewModelScope.launch {
         val text = state.draft.trim()
         val threadId = state.selectedThreadId ?: return@launch
         val instance = state.instanceId ?: return@launch
         val epoch = state.epoch ?: return@launch
         val activeClient = client ?: return@launch
-        if (text.isEmpty() || state.sending) return@launch
+        if (text.isEmpty() || state.sending || !state.live) return@launch
+        val command = state.commands.firstOrNull { "/${it.name}" == text && it.execution == "local" }
+        if (command != null && !localConfirmed) {
+            localConfirmationText = text
+            localConfirmationScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
+            state = state.copy(localConfirmation = command); return@launch
+        }
+        if (command != null && state.contextPaths.isNotEmpty()) { state = state.copy(issue = "Run local commands without attachments."); return@launch }
+        pendingLocalConfirmed = localConfirmed
         pendingId = UUID.randomUUID().toString(); pendingText = text
         pendingScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
         pendingContextPaths = state.contextPaths.toSet()
@@ -369,11 +388,15 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         try {
             val result = activeClient.rpc("thread.send", JSONObject()
                 .put("instance_id", instance).put("epoch", epoch).put("thread_id", threadId).put("text", text)
-                .put("context_paths", JSONArray(state.contextPaths.toList())), pendingId!!)
+                .apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, pendingId!!)
             pendingId = null; pendingText = null
             setDraft("")
             state = state.copy(sending = false, contextPaths = emptySet(), delivery = if (result.optString("outcome") == "queued")
                 "Queued in desktop Zed." else "Received by desktop Zed. Watching native progress.")
+            if (result.optString("outcome") == "local_completed" || result.optString("outcome") == "desktop_review_required") {
+                state = state.copy(delivery = if (text == "/not-helpful") "Complete the feedback form in desktop Zed." else "Desktop action completed.")
+                if (text == "/remote-control") { closeThread(); loadThreads(); return@launch }
+            }
             loadSnapshot(threadId)
         } catch (error: Exception) {
             state = state.copy(sending = false, delivery = "Delivery unknown: ${error.message}. Check desktop Zed before retrying.")
@@ -394,7 +417,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         state = state.copy(sending = true)
         try {
             activeClient.rpc("thread.send", JSONObject().put("instance_id", instance).put("epoch", epoch)
-                .put("thread_id", threadId).put("text", text).put("context_paths", JSONArray(pendingContextPaths.toList())), id)
+                .put("thread_id", threadId).put("text", text).apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, id)
             pendingId = null; pendingText = null
             setDraft("")
             state = state.copy(sending = false, delivery = "Request reached desktop Zed.")
@@ -494,6 +517,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     }
                     if (eventRows.isNotEmpty() || state.snapshot?.isBusy == true) loadSnapshot(selected)
                 }
+                if (state.selectedThreadId != null && System.currentTimeMillis() - lastCommandsRefresh >= 5000) loadCommands(state.selectedThreadId!!)
                 if (generation != connectionGeneration) return
                 state = state.copy(live = true, status = "Connected to Zed", issue = "")
             } catch (error: Exception) {
@@ -616,6 +640,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun loadAuxiliaryState(id: String) {
+        if (System.currentTimeMillis() - lastCommandsRefresh >= 5000) loadCommands(id)
         val activeClient = client ?: return
         val scope = listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, id)
         fun current() = scope == listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
@@ -675,7 +700,10 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 result.optJSONArray("models").objects().mapNotNull { row ->
                     val modelId = row.optString("id"); val providerId = row.optString("provider_id")
                     if (modelId.isBlank() || providerId.isBlank()) null else NativeModelOption("$providerId\n$modelId", modelId, providerId, row.optString("name", modelId))
-                }, usage?.optInt("used_tokens"), usage?.optInt("max_tokens"))
+                }, usage?.optInt("used_tokens"), usage?.optInt("max_tokens"),
+                result.optString("profile_id").takeIf { it.isNotBlank() && it != "null" }, result.optJSONArray("profiles").objects().mapNotNull { row ->
+                    val profileId = row.optString("id"); if (profileId.isBlank()) null else NativeAgentProfile(profileId, row.optString("name", profileId))
+                }, if (result.isNull("thinking_enabled")) null else result.optBoolean("thinking_enabled"), result.optBoolean("thinking_supported"), result.optBoolean("thinking_can_disable"))
         }
         if (current()) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review, threadSettings = settings)
     }
@@ -730,17 +758,26 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
     }
 
-    fun selectModel(option: NativeModelOption) = viewModelScope.launch {
+    fun selectModel(option: NativeModelOption) = updateAgentSettings(modelOption = option)
+
+    fun updateAgentSettings(modelOption: NativeModelOption? = null, profileId: String? = null, thinking: Boolean? = null) = viewModelScope.launch {
         val threadId = state.selectedThreadId ?: return@launch
         val frozenClient = client ?: return@launch
         if (!state.live || state.snapshot?.threadId != threadId || state.snapshot?.status != "Idle" || state.updatingModel ||
-            "thread.settings.update" !in state.capabilities || state.threadSettings?.models?.contains(option) != true) return@launch
+            "thread.settings.update" !in state.capabilities) return@launch
+        val settings = state.threadSettings ?: return@launch
+        if (modelOption != null && modelOption !in settings.models) return@launch
+        if (profileId != null && settings.profiles.none { it.id == profileId }) return@launch
+        if (thinking != null && (!settings.thinkingSupported || (!thinking && !settings.thinkingCanDisable))) return@launch
         val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, threadId)
         fun current() = scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
         state = state.copy(updatingModel = true)
         try {
             frozenClient.rpc("thread.settings.update", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3])
-                .put("thread_id", threadId).put("provider_id", option.providerId).put("model_id", option.modelId))
+                .put("thread_id", threadId).apply {
+                    modelOption?.let { put("provider_id", it.providerId); put("model_id", it.modelId) }
+                    profileId?.let { put("profile_id", it) }; thinking?.let { put("thinking_enabled", it) }
+                })
             if (current()) loadAuxiliaryState(threadId)
         } catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty()) }
         finally { state = state.copy(updatingModel = false) }
@@ -951,15 +988,26 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         loadProjectContext()
     } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
 
+    fun refreshCommands() = viewModelScope.launch {
+        val id = state.selectedThreadId ?: return@launch
+        val scope = listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, id)
+        runCatching { loadCommands(id) }.onFailure {
+            if (scope == listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) state = state.copy(issue = it.message.orEmpty())
+        }
+    }
+
     private suspend fun loadCommands(id: String) {
         if ("thread.commands" !in state.capabilities) return
+        val scope = listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, id)
         val result = client!!.rpc("thread.commands", JSONObject().put("instance_id", state.instanceId)
             .put("epoch", state.epoch).put("thread_id", id))
-        if (state.selectedThreadId != id) return
+        if (scope != listOf(connectionGeneration, state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) return
+        lastCommandsRefresh = System.currentTimeMillis()
         state = state.copy(commands = result.optJSONArray("commands").objects().mapNotNull { row ->
             val name = row.optString("name"); if (name.isBlank()) null else NativeCommand(name,
                 row.optString("description", "Zed Agent command"), row.optString("category", "agent"),
-                row.optBoolean("requires_argument"))
+                row.optBoolean("requires_argument"), row.optString("input_hint").takeIf { it.isNotBlank() && it != "null" },
+                row.optString("execution", "prompt"), row.optString("confirmation").takeIf { it.isNotBlank() }, row.optString("warning").takeIf { it.isNotBlank() && it != "null" })
         }.sortedBy { it.name })
     }
 

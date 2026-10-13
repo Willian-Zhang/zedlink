@@ -5,6 +5,7 @@
 - [Connections and networking](Connections-and-Networking.md)
 - [Running and pairing](Running-and-Pairing.md)
 - [Everyday use](Everyday-Use.md)
+- [Agent commands](Agent-Commands.md)
 - [Troubleshooting](Troubleshooting.md)
 - [Security](Security.md)
 - [Development and testing](Development-and-Testing.md)

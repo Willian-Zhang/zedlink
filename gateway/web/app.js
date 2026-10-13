@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.14";
+const UI_BUILD = "2026.10.13.15";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -20,6 +20,7 @@ const state = {
   polling: false,
   live: false,
   pending: null,
+  lastCommandsAt: 0,
   activitySignature: null,
   activityCollapsed: false,
   activityBusy: false,
@@ -1413,6 +1414,7 @@ function renderThreads() {
       const activity = sessionActivity(thread);
       const row = document.createElement("div"); row.className = "session-row";
       const button = document.createElement("button"); button.type = "button";
+      button.dataset.threadId = thread.thread_id;
       button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${activity.running && state.live ? "running" : ""} ${activity.attention ? "error" : ""}`;
       const badge = document.createElement("span"); badge.className = "thread-badge"; badge.textContent = normalizeAgent(thread.agent).name.toLocaleUpperCase();
       const status = document.createElement("span"); status.className = `thread-status ${activity.running ? "busy" : ""} ${activity.attention ? "error" : ""}`;
@@ -1513,11 +1515,13 @@ async function selectThread(threadId) {
 async function loadCommands() {
   if (!state.capabilities.includes("thread.commands") || !state.threadId) return;
   const threadId = state.threadId;
+  const scope = [targetScope(), state.instanceId, state.epoch, threadId].join("|");
   const result = await rpc("thread.commands", {
     instance_id: state.instanceId, epoch: state.epoch, thread_id: threadId,
   });
   if (result.thread_id !== threadId || !Array.isArray(result.commands)) throw new Error("Invalid command list.");
-  if (state.threadId === threadId) {
+  if (scope === [targetScope(), state.instanceId, state.epoch, state.threadId].join("|")) {
+    state.lastCommandsAt = Date.now();
     state.commands = result.commands.filter((command) =>
       typeof command.name === "string" && typeof command.description === "string");
     renderCommands();
@@ -3048,6 +3052,14 @@ async function saveThreadSettings(event) {
   }
 }
 
+function resolveSlashCommand(commands, text) {
+  const input = text.trimStart().slice(1);
+  const matches = (name) => typeof name === "string" && input.startsWith(name) &&
+    (input.length === name.length || /\s/.test(input[name.length]));
+  return commands.filter((command) => matches(command.name)).sort((left, right) => right.name.length - left.name.length)[0]
+    || commands.find((command) => matches(command.bare_name));
+}
+
 function renderCommands() {
   const menu = $("command-menu");
   const query = $("prompt").value.trimStart();
@@ -3063,9 +3075,9 @@ function renderCommands() {
     const name = document.createElement("strong");
     name.textContent = `/${command.name}`;
     const description = document.createElement("span");
-    description.textContent = command.description;
+    description.textContent = [command.description, command.input_hint, command.warning].filter(Boolean).join(" · ");
     const category = document.createElement("small");
-    category.textContent = command.category === "native" ? "Zed" : command.category === "mcp" ? "MCP" : "Agent";
+    category.textContent = ({ native: "Zed", mcp: "MCP", skill: "Skill", local: "Action" })[command.category] || "Agent";
     button.append(name, description, category);
     button.addEventListener("click", () => {
       $("prompt").value = `/${command.name}${command.requires_argument ? " " : ""}`;
@@ -3733,6 +3745,7 @@ async function poll() {
         && !$("context-panel").classList.contains("hidden") && Date.now() - state.lastDebuggerSnapshotAt > 1500) {
       await loadDebugger();
     }
+    if (state.threadId && Date.now() - state.lastCommandsAt >= 5000) await loadCommands();
     if (state.pending) await reconcilePending();
     connection(state.eventSocket?.readyState === WebSocket.OPEN ? "Zed connected · live updates" : "Zed connected · polling", "online");
   } catch (error) {
@@ -3760,25 +3773,32 @@ async function sendPrompt(event) {
   if (!state.threadId || !state.token || state.pending) return;
   const text = $("prompt").value.trim();
   if (!text) return;
+  let localConfirmed = false;
   if (text.startsWith("/")) {
-    if (state.contextPaths.length || state.uploads.length) {
+    const name = text.slice(1).split(/\s/, 1)[0];
+    const command = resolveSlashCommand(state.commands, text);
+    if ((command?.category === "native" || command?.execution === "local") && (state.contextPaths.length || state.uploads.length)) {
       notice("Send attachments with a normal prompt, then run the slash command separately.");
       return;
     }
-    const name = text.slice(1).split(/\s/, 1)[0];
     if (!state.capabilities.includes("thread.commands")) {
       notice("This running Zed build cannot execute slash commands remotely yet. Restart the updated build and re-expose the thread.");
       return;
     }
-    if (!state.commands.some((command) => command.name === name)) {
+    if (!command) {
       notice(`/${name} is not available in this native Agent thread. Choose a command from the list.`);
       renderCommands();
       return;
     }
+    if (command.execution === "local") {
+      if (text !== `/${command.name}`) { notice("Run local commands without arguments."); return; }
+      if (!window.confirm(command.confirmation || "Confirm this desktop action.")) return;
+      localConfirmed = true;
+    }
   }
   $("command-menu").classList.add("hidden");
   const pending = { id: crypto.randomUUID(), instanceId: state.instanceId,
-    epoch: state.epoch, threadId: state.threadId, text,
+    epoch: state.epoch, threadId: state.threadId, text, localConfirmed,
     contextPaths: [...state.contextPaths], uploads: [...state.uploads] };
   state.pending = pending;
   savePending();
@@ -3792,6 +3812,7 @@ async function sendPending() {
     const result = await rpc("thread.send", {
       instance_id: pending.instanceId, epoch: pending.epoch,
       thread_id: pending.threadId, text: pending.text,
+      ...(pending.localConfirmed ? { local_confirmed: true } : {}),
       ...(pending.contextPaths?.length ? { context_paths: pending.contextPaths } : {}),
       ...(pending.uploads?.length ? { uploads: pending.uploads } : {}),
     }, pending.id);
@@ -3801,7 +3822,10 @@ async function sendPending() {
     state.contextPaths = [];
     state.uploads = [];
     renderAttachmentStrip();
-    settledDelivery(result.outcome === "queued"
+    if (result.outcome === "local_completed" || result.outcome === "desktop_review_required") {
+      settledDelivery(result.outcome === "desktop_review_required" ? "Complete the feedback form in desktop Zed." : "Desktop action completed.");
+      if (pending.text === "/remote-control") { closeEventStream(); await loadThreads(); showMobileView("sessions"); return; }
+    } else settledDelivery(result.outcome === "queued"
       ? "Queued in desktop Zed."
       : "Request reached Zed. Watch the native conversation for execution.");
   } catch (error) {
@@ -3944,6 +3968,10 @@ $("action-commands").addEventListener("click", () => {
   $("prompt").value = "/";
   $("prompt").focus();
   renderCommands();
+  const scope = [targetScope(), state.instanceId, state.epoch, state.threadId].join("|");
+  loadCommands().catch((error) => {
+    if (scope === [targetScope(), state.instanceId, state.epoch, state.threadId].join("|")) notice(error.message);
+  });
 });
 $("action-delegate").addEventListener("click", () => {
   if (!state.threadId) return;

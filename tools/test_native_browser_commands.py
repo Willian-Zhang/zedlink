@@ -40,6 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture-socket", required=True, type=Path)
     parser.add_argument("--expected-thread-id", required=True)
+    parser.add_argument("--command", default="compact", help="Advertised prompt command in the isolated fixture; local feedback actions are forbidden")
     args = parser.parse_args()
     if not str(args.fixture_socket).startswith("/tmp/"):
         parser.error("this test only accepts a disposable socket under /tmp")
@@ -51,8 +52,10 @@ def main():
     identity = {"instance_id": listing["instance_id"], "epoch": listing["epoch"],
                 "thread_id": args.expected_thread_id}
     commands = probe(args.fixture_socket, "thread.commands", identity)["commands"]
-    if not any(command["name"] == "compact" and command["category"] == "native" for command in commands):
-        parser.error("the fixture native thread does not advertise /compact")
+    selected_command = next((command for command in commands if command["name"] == args.command), None)
+    if selected_command is None or selected_command.get("execution") == "local":
+        parser.error("choose an advertised prompt command; this fixture never sends external feedback")
+    is_compact = args.command == "compact"
     initial = probe(args.fixture_socket, "thread.snapshot", {"thread_id": args.expected_thread_id})
     probe(args.fixture_socket, "thread.send", {**identity,
           "text": "Disposable browser command setup: reply with one short sentence."})
@@ -66,7 +69,7 @@ def main():
     else:
         raise AssertionError("fixture preparation did not finish a native Agent turn")
     before = probe(args.fixture_socket, "thread.snapshot", {"thread_id": args.expected_thread_id})
-    before_count = sum("## Context Compaction" in entry for entry in before["entries_markdown"])
+    before_count = sum(("## Context Compaction" in entry if is_compact else entry.startswith("## User")) for entry in before["entries_markdown"])
     with tempfile.TemporaryDirectory(prefix="zedlink-native-browser.") as temporary:
         root = Path(temporary)
         cert, key, state = root / "cert.pem", root / "key.pem", root / "state"
@@ -113,36 +116,38 @@ def main():
                                        f"zedlink.token.{gateway_id}", token)
                 browser.refresh()
                 wait = WebDriverWait(browser, 20)
-                wait.until(lambda driver: driver.find_element(By.ID, "sessions-panel").is_displayed())
-                cards = browser.find_elements(By.CSS_SELECTOR, ".thread-item")
-                card = next((candidate for candidate in cards
-                             if candidate.find_element(By.TAG_NAME, "strong").text == selected["title"]), None)
-                if card is None:
-                    raise AssertionError("selected native thread missing from paired browser")
-                card.click()
+                wait.until(lambda driver: driver.find_element(By.ID, "prompt").is_enabled())
+                if not any(card.get_attribute("data-thread-id") == args.expected_thread_id for card in browser.find_elements(By.CSS_SELECTOR, ".thread-item.active")):
+                    if browser.find_element(By.ID, "back-sessions").is_displayed(): browser.find_element(By.ID, "back-sessions").click()
+                    card = wait.until(lambda driver: next((candidate for candidate in driver.find_elements(By.CSS_SELECTOR, ".thread-item")
+                                      if candidate.get_attribute("data-thread-id") == args.expected_thread_id and candidate.is_displayed()), None))
+                    card.click()
+                assert any(card.get_attribute("data-thread-id") == args.expected_thread_id for card in browser.find_elements(By.CSS_SELECTOR, ".thread-item.active"))
                 wait.until(lambda driver: driver.find_element(By.ID, "prompt").is_enabled())
                 browser.find_element(By.ID, "show-actions").click()
                 browser.find_element(By.ID, "action-commands").click()
-                wait.until(lambda driver: "/compact" in driver.find_element(By.ID, "command-menu").text)
-                browser.find_element(By.CSS_SELECTOR, ".command-option").click()
-                assert browser.find_element(By.ID, "prompt").get_attribute("value") == "/compact"
+                command_button = wait.until(lambda driver: next((button for button in driver.find_elements(By.CSS_SELECTOR, ".command-option")
+                                             if button.find_element(By.TAG_NAME, "strong").get_attribute("textContent") == "/" + args.command), None))
+                command_button.click()
+                assert browser.find_element(By.ID, "prompt").get_attribute("value").strip() == "/" + args.command
+                if not is_compact: browser.find_element(By.ID, "prompt").send_keys(" browser fixture instructions")
                 browser.find_element(By.ID, "send").click()
                 for _ in range(100):
                     after = probe(args.fixture_socket, "thread.snapshot", {"thread_id": args.expected_thread_id})
-                    count = sum("## Context Compaction" in entry for entry in after["entries_markdown"])
+                    count = sum(("## Context Compaction" in entry if is_compact else entry.startswith("## User")) for entry in after["entries_markdown"])
                     if count == before_count + 1 and after["status"] == "Idle":
                         break
                     time.sleep(0.2)
                 else:
                     raise AssertionError("browser /compact did not complete in the native thread")
-                assert not any(entry.startswith("## User\n\n/compact") for entry in after["entries_markdown"])
+                if is_compact: assert not any(entry.startswith("## User\n\n/compact") for entry in after["entries_markdown"])
                 try:
-                    wait.until(lambda driver: "context summary" in driver.find_element(By.ID, "messages").text.lower())
+                    wait.until(lambda driver: ("context summary" if is_compact else "browser fixture instructions") in driver.find_element(By.ID, "messages").text.lower())
                 except TimeoutException:
                     print("browser state:", {name: browser.find_element(By.ID, name).text[:300]
                                              for name in ("connection", "notice", "delivery", "messages")})
                     raise
-                print("PASS: paired browser command picker sent /compact through the same disposable native Zed thread")
+                print("PASS: paired browser sent an advertised prompt command through the same disposable native Zed thread")
             finally:
                 browser.quit()
         finally:

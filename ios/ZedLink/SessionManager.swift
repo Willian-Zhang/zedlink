@@ -344,6 +344,7 @@ import Combine
     }
 
     func select(_ id: String) async {
+        localExposureStopped = false
         guard threads.contains(where: { $0.id == id }) else { return }
         if selectedThreadID != id {
             selectedThreadID = id
@@ -529,6 +530,7 @@ import Combine
     }
 
     private func loadAuxiliaryState(_ id: String) async throws {
+        if Date().timeIntervalSince(lastCommandsRefresh) >= 5 { try await loadCommands(id) }
         guard let client, id == selectedThreadID else { return }
         let scope = operationScope
         let base: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": id]
@@ -569,7 +571,10 @@ import Combine
             threadSettings = NativeThreadSettings(modelID: selected?["id"] as? String,
                                                   providerID: selected?["provider_id"] as? String,
                                                   models: models, usedTokens: usage?["used_tokens"] as? Int,
-                                                  maxTokens: usage?["max_tokens"] as? Int)
+                                                  maxTokens: usage?["max_tokens"] as? Int, profileID: result["profile_id"] as? String,
+                                                  profiles: (result["profiles"] as? [[String: Any]] ?? []).compactMap { row in
+                                                      guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }; return NativeAgentProfile(id: id, name: name)
+                                                  }, thinkingEnabled: result["thinking_enabled"] as? Bool, thinkingSupported: result["thinking_supported"] as? Bool ?? false, thinkingCanDisable: result["thinking_can_disable"] as? Bool ?? false)
         } else { threadSettings = nil }
     }
 
@@ -670,17 +675,23 @@ import Combine
 
     @Published private(set) var updatingModel = false
 
-    func selectModel(_ option: NativeModelOption) async {
+    func selectModel(_ option: NativeModelOption) async { await updateAgentSettings(model: option) }
+
+    func updateAgentSettings(model: NativeModelOption? = nil, profileID: String? = nil, thinking: Bool? = nil) async {
         guard state == .live, snapshot?.status == "Idle", !updatingModel, capabilities.contains("thread.settings.update"), let client, let threadID = selectedThreadID, snapshot?.threadID == threadID,
-              threadSettings?.models.contains(where: { $0.id == option.id }) == true else { return }
+              let settings = threadSettings else { return }
+        if let model, !settings.models.contains(where: { $0.id == model.id }) { return }
+        if let profileID, !settings.profiles.contains(where: { $0.id == profileID }) { return }
+        if let thinking, !settings.thinkingSupported || (!thinking && !settings.thinkingCanDisable) { return }
         updatingModel = true
         defer { updatingModel = false }
         let scope = operationScope
         do {
-            _ = try await client.rpc("thread.settings.update", params: [
-                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
-                "provider_id": option.providerID, "model_id": option.id.split(separator: "\n").last.map(String.init) ?? "",
-            ])
+            var params: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID]
+            if let model { params["provider_id"] = model.providerID; params["model_id"] = model.id.split(separator: "\n").last.map(String.init) ?? "" }
+            if let profileID { params["profile_id"] = profileID }
+            if let thinking { params["thinking_enabled"] = thinking }
+            _ = try await client.rpc("thread.settings.update", params: params)
             guard scope == operationScope else { return }
             try await loadAuxiliaryState(threadID)
         } catch { if scope == operationScope { issue = error.localizedDescription } }
@@ -1037,20 +1048,35 @@ import Combine
         }
     }
 
+    @Published var localCommandConfirmation: NativeCommand?
+    @Published private(set) var localExposureStopped = false
+    private var localCommandScope: [String] = []
+    private var localCommandText = ""
+    private var lastCommandsRefresh = Date.distantPast
+
+    func refreshCommands() async {
+        guard let id = selectedThreadID else { return }
+        let scope = operationScope
+        do { try await loadCommands(id) } catch { if scope == operationScope { issue = error.localizedDescription } }
+    }
+
     private func loadCommands(_ id: String) async throws {
         guard capabilities.contains("thread.commands"), let client else { return }
+        let scope = operationScope
         let result = try await client.rpc("thread.commands", params: [
             "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": id
         ])
-        guard selectedThreadID == id, result["thread_id"] as? String == id,
+        guard scope == operationScope, selectedThreadID == id, result["thread_id"] as? String == id,
               let rows = result["commands"] as? [[String: Any]] else { return }
         commands = rows.compactMap { row in
             guard let name = row["name"] as? String else { return nil }
             return NativeCommand(name: name,
                                  description: row["description"] as? String ?? "Zed Agent command",
                                  category: row["category"] as? String ?? "agent",
-                                 requiresArgument: row["requires_argument"] as? Bool ?? false)
+                                 requiresArgument: row["requires_argument"] as? Bool ?? false, inputHint: row["input_hint"] as? String,
+                                 execution: row["execution"] as? String ?? "prompt", confirmation: row["confirmation"] as? String, warning: row["warning"] as? String)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        lastCommandsRefresh = Date()
     }
 
     private func checkIdentity(_ result: [String: Any]) throws {
@@ -1092,6 +1118,7 @@ import Combine
                 } else {
                     try await loadThreads()
                 }
+                if let id = selectedThreadID, Date().timeIntervalSince(lastCommandsRefresh) >= 5 { try await loadCommands(id) }
                 if pending != nil { await reconcilePending() }
                 if current == generation {
                     state = .live
@@ -1201,11 +1228,21 @@ import Combine
         }
     }
 
-    func send() async {
+    func confirmLocalCommand() async {
+        guard localCommandConfirmation != nil, localCommandScope == operationScope, draft.trimmingCharacters(in: .whitespacesAndNewlines) == localCommandText else { localCommandConfirmation = nil; return }
+        localCommandConfirmation = nil
+        await send(localConfirmed: true)
+    }
+
+    func send(localConfirmed: Bool = false) async {
         guard canSend, let client, let profile, let instanceID, let epoch,
               let threadID = selectedThreadID else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty || !contextPaths.isEmpty else { return }
+        if let command = commands.first(where: { "/" + $0.name == text && $0.execution == "local" }) {
+            guard attachments.isEmpty, contextPaths.isEmpty else { issue = "Run local commands without attachments."; return }
+            if !localConfirmed { localCommandScope = operationScope; localCommandText = text; localCommandConfirmation = command; return }
+        }
         guard attachments.count + contextPaths.count <= 8 else { issue = "A prompt can include at most eight attachments."; return }
         guard attachments.isEmpty || supportsImages != false else { issue = "The selected model does not support images. Remove the image or select a supported model."; return }
         if !attachments.isEmpty || !contextPaths.isEmpty {
@@ -1216,6 +1253,7 @@ import Combine
         }
         pending = PendingSend(id: UUID().uuidString, instanceID: instanceID,
                               epoch: epoch, threadID: threadID, text: text, contextPaths: Array(contextPaths), attachments: attachments)
+        pending?.localConfirmed = localConfirmed ? true : nil
         persistPending(for: profile)
         delivery = "Sending to native Zed…"
         await retryPending()
@@ -1237,6 +1275,10 @@ import Combine
             delivery = outcome == "queued"
                 ? "Queued in desktop Zed. Native execution is being observed."
                 : "Received by desktop Zed. Watching the native conversation for progress."
+            if outcome == "local_completed" || outcome == "desktop_review_required" {
+                delivery = outcome == "desktop_review_required" ? "Complete the feedback form in desktop Zed." : "Desktop action completed."
+                if pending.text == "/remote-control" { localExposureStopped = true; selectedThreadID = nil; try await loadThreads(); return }
+            }
             try await loadSnapshot(pending.threadID)
         } catch {
             guard scope == operationScope, self.pending?.id == pending.id else { return }

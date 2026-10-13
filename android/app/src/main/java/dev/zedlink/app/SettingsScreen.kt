@@ -120,6 +120,15 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
         if (settings == null || settings.models.isEmpty()) Text("This agent does not advertise a remote model selector. Configure it in desktop Zed.")
         settings?.let {
             SettingsValue("Context", if (it.usedTokens != null && it.maxTokens != null) "${it.usedTokens} / ${it.maxTokens} tokens" else "Unavailable")
+            val editable = state.live && state.snapshot?.status == "Idle" && !state.updatingModel && "thread.settings.update" in state.capabilities
+            if (it.profiles.isNotEmpty()) {
+                SettingsValue("Agent profile", it.profiles.firstOrNull { profile -> profile.id == it.profileId }?.name ?: "Unavailable")
+                it.profiles.forEach { profile -> TextButton(onClick = { model.updateAgentSettings(profileId = profile.id) }, enabled = editable) { Text((if (profile.id == it.profileId) "✓ " else "") + profile.name) } }
+            }
+            if (it.thinkingSupported && it.thinkingEnabled != null) {
+                Row { Text("Model thinking", modifier = Modifier.weight(1f)); Switch(it.thinkingEnabled, { value -> model.updateAgentSettings(thinking = value) }, enabled = editable && it.thinkingCanDisable) }
+                if (!it.thinkingCanDisable) Text("This model requires thinking.", color = Muted, fontSize = 12.sp)
+            }
             it.models.forEach { option ->
                 TextButton(onClick = { model.selectModel(option) }, enabled = state.live && state.snapshot?.status == "Idle" && !state.updatingModel && "thread.settings.update" in state.capabilities) {
                     Text((if (option.modelId == it.modelId && option.providerId == it.providerId) "✓ " else "") + "${option.name} · ${option.providerId}")

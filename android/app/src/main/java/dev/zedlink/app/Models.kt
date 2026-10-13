@@ -44,6 +44,8 @@ data class NativeCommand(
     val description: String,
     val category: String,
     val requiresArgument: Boolean,
+    val inputHint: String? = null, val execution: String = "prompt",
+    val confirmation: String? = null, val warning: String? = null,
 )
 
 data class NativeApproval(
@@ -82,9 +84,12 @@ data class NativeElicitation(
 data class NativeQueueEntry(val id: Int, val preview: String, val steer: Boolean)
 data class NativeEditReview(val changedFiles: Int, val linesAdded: Int, val linesRemoved: Int)
 data class NativeModelOption(val id: String, val modelId: String, val providerId: String, val name: String)
+data class NativeAgentProfile(val id: String, val name: String)
 data class NativeThreadSettings(
     val modelId: String?, val providerId: String?, val models: List<NativeModelOption>,
     val usedTokens: Int?, val maxTokens: Int?,
+    val profileId: String? = null, val profiles: List<NativeAgentProfile> = emptyList(),
+    val thinkingEnabled: Boolean? = null, val thinkingSupported: Boolean = false, val thinkingCanDisable: Boolean = false,
 )
 data class NativeRewindPoint(val id: String, val entryIndex: Int, val entriesRemoved: Int)
 data class NativeSubagent(val id: String, val title: String, val status: String, val currentTurnId: Int?, val entries: List<String>)

@@ -57,6 +57,10 @@ struct NativeCommand: Identifiable, Equatable {
     let description: String
     let category: String
     let requiresArgument: Bool
+    var inputHint: String? = nil
+    var execution = "prompt"
+    var confirmation: String? = nil
+    var warning: String? = nil
 
     var id: String { name }
 }
@@ -132,12 +136,19 @@ struct NativeModelOption: Identifiable, Equatable {
     let name: String
 }
 
+struct NativeAgentProfile: Identifiable, Equatable { let id: String; let name: String }
+
 struct NativeThreadSettings: Equatable {
     let modelID: String?
     let providerID: String?
     let models: [NativeModelOption]
     let usedTokens: Int?
     let maxTokens: Int?
+    var profileID: String? = nil
+    var profiles: [NativeAgentProfile] = []
+    var thinkingEnabled: Bool? = nil
+    var thinkingSupported = false
+    var thinkingCanDisable = false
 }
 
 struct NativeRewindPoint: Identifiable, Equatable {
@@ -226,6 +237,7 @@ struct ThreadSnapshot {
 }
 
 struct PendingSend: Codable {
+    var localConfirmed: Bool? = nil
     let id: String
     let instanceID: String
     let epoch: String
@@ -237,6 +249,7 @@ struct PendingSend: Codable {
 
     var submissionParams: [String: Any] {
         var params: [String: Any] = ["instance_id": instanceID, "epoch": epoch, "thread_id": threadID, "text": text ?? ""]
+        if localConfirmed == true { params["local_confirmed"] = true }
         if !contextPaths.isEmpty { params["context_paths"] = contextPaths }
         if !attachments.isEmpty { params["uploads"] = attachments.map(\.payload) }
         return params

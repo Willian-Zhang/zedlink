@@ -229,6 +229,9 @@ class ProbeFixture:
                 elif method == "thread.commands":
                     result = {"thread_id": params["thread_id"], "commands": [
                         {"name": "compact", "description": "Compact context", "category": "native", "requires_argument": False},
+                        {"name": "orbit:review", "description": "Scoped fixture skill", "category": "skill", "execution": "prompt", "input_hint": "Optional instructions", "requires_argument": False},
+                        {"name": "fixture.fetch", "description": "Fixture MCP prompt", "category": "mcp", "execution": "prompt", "input_hint": "<url>", "requires_argument": True},
+                        {"name": "helpful", "description": "Fixture feedback", "category": "local", "execution": "local", "confirmation": "This shares the conversation with the Zed team.", "requires_argument": False},
                         {"name": "help", "description": "Show agent help", "category": "agent", "requires_argument": False},
                     ]}
                 elif method in ("thread.settings", "thread.settings.update"):
@@ -937,7 +940,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.12.14"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.13.15"
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1358,6 +1361,18 @@ def main():
                 browser.find_element(By.ID, "action-commands").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "command-menu").is_displayed())
                 assert "/compact" in browser.find_element(By.ID, "command-menu").text
+                assert "/orbit:review" in browser.find_element(By.ID, "command-menu").text
+                assert "<url>" in browser.find_element(By.ID, "command-menu").text
+                browser.find_element(By.ID, "prompt").clear()
+                browser.find_element(By.ID, "prompt").send_keys("/helpful")
+                accepted_before_feedback = probe.accepted
+                browser.find_element(By.ID, "send").click()
+                wait.until(lambda driver: driver.switch_to.alert)
+                assert "shares the conversation" in browser.switch_to.alert.text
+                browser.switch_to.alert.dismiss()
+                assert probe.accepted == accepted_before_feedback
+                browser.find_element(By.ID, "prompt").clear()
+                browser.find_element(By.ID, "prompt").send_keys("/")
                 browser.find_element(By.ID, "prompt").send_keys("unknown")
                 assert not browser.find_elements(By.CSS_SELECTOR, ".command-option")
                 browser.find_element(By.ID, "prompt").send_keys(Keys.ESCAPE)

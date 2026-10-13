@@ -223,6 +223,14 @@ private fun ThreadRow(thread: NativeThread, live: Boolean, pinned: Boolean, upda
 private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     val snapshot = state.snapshot
     var showCommands by remember { mutableStateOf(false) }
+    var chosenSlashDraft by remember { mutableStateOf("") }
+    LaunchedEffect(state.draft) {
+        if (state.draft.startsWith("/") && state.draft != chosenSlashDraft && state.draft.none { it.isWhitespace() }) { showCommands = true; model.refreshCommands() }
+    }
+    state.localConfirmation?.let { command -> AlertDialog(onDismissRequest = model::dismissLocalCommand, title = { Text("Run desktop action?") },
+        text = { Text(command.confirmation ?: "Confirm this desktop action.") },
+        confirmButton = { TextButton(onClick = model::confirmLocalCommand) { Text("Run /${command.name}") } },
+        dismissButton = { TextButton(onClick = model::dismissLocalCommand) { Text("Cancel") } }) }
     var showClipboard by remember { mutableStateOf(false) }
     if (showClipboard) RemoteClipboardDialog(state, model, model::setDraft, { showClipboard = false }, "prompt")
     var showActions by remember { mutableStateOf(false) }
@@ -262,11 +270,11 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         else Messages(snapshot, model, Modifier.weight(1f))
         if (showCommands) CommandList(state.commands, {
             model.prepareSubagentTask(); showCommands = false
-        }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); showCommands = false }
+        }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); chosenSlashDraft = model.state.draft; showCommands = false }
         if (state.delivery.isNotBlank() && (!state.live || state.sending || state.delivery.startsWith("Delivery unknown"))) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Surface).padding(8.dp))
         if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
-        Composer(state, model, { showCommands = !showCommands })
+        Composer(state, model, { showCommands = !showCommands; if (showCommands) model.refreshCommands() })
     }
     if (showRename) AlertDialog(
         onDismissRequest = { showRename = false },
@@ -691,7 +699,9 @@ private fun ApprovalCard(approval: NativeApproval, respond: (NativeApproval, Nat
 
 @Composable
 private fun CommandList(commands: List<NativeCommand>, delegate: () -> Unit, clipboard: () -> Unit, recover: () -> Unit, choose: (NativeCommand) -> Unit) {
+    var search by remember { mutableStateOf("") }
     Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).border(1.dp, Line).background(Raised).verticalScroll(rememberScrollState())) {
+        OutlinedTextField(search, { search = it }, label = { Text("Search commands and skills") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Row(Modifier.fillMaxWidth().clickable(onClick = delegate).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.AccountTree, null, tint = Blue, modifier = Modifier.size(19.dp))
             Column(Modifier.padding(start = 11.dp)) {
@@ -703,10 +713,15 @@ private fun CommandList(commands: List<NativeCommand>, delegate: () -> Unit, cli
         TextButton(onClick = clipboard) { Text("Remote clipboard") }
         TextButton(onClick = recover) { Text("Recover session") }
         if (commands.isEmpty()) Text("No commands are advertised by this native thread.", color = Muted, modifier = Modifier.padding(14.dp))
-        commands.forEach { command ->
-            Row(Modifier.fillMaxWidth().clickable { choose(command) }.padding(12.dp)) {
-                Text("/${command.name}", fontFamily = FontFamily.Monospace, modifier = Modifier.widthIn(min = 100.dp))
-                Text(command.description, color = Muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        commands.filter { search.isBlank() || it.name.contains(search, true) || it.description.contains(search, true) }.forEach { command ->
+            Column(Modifier.fillMaxWidth().clickable { choose(command) }.padding(12.dp)) {
+                Text("/${command.name}", fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth())
+                Column(Modifier.fillMaxWidth()) {
+                    Text(command.description, color = Muted, fontSize = 12.sp)
+                    command.inputHint?.let { Text(it, color = Blue, fontSize = 11.sp) }
+                    command.warning?.let { Text(it, color = Warning, fontSize = 11.sp) }
+                    Text(command.category, color = Muted, fontSize = 10.sp)
+                }
             }
             Rule()
         }

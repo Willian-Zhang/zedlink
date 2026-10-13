@@ -177,6 +177,22 @@ struct SessionModelControls: View {
             Form {
                 SessionIssueBanner()
                 if let settings = session.threadSettings {
+                    if !settings.profiles.isEmpty {
+                        Section("Agent profile") {
+                            ForEach(settings.profiles) { profile in
+                                Button { Task { await session.updateAgentSettings(profileID: profile.id) } } label: {
+                                    HStack { Text(profile.name); Spacer(); if profile.id == settings.profileID { Image(systemName: "checkmark") } }
+                                }.disabled(session.state != .live || session.snapshot?.status != "Idle" || session.updatingModel || !session.capabilities.contains("thread.settings.update"))
+                            }
+                        }
+                    }
+                    if settings.thinkingSupported, let enabled = settings.thinkingEnabled {
+                        Section("Thinking") {
+                            Toggle("Model thinking", isOn: Binding(get: { enabled }, set: { value in Task { await session.updateAgentSettings(thinking: value) } }))
+                                .disabled(session.state != .live || session.snapshot?.status != "Idle" || session.updatingModel || !settings.thinkingCanDisable || !session.capabilities.contains("thread.settings.update"))
+                            if !settings.thinkingCanDisable { Text("This model requires thinking.").font(.caption) }
+                        }
+                    }
                     Section("Zed model") {
                         if settings.models.isEmpty { Text("This Agent does not advertise a remote model selector. Configure it in desktop Zed.").font(.caption) }
                         ForEach(settings.models) { model in
