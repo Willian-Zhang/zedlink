@@ -3,6 +3,35 @@ import UIKit
 import SwiftUI
 @testable import ZedLink
 
+final class SessionActivityTests: XCTestCase {
+    func testAuthoritativeAttentionRetryFailureAndUnknown() {
+        var thread = NativeThread(id: "fixture", title: "Demo", status: "Unknown", currentTurnID: nil)
+        XCTAssertEqual(SessionActivity(thread), .unknown)
+        thread.status = "Idle"; XCTAssertEqual(SessionActivity(thread), .ready)
+        thread.failed = true; XCTAssertEqual(SessionActivity(thread), .failed)
+        thread.status = "Generating"; XCTAssertEqual(SessionActivity(thread), .generating)
+        thread.retrying = true; XCTAssertEqual(SessionActivity(thread), .retrying)
+        thread.inputCount = 1; XCTAssertEqual(SessionActivity(thread), .input)
+        thread.approvalCount = 2; XCTAssertEqual(SessionActivity(thread), .approval)
+    }
+    @MainActor func testPinsAreScopedAndActivityRequiresObservedChange() {
+        let name = "zedlink.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let library = SessionLibrary(defaults: defaults)
+        let key = SessionLibrary.key(profile: "a", target: "demo", thread: "id")
+        let other = SessionLibrary.key(profile: "b", target: "demo", thread: "id")
+        library.toggle(key); XCTAssertTrue(library.pins.contains(key)); XCTAssertFalse(library.pins.contains(other))
+        XCTAssertTrue(SessionLibrary(defaults: defaults).pins.contains(key))
+        var thread = NativeThread(id: "id", title: "Demo", status: "Idle", currentTurnID: nil)
+        library.observe([thread], profile: "a", target: "demo", selected: nil)
+        XCTAssertTrue(library.updated.isEmpty)
+        thread.status = "Generating"
+        library.observe([thread], profile: "a", target: "demo", selected: nil)
+        XCTAssertTrue(library.updated.contains(key)); library.seen(key); XCTAssertTrue(library.updated.isEmpty)
+    }
+}
+
 final class InputFormTests: XCTestCase {
     private func field(_ type: String = "string", required: Bool = true, choices: [String] = []) -> NativeElicitationField {
         NativeElicitationField(id: "value", title: "Value", type: type, required: required, choices: choices)

@@ -1,6 +1,7 @@
 import SwiftUI
 
 @main struct ZedLinkApp: App {
+    @StateObject private var library = SessionLibrary()
     @StateObject private var profiles = ProfileStore()
     @StateObject private var session = SessionManager()
     @Environment(\.scenePhase) private var scenePhase
@@ -39,6 +40,7 @@ import SwiftUI
             }
             .environmentObject(profiles)
             .environmentObject(session)
+            .environmentObject(library)
             .preferredColorScheme(preferredColorScheme)
             .tint(ZLTheme.focus)
             .toolbarBackground(ZLTheme.background, for: .navigationBar)
@@ -48,6 +50,9 @@ import SwiftUI
                 if requested { sessionsPath = []; selectedTab = 1; session.showConnections = false }
             }
             .task {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--zedlink-demo") { session.loadDemoPreview(); return }
+                #endif
                 ApprovalNotifications.shared.configure()
                 ApprovalNotifications.shared.handler = { data, action in
                     selectedTab = 0
@@ -59,7 +64,7 @@ import SwiftUI
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active, session.profile != nil {
+                if phase == .active, session.profile != nil, !session.demoPreview {
                     Task { await session.refresh() }
                 }
             }

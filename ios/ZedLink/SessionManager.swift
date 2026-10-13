@@ -45,6 +45,8 @@ import Combine
     @Published private(set) var resolvingApprovals: Set<String> = []
     @Published private(set) var resolvingElicitations: Set<String> = []
     @Published var showConnections = false
+    @Published private(set) var demoPreview = false
+    private var summaryCache: [String: (Date, NativeThread)] = [:]
     func isRespondingToElicitation(_ id: String) -> Bool { resolvingElicitations.contains((operationScope + [id]).joined(separator: "\n")) }
     private var diffRequest = UUID()
     private var workspaceRequest = UUID()
@@ -86,6 +88,7 @@ import Combine
     }
 
     func disconnect() {
+        summaryCache = [:]
         attachments = []; diffContent = ""; diffLoading = false; workspaceLoading = false; supportsImages = nil
         diffRequest = UUID(); workspaceRequest = UUID(); searchRequest = UUID()
         requestedTerminalID = nil
@@ -203,6 +206,7 @@ import Combine
     }
 
     func refresh() async {
+        guard !demoPreview else { return }
         guard let profile else { return }
         await connect(profile)
     }
@@ -211,6 +215,22 @@ import Combine
         guard let profile, targets.contains(where: { $0.id == id && $0.available }) else { return }
         await connect(profile, target: id)
     }
+
+    #if DEBUG
+    func loadDemoPreview() {
+        disconnect(); demoPreview = true
+        profile = ConnectionProfile(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "Demo workstation", route: .local, endpoint: "https://demo.invalid", gatewayID: "demo")
+        targetID = "demo-workspace"; targets = [ZedTarget(id: "demo-workspace", label: "Orbit Notes", available: false)]
+        state = .live
+        threads = [
+            NativeThread(id: "demo-review", title: "Review deployment changes", status: "Generating", currentTurnID: 1, agentName: "Claude Code", approvalCount: 2, inputCount: 0),
+            NativeThread(id: "demo-nav", title: "Improve project navigation", status: "Generating", currentTurnID: 2, agentName: "Zed Agent", approvalCount: 0, inputCount: 0),
+            NativeThread(id: "demo-retry", title: "Check the integration tests", status: "Generating", currentTurnID: 3, agentName: "Codex", retrying: true, approvalCount: 0, inputCount: 0),
+            NativeThread(id: "demo-docs", title: "Update the project documentation", status: "Idle", currentTurnID: nil, agentName: "Codex", approvalCount: 0, inputCount: 0),
+            NativeThread(id: "demo-failed", title: "Investigate a failed test run", status: "Idle", currentTurnID: nil, agentName: "Zed Agent", failed: true, approvalCount: 0, inputCount: 0),
+        ]
+    }
+    #endif
 
     func loadCreateOptions() async {
         guard capabilities.contains("thread.create.options"), let client, let instanceID, let epoch else {
@@ -267,12 +287,42 @@ import Combine
         let result = try await client.rpc("thread.list")
         try checkIdentity(result)
         guard let rows = result["threads"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
-        threads = rows.compactMap { row in
+        let scope = operationScope
+        var loaded = rows.compactMap { row -> NativeThread? in
             guard let id = row["thread_id"] as? String else { return nil }
-            return NativeThread(id: id, title: row["title"] as? String ?? "Untitled Agent thread",
+            var thread = NativeThread(id: id, title: row["title"] as? String ?? "Untitled Agent thread",
                                 status: row["status"] as? String ?? "Unknown",
                                 currentTurnID: row["current_turn_id"] as? Int)
+            thread.agentName = (row["agent"] as? [String: Any])?["name"] as? String ?? "Zed Agent"
+            thread.retrying = row["retry_status"] is [String: Any]
+            thread.failed = row["had_error"] as? Bool == true || row["agent_error"] is [String: Any]
+            return thread
         }
+        if selectedThreadID == nil {
+            // Read-only counts, cached for five seconds; no new adapter operation.
+            for index in loaded.indices {
+                var thread = loaded[index]
+                if let cached = summaryCache[thread.id], Date().timeIntervalSince(cached.0) < 5,
+                   cached.1.currentTurnID == thread.currentTurnID, cached.1.status == thread.status {
+                    thread.approvalCount = cached.1.approvalCount; thread.inputCount = cached.1.inputCount
+                } else {
+                    let params: [String: Any] = ["thread_id": thread.id, "instance_id": instanceID ?? "", "epoch": epoch ?? ""]
+                    if capabilities.contains("thread.approvals") {
+                        let result = try await client.rpc("thread.approvals", params: params)
+                        thread.approvalCount = (result["approvals"] as? [[String: Any]])?.count
+                    }
+                    if capabilities.contains("thread.elicitations") {
+                        let result = try await client.rpc("thread.elicitations", params: params)
+                        thread.inputCount = (result["elicitations"] as? [[String: Any]])?.filter { $0["status"] as? String == "pending" }.count
+                    }
+                    guard scope == operationScope else { return }
+                    summaryCache[thread.id] = (Date(), thread)
+                }
+                loaded[index] = thread
+            }
+        }
+        guard scope == operationScope else { return }
+        threads = loaded
         if let selectedThreadID, !threads.contains(where: { $0.id == selectedThreadID }) {
             self.selectedThreadID = nil
             snapshot = nil

@@ -6,145 +6,126 @@ import VisionKit
 import PhotosUI
 
 struct SessionsView: View {
-    @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var session: SessionManager
+    @EnvironmentObject private var library: SessionLibrary
     @State private var search = ""
+    @State private var filter = "All"
     @State private var showingNewSession = false
     @Binding var navigationPath: [String]
     @FocusState private var searchFocused: Bool
-
-    private var visibleThreads: [NativeThread] {
-        guard !search.isEmpty else { return session.threads }
-        return session.threads.filter { $0.title.localizedCaseInsensitiveContains(search) }
+    private let groups = ["Needs attention", "Running", "Ready & other"]
+    private func key(_ thread: NativeThread) -> String {
+        SessionLibrary.key(profile: session.profile?.id.uuidString ?? "", target: session.targetID ?? "", thread: thread.id)
     }
-
+    private var visibleThreads: [NativeThread] {
+        session.threads.filter { thread in
+            let activity = SessionActivity(thread)
+            return (search.isEmpty || (thread.title + " " + thread.agentName + " " + thread.id).localizedCaseInsensitiveContains(search)) &&
+                (filter == "All" || filter == "Needs attention" && activity.attention || filter == "Running" && activity.running || filter == "Pinned" && library.pins.contains(key(thread)))
+        }.sorted { left, right in
+            let lp = library.pins.contains(key(left)), rp = library.pins.contains(key(right))
+            if lp != rp { return lp }
+            return left.title.localizedStandardCompare(right.title) == .orderedAscending
+        }
+    }
     var body: some View {
         NavigationStack(path: $navigationPath) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     connectionHeader
-                    if !session.issue.isEmpty { diagnostic }
+                    if session.demoPreview { Text("DEMO PREVIEW · Sample sessions, no live connection").font(.caption).foregroundStyle(ZLTheme.warning).padding(.horizontal, 16).padding(.vertical, 8) }
+                    if !session.issue.isEmpty { SessionIssueBanner() }
                     HStack(spacing: 9) {
                         Image(systemName: "magnifyingglass").foregroundStyle(ZLTheme.muted)
-                        TextField("Search exposed sessions", text: $search)
-                            .textInputAutocapitalization(.never)
-                            .submitLabel(.search)
-                            .focused($searchFocused)
-                            .onSubmit { searchFocused = false }
-                            .accessibilityIdentifier("session-search")
+                        TextField("Search sessions or agents", text: $search)
+                            .textInputAutocapitalization(.never).submitLabel(.search).focused($searchFocused)
+                            .onSubmit { searchFocused = false }.accessibilityIdentifier("session-search")
+                    }.padding(.horizontal, 12).frame(minHeight: 44).background(ZLTheme.surface)
+                        .overlay(Rectangle().stroke(ZLTheme.line)).padding(.horizontal, 16).padding(.top, 12)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
+                            ForEach(["All", "Needs attention", "Running", "Pinned"], id: \.self) { label in
+                                Button { filter = label; searchFocused = false } label: {
+                                    Text(label).font(.subheadline).foregroundStyle(filter == label ? ZLTheme.ink : ZLTheme.muted)
+                                        .frame(minHeight: 44).overlay(alignment: .bottom) { if filter == label { Rectangle().fill(ZLTheme.ink).frame(height: 2) } }
+                                }.buttonStyle(.plain).accessibilityIdentifier("session-filter-" + label)
+                            }
+                        }.padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 12).frame(minHeight: 44)
-                    .background(ZLTheme.surface)
-                    .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
-                    .padding(.horizontal, 16).padding(.top, 18)
-
-                    HStack {
-                        SectionLabel("Exposed Zed threads")
-                        Spacer()
-                        Text("\(session.threads.count)").font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
-                    }
-                    .padding(.horizontal, 16).padding(.top, 24).padding(.bottom, 9)
-
+                    Hairline()
                     if visibleThreads.isEmpty {
-                        emptyThreads
-                    } else {
-                        ForEach(visibleThreads) { thread in
-                            NavigationLink(value: thread.id) { SessionRow(thread: thread) }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("thread-\(thread.id)")
-                                .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
-                            Hairline().padding(.leading, 48)
-                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(session.profile == nil ? "Choose a connection" : session.threads.isEmpty ? (session.state == .live ? "No exposed sessions" : "Sessions unavailable") : "No matching sessions").font(.headline)
+                            Text(session.profile == nil ? "Pair a private gateway in Connections." : session.threads.isEmpty ? (session.state == .live ? "Expose a conversation with /remote-control in desktop Zed, or create a session using +." : "Reconnect to refresh your sessions.") : "Try another search or filter.").font(.subheadline).foregroundStyle(ZLTheme.muted)
+                        }.padding(20)
                     }
-                }
-                .padding(.bottom, 30)
-            }
-            .background(ZLTheme.background)
-            .scrollDismissesKeyboard(.interactively)
-            .toolbar(.visible, for: .navigationBar)
-            .navigationTitle("ZedLink")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingNewSession = true } label: { Image(systemName: "plus") }
-                        .disabled(!session.capabilities.contains("thread.create"))
-                        .accessibilityLabel("Create Agent session")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await session.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                        .disabled(session.profile == nil)
-                        .accessibilityLabel("Refresh sessions")
-                        .accessibilityIdentifier("reconnect")
-                }
-            }
-            .sheet(isPresented: $showingNewSession) { NewSessionView() }
-            .navigationDestination(for: String.self) { ConversationView(threadID: $0) }
-            .onChange(of: session.notificationThreadID) { _, thread in
-                if let thread { searchFocused = false; navigationPath = [thread]; session.notificationThreadID = nil }
-            }
-            .refreshable { await session.refresh() }
-        }
-    }
-
-    @ViewBuilder private var connectionHeader: some View {
-        if let profile = session.profile {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "bolt.fill").font(.headline).foregroundStyle(ZLTheme.healthy)
-                    .frame(width: 22, height: 22)
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(profile.name).font(.headline)
-                        Spacer()
-                        ConnectionStatusView(state: session.state)
-                    }
-                    Text(profile.endpoint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
-                        .lineLimit(1).truncationMode(.middle)
-                    if session.targets.count > 1 {
-                        Picker("Zed target", selection: Binding(
-                            get: { session.targetID ?? "" },
-                            set: { target in Task { await session.selectTarget(target) } }
-                        )) {
-                            ForEach(session.targets) { target in
-                                Text("\(target.label)\(target.available ? "" : " · unavailable")")
-                                    .tag(target.id).disabled(!target.available)
+                    ForEach(groups, id: \.self) { group in
+                        let rows = visibleThreads.filter { SessionActivity($0).group == group }
+                        if !rows.isEmpty {
+                            HStack { SectionLabel(group); Spacer(); Text("\(rows.count)").font(.caption.monospaced()).foregroundStyle(ZLTheme.muted) }
+                                .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 6)
+                            ForEach(rows) { thread in
+                                HStack(spacing: 0) {
+                                    NavigationLink(value: thread.id) {
+                                        SessionRow(thread: thread, live: session.state == .live, updated: library.updated.contains(key(thread)))
+                                    }.buttonStyle(.plain).accessibilityIdentifier("thread-" + thread.id)
+                                        .disabled(session.demoPreview)
+                                        .simultaneousGesture(TapGesture().onEnded { searchFocused = false; library.seen(key(thread)) })
+                                    Button { library.toggle(key(thread)) } label: {
+                                        Image(systemName: library.pins.contains(key(thread)) ? "pin.fill" : "pin")
+                                            .foregroundStyle(library.pins.contains(key(thread)) ? ZLTheme.focus : ZLTheme.muted).frame(width: 44, height: 44)
+                                    }.accessibilityLabel(library.pins.contains(key(thread)) ? "Unpin session" : "Pin session").accessibilityIdentifier("pin-" + thread.id)
+                                }
+                                Hairline().padding(.leading, 16)
                             }
                         }
-                        .pickerStyle(.menu)
-                        .accessibilityIdentifier("zed-target-picker")
                     }
-                    Text("\(profile.route.rawValue) · \(session.targets.first(where: { $0.id == session.targetID })?.label ?? "Native Zed Agent")")
-                        .font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
+                }.padding(.bottom, 16)
+            }.background(ZLTheme.background).scrollDismissesKeyboard(.interactively)
+                .toolbar(.visible, for: .navigationBar).navigationTitle("Sessions").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showingNewSession = true } label: { Image(systemName: "plus") }
+                            .disabled(session.state != .live || !session.capabilities.contains("thread.create")).accessibilityLabel("Create Agent session")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { Task { await session.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                            .disabled(session.profile == nil).accessibilityLabel("Refresh sessions").accessibilityIdentifier("reconnect")
+                    }
                 }
-            }
-            .padding(16)
-            .background(ZLTheme.surface)
-            .overlay(alignment: .bottom) { Hairline() }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Choose a connection").font(.title3.weight(.semibold))
-                Text("Pair a private ZedLink gateway from the Connections tab.")
-                    .font(.subheadline).foregroundStyle(ZLTheme.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            .background(ZLTheme.surface)
+                .sheet(isPresented: $showingNewSession) { NewSessionView() }
+                .navigationDestination(for: String.self) { ConversationView(threadID: $0) }
+                .onChange(of: session.threads, initial: true) { _, threads in
+                    library.observe(threads, profile: session.profile?.id.uuidString ?? "", target: session.targetID ?? "", selected: session.selectedThreadID)
+                }
+                .onChange(of: session.notificationThreadID) { _, thread in
+                    if let thread { searchFocused = false; navigationPath = [thread]; session.notificationThreadID = nil }
+                }
+                .refreshable { await session.refresh() }
         }
     }
-
-    private var diagnostic: some View {
-        SessionIssueBanner().frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier("connection-diagnostic")
-    }
-
-    private var emptyThreads: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: "rectangle.connected.to.line.below").font(.title2).foregroundStyle(ZLTheme.muted)
-            Text(session.threads.isEmpty ? "No exposed sessions" : "No matching sessions").font(.headline)
-            Text(session.threads.isEmpty
-                 ? "In Zed Dev, open a native Agent conversation and select /remote-control."
-                 : "Try another search term.")
-                .font(.subheadline).foregroundStyle(ZLTheme.muted)
-        }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+    private var connectionHeader: some View {
+        HStack(spacing: 8) {
+            Menu {
+                if let profile = session.profile {
+                    Text(profile.name); Text(profile.endpoint)
+                    ForEach(session.targets) { target in
+                        Button(target.label + (target.available ? "" : " · unavailable")) { Task { await session.selectTarget(target.id) } }
+                            .disabled(!target.available || session.demoPreview)
+                    }
+                }
+                Button("Manage connections") { session.showConnections = true }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(session.profile?.name ?? "Choose a connection").lineLimit(1)
+                    Image(systemName: "chevron.right").font(.caption2)
+                    Text(session.targets.first(where: { $0.id == session.targetID })?.label ?? "Workspace").lineLimit(1)
+                    Image(systemName: "chevron.down").font(.caption2)
+                }.font(.caption).frame(minHeight: 44).foregroundStyle(ZLTheme.ink)
+            }.accessibilityIdentifier("zed-target-picker")
+            Spacer(minLength: 0)
+            if !session.demoPreview { ConnectionStatusView(state: session.state) }
+        }.padding(.horizontal, 16).background(ZLTheme.surface)
     }
 }
 
@@ -191,26 +172,25 @@ private struct NewSessionView: View {
 
 private struct SessionRow: View {
     let thread: NativeThread
-    private var busy: Bool { thread.status != "Idle" }
-
+    let live: Bool
+    let updated: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var activity: SessionActivity { SessionActivity(thread) }
+    private var tint: Color { activity.attention ? ZLTheme.warning : activity.running ? ZLTheme.focus : ZLTheme.muted }
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: busy ? "waveform" : "bubble.left")
-                .font(.subheadline).foregroundStyle(busy ? ZLTheme.focus : ZLTheme.muted).frame(width: 20)
+        HStack(spacing: 10) {
+            Image(systemName: activity.attention ? "exclamationmark.circle" : activity.running ? "waveform" : "bubble.left")
+                .symbolEffect(.variableColor, isActive: live && activity.running && !reduceMotion)
+                .foregroundStyle(tint).frame(width: 20)
             VStack(alignment: .leading, spacing: 5) {
-                Text(thread.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
-                HStack(spacing: 7) {
-                    Circle().fill(busy ? ZLTheme.focus : ZLTheme.healthy).frame(width: 6, height: 6)
-                    Text(busy ? "Working" : "Ready").font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
-                    Text("·").foregroundStyle(ZLTheme.muted)
-                    Text(String(thread.id.prefix(8))).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
-                }
-            }
-            Spacer(minLength: 8)
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(ZLTheme.muted)
-        }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .contentShape(Rectangle())
+                Text(thread.title).font(.body.weight(.medium)).foregroundStyle(ZLTheme.ink).lineLimit(2)
+                Text(thread.agentName + " · " + (live ? "" : "Last known: ") + activity.rawValue +
+                     (activity == .approval ? " (\(thread.approvalCount ?? 0))" : activity == .input ? " (\(thread.inputCount ?? 0))" : ""))
+                    .font(.caption).foregroundStyle(tint)
+                if updated { Text("New activity").font(.caption2).foregroundStyle(ZLTheme.focus) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(ZLTheme.muted)
+        }.padding(.leading, 16).padding(.vertical, 14).contentShape(Rectangle())
     }
 }
 

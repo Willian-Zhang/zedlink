@@ -45,6 +45,11 @@ struct NativeThread: Identifiable, Equatable {
     let title: String
     let status: String
     let currentTurnID: Int?
+    var agentName = "Zed Agent"
+    var retrying = false
+    var failed = false
+    var approvalCount: Int? = nil
+    var inputCount: Int? = nil
 }
 
 struct NativeCommand: Identifiable, Equatable {
@@ -217,7 +222,7 @@ struct ThreadSnapshot {
     let rewindPoints: [NativeRewindPoint]
     let subagents: [NativeSubagent]
 
-    var isBusy: Bool { status != "Idle" }
+    var isBusy: Bool { status == "Generating" || currentTurnID != nil }
 }
 
 struct PendingSend: Codable {
