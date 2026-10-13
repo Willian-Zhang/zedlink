@@ -3,6 +3,73 @@ import UIKit
 import SwiftUI
 @testable import ZedLink
 
+final class InputFormTests: XCTestCase {
+    private func field(_ type: String = "string", required: Bool = true, choices: [String] = []) -> NativeElicitationField {
+        NativeElicitationField(id: "value", title: "Value", type: type, required: required, choices: choices)
+    }
+    private func submit(_ field: NativeElicitationField, _ value: String? = nil) throws -> [String: Any] {
+        try ElicitationForm.content([field], values: value.map { ["value": $0] } ?? [:], selections: [:])
+    }
+    func testUntouchedDisplayedChoiceAndDefaultAreSubmitted() throws {
+        var choice = field(choices: ["local", "remote"])
+        XCTAssertEqual(ElicitationForm.value(choice, values: [:]), "local")
+        XCTAssertEqual(try submit(choice)["value"] as? String, "local")
+        choice.defaultValue = "remote"
+        XCTAssertEqual(try submit(choice)["value"] as? String, "remote")
+        XCTAssertThrowsError(try submit(choice, "unadvertised"))
+    }
+    func testOptionalOmissionAndRequiredFalse() throws {
+        XCTAssertTrue(try submit(field(required: false, choices: ["a"])).isEmpty)
+        XCTAssertEqual(try submit(field("boolean"))["value"] as? Bool, false)
+        XCTAssertTrue(try submit(field("boolean", required: false)).isEmpty)
+        XCTAssertThrowsError(try submit(field(), "  "))
+    }
+    func testNumericTypesAndValidation() throws {
+        var number = field("number"); number.minimum = 1; number.maximum = 3
+        XCTAssertEqual(try submit(number, "2.5")["value"] as? Double, 2.5)
+        for value in ["NaN", "Infinity", "text", "0", "4"] { XCTAssertThrowsError(try submit(number, value)) }
+        XCTAssertEqual(try submit(field("integer"), "2")["value"] as? Int, 2)
+        XCTAssertThrowsError(try submit(field("integer"), "2.5"))
+    }
+    func testMultipleChoicesAndArrayDefaults() throws {
+        let array = field("array", choices: ["a", "b", "c"])
+        XCTAssertEqual(try ElicitationForm.content([array], values: [:], selections: ["value": ["c", "a"]])["value"] as? [String], ["a", "c"])
+        var defaults = field("array"); defaults.defaultValue = "[\"b\",\"a\",\"b\"]"
+        XCTAssertEqual(ElicitationForm.value(defaults, values: [:]), "b, a, b")
+        XCTAssertEqual(try submit(defaults)["value"] as? [String], ["b", "a", "b"])
+        XCTAssertThrowsError(try submit(array))
+    }
+    func testUnicodeLengthAndUnsupportedTypes() throws {
+        var text = field(); text.minLength = 1; text.maxLength = 1
+        XCTAssertEqual(try submit(text, "😀")["value"] as? String, "😀")
+        XCTAssertThrowsError(try submit(text, "ab"))
+        XCTAssertThrowsError(try submit(field("object"), "{}"))
+    }
+}
+
+final class ReviewNavigationTests: XCTestCase {
+    func testMatchPositionWrapAndQueryReplacement() {
+        var index = ReviewIndex("Alpha\nbeta\nALPHA")
+        index.find("alpha")
+        XCTAssertEqual(index.matches, [1, 3]); XCTAssertEqual(index.hits, Set([1, 3]))
+        XCTAssertEqual(ReviewIndex.nextMatch(0, delta: -1, count: 2), 1)
+        XCTAssertEqual(ReviewIndex.nextMatch(1, delta: 1, count: 2), 0)
+        index.find("beta"); XCTAssertEqual(index.matches, [2]); XCTAssertEqual(index.hits, [2])
+        index.find(""); XCTAssertTrue(index.hits.isEmpty)
+        XCTAssertEqual(ReviewIndex.nextMatch(0, delta: -1, count: 0), 0)
+    }
+    func testDiffSectionsIncludeDeletedFiles() {
+        let index = ReviewIndex("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ /dev/null\n-old")
+        XCTAssertEqual(index.sections.map(\.id), [1, 5])
+        XCTAssertEqual(index.sections.map(\.title), ["a.rs", "b.rs"])
+    }
+    func testConnectionGuidanceDoesNotMisclassifyModelErrors() {
+        XCTAssertNil(ConnectionHelp.forMessage("Model context length exceeded"))
+        XCTAssertEqual(ConnectionHelp.forMessage(GatewayFailure.changedIdentity.localizedDescription)?.action, .connections)
+        XCTAssertEqual(ConnectionHelp.forMessage(GatewayFailure.native("INSTANCE_UNAVAILABLE").localizedDescription)?.action, .retry)
+    }
+}
+
 final class NativeContentTests: XCTestCase {
     @MainActor
     func testProfileStoreKeepsIdentityForTheSameGatewayAddress() {

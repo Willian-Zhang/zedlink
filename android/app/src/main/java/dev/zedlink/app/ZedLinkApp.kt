@@ -261,6 +261,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
             Box {
                 IconButton(onClick = { showActions = true }) { Icon(Icons.Default.MoreVert, "Session actions", tint = Ink) }
                 DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                    if (state.delivery.isNotBlank()) DropdownMenuItem(text = { Text(state.delivery) }, enabled = false, onClick = {})
                     DropdownMenuItem(text = { Text("Rename session") }, leadingIcon = { Icon(Icons.Default.Edit, null) },
                         enabled = "thread.rename" in state.capabilities,
                         onClick = { proposedTitle = snapshot?.title.orEmpty(); showActions = false; showRename = true })
@@ -276,7 +277,7 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         if (showCommands) CommandList(state.commands, {
             model.prepareSubagentTask(); showCommands = false
         }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); showCommands = false }
-        if (state.delivery.isNotBlank()) Text(state.delivery, color = Warning, fontSize = 11.sp,
+        if (state.delivery.isNotBlank() && (!state.live || state.sending || state.delivery.startsWith("Delivery unknown"))) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1915)).padding(8.dp))
         if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
         Composer(state, model, { showCommands = !showCommands })
@@ -496,7 +497,7 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
                     Text(if (expanded) "HIDE" else "VIEW", style = monoLabel())
                 }
                 if (expanded) {
-                    subagent.entries.forEach { SelectionContainer { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp) } }
+                    subagent.entries.forEach { Message(NativeEntry.parse(it), subagent.currentTurnId != null) }
                     if (subagent.currentTurnId != null) TextButton(onClick = { model.cancelSubagent(subagent) }) { Text("STOP PARALLEL AGENT") }
                 }
             }
@@ -525,39 +526,54 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
 
 @Composable
 private fun ElicitationCard(item: NativeElicitation, model: ZedLinkViewModel) {
-    val values = remember(item.id) { mutableStateMapOf<String, String>() }
-    val flags = remember(item.id) { mutableStateMapOf<String, Boolean>() }
+    val scope = listOf(model.state.profile?.gatewayId, model.state.targetId, model.state.instanceId, model.state.epoch, model.state.selectedThreadId)
+    val values = remember(item.id, scope) { mutableStateMapOf<String, String>() }
+    val selections = remember(item.id, scope) { mutableStateMapOf<String, Set<String>>() }
+    var validation by remember(item.id, scope) { mutableStateOf("") }
+    val submitting = (scope + item.id).joinToString("\n") in model.state.resolvingElicitations
+    val enabled = model.state.live && "elicitation.respond" in model.state.capabilities && !submitting
     Column(Modifier.fillMaxWidth().background(Color(0xFF1C1915)).border(1.dp, Warning).padding(14.dp)) {
         Text("INPUT REQUESTED", color = Warning, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(item.message, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
         item.url?.let { Text(it, color = Blue, fontSize = 12.sp) }
         item.fields.forEach { field ->
-            if (field.type == "boolean") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(flags[field.id] == true, { flags[field.id] = it })
-                    Text(field.title)
+            val title = field.title + if (field.required) " *" else ""
+            when {
+                field.type == "boolean" -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(ElicitationForm.value(field, values) == "true", { values[field.id] = it.toString() }, enabled = enabled)
+                    Text(title)
                 }
-            } else {
-                OutlinedTextField(values[field.id].orEmpty(), { values[field.id] = it }, label = { Text(field.title) },
-                    modifier = Modifier.fillMaxWidth())
-                if (field.choices.isNotEmpty()) Text("Choices: ${field.choices.joinToString()}", color = Muted, fontSize = 11.sp)
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = { model.respondElicitation(item, "decline") }) { Text("DECLINE") }
-            Button(onClick = {
-                val content = org.json.JSONObject()
-                item.fields.forEach { field ->
-                    when (field.type) {
-                        "boolean" -> content.put(field.id, flags[field.id] == true)
-                        "integer" -> values[field.id]?.toLongOrNull()?.let { content.put(field.id, it) }
-                        "number" -> values[field.id]?.toDoubleOrNull()?.let { content.put(field.id, it) }
-                        "array" -> content.put(field.id, org.json.JSONArray(values[field.id].orEmpty().split(',').map(String::trim).filter(String::isNotEmpty)))
-                        else -> content.put(field.id, values[field.id].orEmpty())
+                field.type == "array" && field.choices.isNotEmpty() -> {
+                    Text(title)
+                    field.choices.forEach { choice ->
+                        val selected = selections[field.id] ?: field.defaultArray.orEmpty().toSet()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(choice in selected, { selections[field.id] = if (it) selected + choice else selected - choice }, enabled = enabled)
+                            Text(choice)
+                        }
                     }
                 }
-                model.respondElicitation(item, "accept", content)
-            }, shape = androidx.compose.ui.graphics.RectangleShape) { Text("SUBMIT") }
+                field.choices.isNotEmpty() -> {
+                    var expanded by remember(item.id, field.id) { mutableStateOf(false) }
+                    Box {
+                        TextButton(onClick = { expanded = true }, enabled = enabled) { Text("$title: ${ElicitationForm.value(field, values).ifEmpty { "No value" }}") }
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            if (!field.required) DropdownMenuItem(text = { Text("No value") }, onClick = { values[field.id] = ""; expanded = false })
+                            field.choices.forEach { choice -> DropdownMenuItem(text = { Text(choice) }, onClick = { values[field.id] = choice; expanded = false }) }
+                        }
+                    }
+                }
+                else -> OutlinedTextField(ElicitationForm.value(field, values), { values[field.id] = it }, label = { Text(title) }, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        if (validation.isNotEmpty()) Text(validation, color = Warning)
+        if (submitting) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { model.respondElicitation(item, "decline") }, enabled = enabled) { Text("DECLINE") }
+            Button(onClick = {
+                try { val content = ElicitationForm.content(item.fields, values, selections); validation = ""; model.respondElicitation(item, "accept", org.json.JSONObject(content)) }
+                catch (error: IllegalArgumentException) { validation = error.message.orEmpty() }
+            }, enabled = enabled, shape = androidx.compose.ui.graphics.RectangleShape) { Text("SUBMIT") }
         }
     }
 }

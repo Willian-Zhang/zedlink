@@ -131,14 +131,8 @@ struct SessionsView: View {
     }
 
     private var diagnostic: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(ZLTheme.warning)
-            Text(session.issue).font(.footnote).foregroundStyle(.secondary)
-        }
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(ZLTheme.warning.opacity(0.08))
-        .overlay(alignment: .bottom) { Hairline() }
-        .accessibilityIdentifier("connection-diagnostic")
+        SessionIssueBanner().frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("connection-diagnostic")
     }
 
     private var emptyThreads: some View {
@@ -302,6 +296,7 @@ struct ConversationView: View {
                 }.accessibilityLabel("Workspace").accessibilityIdentifier("open-workspace")
                 Menu {
                     Text("Connection: \(session.state.label)")
+                    if !session.delivery.isEmpty { Menu("Recent delivery status") { Text(session.delivery) } }
                     Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
                     Button("Rename session", systemImage: "pencil") {
                         proposedTitle = session.snapshot?.title ?? ""; showingRename = true
@@ -322,7 +317,7 @@ struct ConversationView: View {
                     ForEach(snapshot.subagents) { subagent in
                         DisclosureGroup("\(subagent.title) · \(subagent.status)") {
                             ForEach(Array(subagent.entries.enumerated()), id: \.offset) { _, entry in
-                                Text(entry).font(.caption.monospaced()).textSelection(.enabled).padding(.vertical, 4)
+                                NativeMessageView(message: NativeEntryPresentation(entry, index: 0), thinkingLive: subagent.currentTurnID != nil).padding(.vertical, 4)
                             }
                             if subagent.currentTurnID != nil {
                                 Button("Stop parallel agent", role: .destructive) { Task { await session.cancelSubagent(subagent) } }
@@ -404,7 +399,9 @@ struct ConversationView: View {
     private var elicitationStack: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(session.elicitations) { NativeElicitationView(elicitation: $0) }
+                ForEach(session.elicitations) { elicitation in
+                    NativeElicitationView(elicitation: elicitation).id((session.operationScope + [elicitation.id]).joined(separator: "\n"))
+                }
             }.padding(.horizontal, 12).padding(.vertical, 9)
         }
         .background(ZLTheme.warning.opacity(0.07))
@@ -459,7 +456,7 @@ struct ConversationView: View {
             if let snapshot = session.snapshot, snapshot.threadID == threadID, snapshot.isBusy {
                 agentProgress(snapshot)
             }
-            if !session.delivery.isEmpty {
+            if !session.delivery.isEmpty && (session.pending != nil || session.state != .live) {
                 Text(session.delivery).font(.caption).foregroundStyle(ZLTheme.muted)
                     .lineLimit(2).accessibilityIdentifier("delivery-status")
             }
@@ -927,48 +924,53 @@ private struct NativeElicitationView: View {
     @EnvironmentObject private var session: SessionManager
     let elicitation: NativeElicitation
     @State private var values: [String: String] = [:]
-    @State private var flags: Set<String> = []
+    @State private var selections: [String: Set<String>] = [:]
+    @State private var validation = ""
+    private var submitting: Bool { session.isRespondingToElicitation(elicitation.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("INPUT REQUESTED").font(.caption2.monospaced().weight(.semibold)).foregroundStyle(ZLTheme.warning)
             Text(elicitation.message).font(.subheadline.weight(.semibold))
-            if let url = elicitation.url, let destination = URL(string: url) {
-                Link("Open secure input page", destination: destination)
-            }
+            if let url = elicitation.url, let destination = URL(string: url) { Link("Open secure input page", destination: destination) }
             ForEach(elicitation.fields) { field in
+                let title = field.title + (field.required ? " *" : "")
                 if field.type == "boolean" {
-                    Toggle(field.title, isOn: Binding(
-                        get: { flags.contains(field.id) },
-                        set: { enabled in if enabled { flags.insert(field.id) } else { flags.remove(field.id) } }
-                    ))
-                } else if !field.choices.isEmpty {
-                    Picker(field.title, selection: Binding(
-                        get: { values[field.id] ?? field.choices.first ?? "" },
-                        set: { values[field.id] = $0 }
-                    )) { ForEach(field.choices, id: \.self) { Text($0).tag($0) } }
-                } else {
-                    TextField(field.title, text: Binding(
-                        get: { values[field.id] ?? "" }, set: { values[field.id] = $0 }
-                    )).textFieldStyle(.roundedBorder)
-                }
-            }
-            HStack {
-                Button("Decline", role: .destructive) { Task { await session.respondToElicitation(elicitation, action: "decline") } }
-                Button("Submit") {
-                    var content = Dictionary(uniqueKeysWithValues: values.map { ($0.key, $0.value as Any) })
-                    for field in elicitation.fields {
-                        if field.type == "boolean" { content[field.id] = flags.contains(field.id) }
-                        else if field.type == "integer", let value = Int(values[field.id] ?? "") { content[field.id] = value }
-                        else if field.type == "number", let value = Double(values[field.id] ?? "") { content[field.id] = value }
-                        else if field.type == "array" { content[field.id] = (values[field.id] ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                    Toggle(title, isOn: Binding(get: { ElicitationForm.value(field, values: values) == "true" }, set: { values[field.id] = $0 ? "true" : "false" }))
+                } else if field.type == "array", !field.choices.isEmpty {
+                    Text(title).font(.caption)
+                    ForEach(field.choices, id: \.self) { choice in
+                        Toggle(choice, isOn: Binding(get: { (selections[field.id] ?? ElicitationForm.arrayDefault(field)).contains(choice) }, set: { enabled in
+                            var selected = selections[field.id] ?? ElicitationForm.arrayDefault(field)
+                            if enabled { selected.insert(choice) } else { selected.remove(choice) }; selections[field.id] = selected
+                        }))
                     }
-                    Task { await session.respondToElicitation(elicitation, action: "accept", content: content) }
+                } else if !field.choices.isEmpty {
+                    Picker(title, selection: Binding(get: { ElicitationForm.value(field, values: values) }, set: { values[field.id] = $0 })) {
+                        if !field.required { Text("No value").tag("") }
+                        ForEach(field.choices, id: \.self) { Text($0).tag($0) }
+                    }
+                } else {
+                    TextField(title, text: Binding(get: { ElicitationForm.value(field, values: values) }, set: { values[field.id] = $0 }))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .padding(8).overlay(Rectangle().stroke(ZLTheme.line))
+                    if field.type == "array" { Text("Separate values with commas.").font(.caption) }
+                }
+            }.disabled(submitting)
+            if !validation.isEmpty { Text(validation).font(.caption).foregroundStyle(ZLTheme.danger) }
+            if submitting { ProgressView("Submitting response…") }
+            HStack {
+                Button("Decline", role: .destructive) { dismissZedLinkKeyboard(); Task { await session.respondToElicitation(elicitation, action: "decline") } }
+                Button("Submit") {
+                    do {
+                        let content = try ElicitationForm.content(elicitation.fields, values: values, selections: selections)
+                        validation = ""; dismissZedLinkKeyboard()
+                        Task { await session.respondToElicitation(elicitation, action: "accept", content: content) }
+                    } catch { validation = error.localizedDescription }
                 }.buttonStyle(.borderedProminent)
-            }.disabled(session.state != .live)
-        }
-        .padding(14).frame(width: 330, alignment: .leading)
-        .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.5)))
+            }.disabled(session.state != .live || submitting || !session.capabilities.contains("elicitation.respond"))
+        }.padding(14).frame(width: 330, alignment: .leading)
+            .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.5)))
     }
 }
 

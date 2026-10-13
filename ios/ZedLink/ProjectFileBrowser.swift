@@ -127,10 +127,12 @@ struct ProjectFileBrowser: View {
 }
 
 // Lightweight source colors; rendering is bounded by the native file-read limit.
+private let sourceTokenPattern = #"(?m)(//[^\n]*|#[^\n]*|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\b(?:fn|func|let|var|const|class|struct|enum|import|from|def|return|if|else|for|while|public|private|fun|val|true|false|null|nil|async|await)\b|\b\d+(?:\.\d+)?\b)"#
+private let sourceTokenExpression = try? NSRegularExpression(pattern: sourceTokenPattern)
+
 func highlightedSource(_ source: String) -> AttributedString {
     var result = AttributedString(source)
-    let pattern = #"(?m)(//[^\n]*|#[^\n]*|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\b(?:fn|func|let|var|const|class|struct|enum|import|from|def|return|if|else|for|while|public|private|fun|val|true|false|null|nil|async|await)\b|\b\d+(?:\.\d+)?\b)"#
-    guard let expression = try? NSRegularExpression(pattern: pattern) else { return result }
+    guard let expression = sourceTokenExpression else { return result }
     for match in expression.matches(in: source, range: NSRange(source.startIndex..., in: source)).prefix(10000) {
         guard let range = Range(match.range, in: source),
               let lower = AttributedString.Index(range.lowerBound, within: result),

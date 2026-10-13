@@ -43,6 +43,9 @@ import Combine
     @Published private(set) var diffTruncated = false
     @Published private(set) var workspaceLoading = false
     @Published private(set) var resolvingApprovals: Set<String> = []
+    @Published private(set) var resolvingElicitations: Set<String> = []
+    @Published var showConnections = false
+    func isRespondingToElicitation(_ id: String) -> Bool { resolvingElicitations.contains((operationScope + [id]).joined(separator: "\n")) }
     private var diffRequest = UUID()
     private var workspaceRequest = UUID()
     private var searchRequest = UUID()
@@ -528,7 +531,10 @@ import Combine
             fields.append(NativeElicitationField(id: name, title: value["title"] as? String ?? name,
                                                   type: value["type"] as? String ?? "string",
                                                   required: required.contains(name),
-                                                  choices: directChoices + oneOf + itemChoices + itemOneOf))
+                                                  choices: directChoices + oneOf + itemChoices + itemOneOf,
+                                                  defaultValue: Self.formDefault(value["default"], type: value["type"] as? String),
+                                                  minimum: value["minimum"] as? Double, maximum: value["maximum"] as? Double,
+                                                  minLength: value["minLength"] as? Int, maxLength: value["maxLength"] as? Int))
         }
         fields.sort { $0.id < $1.id }
         return NativeElicitation(id: elicitationID,
@@ -536,15 +542,27 @@ import Combine
                                  url: request["url"] as? String, fields: fields)
     }
 
+    private static func formDefault(_ value: Any?, type: String?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        if type == "array", let data = try? JSONSerialization.data(withJSONObject: value), let text = String(data: data, encoding: .utf8) { return text }
+        if type == "boolean", let bool = value as? Bool { return bool ? "true" : "false" }
+        return String(describing: value)
+    }
+
     func respondToElicitation(_ elicitation: NativeElicitation, action: String, content: [String: Any] = [:]) async {
-        guard state == .live, let client, let threadID = selectedThreadID, elicitations.contains(where: { $0.id == elicitation.id }) else { return }
+        guard state == .live, capabilities.contains("elicitation.respond"), !isRespondingToElicitation(elicitation.id),
+              let client, let threadID = selectedThreadID, elicitations.contains(where: { $0.id == elicitation.id }) else { return }
         let scope = operationScope
+        let key = (scope + [elicitation.id]).joined(separator: "\n")
+        resolvingElicitations.insert(key)
+        defer { resolvingElicitations.remove(key) }
         do {
-            _ = try await client.rpc("elicitation.respond", params: [
+            let result = try await client.rpc("elicitation.respond", params: [
                 "instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID,
                 "elicitation_id": elicitation.id, "action": action, "content": content,
             ])
             guard scope == operationScope else { return }
+            guard result["outcome"] as? String == "resolved" else { throw GatewayFailure.invalidResponse }
             try await loadAuxiliaryState(threadID)
         } catch { if scope == operationScope { issue = error.localizedDescription } }
     }
@@ -868,11 +886,22 @@ import Combine
         diffLoading = true; diffContent = ""; diffTruncated = false
         defer { if request == diffRequest { diffLoading = false } }
         do {
-            let result = try await client.rpc("changes.diff", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "revision": revision])
-            guard scope == operationScope, request == diffRequest, revision == changesRevision else { return }
-            diffContent = result["diff"] as? String ?? ""
-            diffTruncated = result["truncated"] as? Bool ?? false
-        } catch { if scope == operationScope, request == diffRequest { issue = error.localizedDescription } }
+            for _ in 0..<40 {
+                try Task.checkCancellation()
+                guard scope == operationScope, request == diffRequest, revision == changesRevision else { return }
+                let result = try await client.rpc("changes.diff", params: ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID, "revision": revision])
+                guard scope == operationScope, request == diffRequest, revision == changesRevision else { return }
+                guard result["revision"] as? String == revision else { throw GatewayFailure.invalidResponse }
+                if result["outcome"] as? String == "ready", let content = result["diff"] as? String {
+                    diffContent = content.isEmpty ? "No textual diff at this revision." : content
+                    diffTruncated = result["truncated"] as? Bool ?? false
+                    return
+                }
+                guard result["outcome"] as? String == "loading" else { throw GatewayFailure.invalidResponse }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            throw GatewayFailure.native("Diff is still loading. Refresh again to check its status.")
+        } catch is CancellationError {} catch { if scope == operationScope, request == diffRequest { issue = error.localizedDescription } }
     }
 
     func searchProject(_ query: String) async throws -> (matches: [ProjectSearchMatch], truncated: Bool) {

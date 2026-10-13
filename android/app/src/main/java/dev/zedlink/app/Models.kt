@@ -49,6 +49,9 @@ data class NativeApprovalDecision(
 
 data class NativeElicitationField(
     val id: String, val title: String, val type: String, val required: Boolean, val choices: List<String>,
+    val defaultValue: String? = null, val defaultArray: List<String>? = null,
+    val minimum: Double? = null, val maximum: Double? = null,
+    val minLength: Int? = null, val maxLength: Int? = null,
 )
 data class NativeElicitation(
     val id: String, val message: String, val url: String?, val fields: List<NativeElicitationField>,

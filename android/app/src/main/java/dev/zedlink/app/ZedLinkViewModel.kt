@@ -38,6 +38,7 @@ data class AppState(
     val issue: String = "",
     val sending: Boolean = false,
     val elicitations: List<NativeElicitation> = emptyList(),
+    val resolvingElicitations: Set<String> = emptySet(),
     val queuedMessages: List<NativeQueueEntry> = emptyList(),
     val editReview: NativeEditReview? = null,
     val threadSettings: NativeThreadSettings? = null,
@@ -515,7 +516,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                         (items?.optJSONArray("oneOf")).objects().mapNotNull { it.opt("const")?.toString() },
                     ).flatten()
                     NativeElicitationField(name, field.optString("title", name), field.optString("type", "string"),
-                        name in required, choices)
+                        name in required, choices,
+                        field.opt("default")?.takeIf { it != JSONObject.NULL && it !is JSONArray }?.toString(),
+                        field.optJSONArray("default")?.strings(),
+                        field.opt("minimum")?.let { (it as? Number)?.toDouble() }, field.opt("maximum")?.let { (it as? Number)?.toDouble() },
+                        field.opt("minLength")?.let { (it as? Number)?.toInt() }, field.opt("maxLength")?.let { (it as? Number)?.toInt() })
                 }?.sortedBy { it.id }?.toList().orEmpty()
                 NativeElicitation(row.optString("elicitation_id"), request.optString("message", "Agent needs more information"),
                     request.optString("url").takeIf { it.isNotBlank() }, fields)
@@ -546,11 +551,21 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun respondElicitation(item: NativeElicitation, action: String, content: JSONObject = JSONObject()) = viewModelScope.launch {
         val threadId = state.selectedThreadId ?: return@launch
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, threadId)
+        val key = (scope + item.id).joinToString("\n")
+        if (!state.live || "elicitation.respond" !in state.capabilities || key in state.resolvingElicitations || state.elicitations.none { it.id == item.id }) return@launch
+        val rpcClient = client ?: return@launch
+        state = state.copy(resolvingElicitations = state.resolvingElicitations + key)
+        fun current() = scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
         try {
-            client?.rpc("elicitation.respond", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+            val result = rpcClient.rpc("elicitation.respond", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
                 .put("thread_id", threadId).put("elicitation_id", item.id).put("action", action).put("content", content))
-            loadAuxiliaryState(threadId)
-        } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) }
+            if (current()) {
+                require(result.optString("outcome") == "resolved") { "Zed did not confirm this response." }
+                loadAuxiliaryState(threadId)
+            }
+        } catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty()) }
+        finally { state = state.copy(resolvingElicitations = state.resolvingElicitations - key) }
     }
 
     fun clearQueue() = viewModelScope.launch {

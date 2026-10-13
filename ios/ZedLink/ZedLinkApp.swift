@@ -44,6 +44,9 @@ import SwiftUI
             .toolbarBackground(ZLTheme.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .onChange(of: selectedTab) { _, _ in dismissZedLinkKeyboard() }
+            .onChange(of: session.showConnections) { _, requested in
+                if requested { sessionsPath = []; selectedTab = 1; session.showConnections = false }
+            }
             .task {
                 ApprovalNotifications.shared.configure()
                 ApprovalNotifications.shared.handler = { data, action in

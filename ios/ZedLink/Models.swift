@@ -95,6 +95,11 @@ struct NativeElicitationField: Identifiable, Equatable {
     let type: String
     let required: Bool
     let choices: [String]
+    var defaultValue: String? = nil
+    var minimum: Double? = nil
+    var maximum: Double? = nil
+    var minLength: Int? = nil
+    var maxLength: Int? = nil
 }
 
 struct NativeElicitation: Identifiable, Equatable {

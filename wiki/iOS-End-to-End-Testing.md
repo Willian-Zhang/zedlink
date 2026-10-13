@@ -84,6 +84,27 @@ Test Wi-Fi, cellular/Tailscale, background/return, and gateway restart separatel
 
 In Settings, use **Enable local approval alerts**, then **Send test notification**. The test schedules a harmless alert after three seconds. Check Notification Center and Focus settings if a banner is hidden. If permission is denied, use **Open iPhone notification settings**; repeated permission requests cannot override a denial. Scheduling failures now appear in Settings rather than being silently discarded. See [Apple's notification authorization reference](https://developer.apple.com/documentation/usernotifications/unnotificationsettings/authorizationstatus). This test validates local delivery only; it does not test gateway approvals, watch mirroring or suspended-app push.
 
-## Current evidence
+## Approval forms and review controls
+
+The native iOS client now submits the dropdown value it actually displays, applies schema defaults, validates required fields, finite numbers, integer values, numeric bounds and string lengths, and offers multiple choices for enumerated arrays. Android uses the same form rules. Optional untouched fields are omitted. These controls cover the advertised primitive fields; they are not a complete JSON Schema implementation. Nested objects and unsupported input types require desktop Zed.
+
+Submission is blocked while a response is in flight, scoped to gateway/profile, workspace, instance, epoch, conversation and request. Approve/Decline still use Zed's existing permission and elicitation paths. There is no automatic approval or automatic retry of an uncertain response.
+
+On iOS, expanded subagent messages use the same Markdown/tool/thinking renderer as the main conversation. File previews cache line splitting and syntax highlighting for the current content; searches cache matching line IDs. Find has Previous/Next and a position indicator. The review menu offers Jump to line and, for unified diffs, Jump to file. Diff reads poll Zed's existing loading/ready response and discard results after workspace/revision changes. Caching has been inspected in source; device performance has not been measured.
+
+Known connectivity errors now explain the likely next step and offer Reconnect or Open Connections. Identity/certificate failures never bypass TLS verification. Routine delivery text moves into the session menu; unknown delivery and offline status remain visible.
+
+Dictation Stop ends audio capture and allows final recognition results to arrive before cleanup, with a three-second timeout. Preparing/listening/finishing states are visible and labeled; Reduced Motion suppresses the waveform animation. Speech stays in an editable draft and is never submitted automatically. See Apple's [`endAudio()` reference](https://developer.apple.com/documentation/speech/sfspeechaudiobufferrecognitionrequest/endaudio%28%29).
+
+Before distribution, test these additions with a disposable project:
+
+- Submit an untouched required dropdown, optional blank field, false boolean, multi-choice array and invalid/out-of-range number; compare the values received by the native agent.
+- Tap Submit/Decline repeatedly, decide the same request on desktop, and switch connections while a response is pending. Confirm only the intended request is resolved and no old form state appears in the new session.
+- Expand a running subagent with lists, tables, tool output and thinking. Compare its published content and progress with desktop Zed.
+- Review a large permitted file and multi-file diff: Previous/Next wraps, match counts reset on new searches, Jump to line/file scrolls correctly, and a deleted file has the correct name.
+- Speak a final word immediately before pressing Stop. Verify it reaches the editable draft; test permissions, cancellation, manual edits, backgrounding and unsupported on-device languages separately.
+- Disconnect network/VPN, use an invalid hostname/certificate, revoke pairing, close Zed and remove exposure. Confirm accurate guidance without replaying a prompt or weakening verification.
+
+## Validation limitations
 
 Local Linux checks cover Swift syntax, shell syntax, public working-tree checks, and the disposable gateway/browser transport fixture. They do not compile SwiftUI or run iOS XCTest. This revision still requires a Mac build and the simulator/physical-device checks above before being considered validated for distribution.

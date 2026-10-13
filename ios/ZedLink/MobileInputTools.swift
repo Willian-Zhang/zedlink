@@ -6,6 +6,8 @@ import UIKit
 @MainActor
 private final class DraftDictation: ObservableObject {
     @Published var listening = false
+    @Published var starting = false
+    @Published var finishing = false
     @Published var transcript = ""
     @Published var issue = ""
     private let engine = AVAudioEngine()
@@ -13,11 +15,16 @@ private final class DraftDictation: ObservableObject {
     private var task: SFSpeechRecognitionTask?
     private var tapped = false
     private var generation = UUID()
+    private var finishTimeout: Task<Void, Never>?
+    private var audioActive = false
 
     func start() async {
-        guard !listening else { stop(); return }
+        guard !starting, !finishing else { return }
+        guard !listening else { finish(); return }
         stop()
         let current = generation
+        starting = true
+        defer { if current == generation { starting = false } }
         let authorization = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
@@ -34,6 +41,7 @@ private final class DraftDictation: ObservableObject {
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.record, mode: .measurement)
             try audio.setActive(true)
+            audioActive = true
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.requiresOnDeviceRecognition = true
             request.shouldReportPartialResults = true
@@ -54,13 +62,33 @@ private final class DraftDictation: ObservableObject {
             }
         } catch { issue = error.localizedDescription; stop() }
     }
-    func stop() {
-        generation = UUID()
+    func finish() {
+        guard listening, !finishing else { return }
+        stopAudioCapture()
+        listening = false; finishing = true
+        request?.endAudio()
+        let current = generation
+        finishTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            guard let self, self.generation == current else { return }
+            self.stop()
+        }
+    }
+    private func stopAudioCapture() {
         if engine.isRunning { engine.stop() }
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
-        request?.endAudio(); task?.cancel(); task = nil; request = nil; listening = false
-        do { try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
-        catch { issue = error.localizedDescription }
+    }
+    func stop() {
+        generation = UUID()
+        finishTimeout?.cancel(); finishTimeout = nil
+        stopAudioCapture()
+        request?.endAudio(); task?.cancel(); task = nil; request = nil
+        listening = false; starting = false; finishing = false
+        if audioActive {
+            audioActive = false
+            do { try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+            catch { if issue.isEmpty { issue = error.localizedDescription } }
+        }
     }
 }
 
@@ -71,12 +99,18 @@ struct VoiceDraftButton: View {
     @State private var original = ""
     @State private var lastApplied = ""
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Button {
-            if dictation.listening { dictation.stop() }
+            if dictation.listening { dictation.finish() }
             else { original = text; lastApplied = text; Task { await dictation.start() } }
-        } label: { Image(systemName: dictation.listening ? "mic.fill" : "mic").frame(width: 44, height: 44) }
-        .accessibilityLabel(dictation.listening ? "Stop dictation" : "Dictate draft text")
+        } label: {
+            Group {
+                if dictation.starting || dictation.finishing { ProgressView().controlSize(.small) }
+                else { Image(systemName: dictation.listening ? "waveform" : "mic").symbolEffect(.variableColor, isActive: dictation.listening && !reduceMotion) }
+            }.frame(width: 44, height: 44)
+        }.disabled(dictation.starting || dictation.finishing)
+        .accessibilityLabel(dictation.starting ? "Preparing dictation" : dictation.finishing ? "Finishing dictation" : dictation.listening ? "Stop dictation" : "Dictate draft text")
         .onChange(of: dictation.transcript) { _, value in
             guard text == lastApplied else { dictation.stop(); return }
             lastApplied = String((original + (original.isEmpty || value.isEmpty ? "" : " ") + value).prefix(3000))
