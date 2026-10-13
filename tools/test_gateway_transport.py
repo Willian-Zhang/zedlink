@@ -258,6 +258,11 @@ class ProbeFixture:
                     }
                 elif method == "thread.elicitations":
                     result = {"thread_id": params["thread_id"], "elicitations": list(self.elicitations)}
+                elif method == "thread.approvals":
+                    approvals = list(self.approvals)
+                    for subagent in self.subagents:
+                        approvals.extend(subagent.get("pending_approvals", []))
+                    result = {"thread_id": params["thread_id"], "approvals": approvals, "provisional": True}
                 elif method == "elicitation.respond":
                     self.elicitation_responses.append(dict(params)); self.elicitations = []
                     result = {"thread_id": params["thread_id"], "outcome": "resolved"}

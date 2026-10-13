@@ -109,42 +109,51 @@ private fun BottomTabs(selected: Tab, inThread: Boolean, onSelect: (Tab) -> Unit
 @Composable
 private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnections: () -> Unit) {
     var query by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf("All") }
     var showingNew by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val threads = state.threads.filter { it.title.contains(query, true) || it.id.contains(query, true) }
+    val threads = state.threads.filter {
+        val activity = SessionActivity.from(it)
+        ("${it.title} ${it.agentName} ${it.id}".contains(query, true)) &&
+            (filter == "All" || filter == "Needs attention" && activity.attention || filter == "Running" && activity.running || filter == "Pinned" && it.id in state.pinnedThreads)
+    }.sortedWith(compareByDescending<NativeThread> { it.id in state.pinnedThreads }.thenBy { it.title.lowercase() })
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Header("ZedLink", if (state.live) state.status else "Private native Agent access") {
+            Header("Sessions", "") {
                 Row {
-                    IconButton(onClick = { showingNew = true }, enabled = "thread.create" in state.capabilities) {
-                        Icon(Icons.Default.Add, "Create Agent session", tint = Ink)
-                    }
+                    IconButton(onClick = { showingNew = true }, enabled = state.live && "thread.create" in state.capabilities) { Icon(Icons.Default.Add, "Create Agent session", tint = Ink) }
                     IconButton(onClick = model::refresh, enabled = state.profile != null) { Icon(Icons.Default.Refresh, "Refresh", tint = Ink) }
                 }
             }
-            if (state.profile == null) {
-                Column(Modifier.fillMaxWidth().background(Surface).clickable(onClick = showConnections).padding(20.dp)) {
-                    Text("Choose a connection", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Pair a private ZedLink gateway from Connections.", color = Muted, modifier = Modifier.padding(top = 8.dp))
-                }
-            } else ConnectionStrip(state, model)
+            if (state.profile == null) TextButton(onClick = showConnections) { Text("Choose a connection") } else ConnectionStrip(state, model)
             if (state.issue.isNotBlank()) Notice(state.issue)
-            FlatInput(query, { query = it }, "Search exposed sessions", Modifier.padding(16.dp))
-            SectionHeading("EXPOSED ZED THREADS", state.threads.size.toString())
+            FlatInput(query, { query = it }, "Search sessions or agents", Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp)) {
+                listOf("All", "Needs attention", "Running", "Pinned").forEach { label ->
+                    TextButton(onClick = { filter = label; focusManager.clearFocus() }) { Text(label, color = if (filter == label) Ink else Muted) }
+                }
+            }
+            Rule()
         }
         if (threads.isEmpty()) item {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Default.DesktopWindows, null, tint = Muted)
-                Text("No exposed sessions", fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-                Text("In patched Zed, open a native Agent conversation and select /remote-control.", color = Muted)
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (state.profile == null) "Choose a connection" else if (state.threads.isEmpty()) { if (state.live) "No exposed sessions" else "Sessions unavailable" } else "No matching sessions", fontSize = 19.sp)
+                Text(if (state.threads.isEmpty()) "Expose a conversation with /remote-control in desktop Zed, or create a session using +." else "Try another search or filter.", color = Muted)
             }
         }
-        items(threads, key = { it.id }) { thread -> ThreadRow(thread) {
-            focusManager.clearFocus(force = true)
-            model.selectThread(thread.id)
-        } }
+        listOf("Needs attention", "Running", "Ready & other").forEach { group ->
+            val rows = threads.filter { SessionActivity.from(it).group == group }
+            if (rows.isNotEmpty()) {
+                item { SectionHeading(group.uppercase(), rows.size.toString()) }
+                items(rows, key = { it.id }) { thread ->
+                    ThreadRow(thread, state.live, thread.id in state.pinnedThreads, thread.id in state.updatedThreads, { model.toggleSessionPin(thread.id) }) {
+                        focusManager.clearFocus(force = true); model.selectThread(thread.id)
+                    }
+                }
+            }
+        }
     }
-    if (showingNew) NewSessionDialog(state, model, { showingNew = false })
+    if (showingNew) NewSessionDialog(state, model) { showingNew = false }
 }
 
 @Composable
@@ -188,52 +197,41 @@ private fun NewSessionDialog(state: AppState, model: ZedLinkViewModel, dismiss: 
 
 @Composable
 private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
-    Column(Modifier.fillMaxWidth().background(Surface).padding(16.dp)) {
-      Row(verticalAlignment = Alignment.Top) {
-        Icon(Icons.Default.Bolt, null, tint = if (state.live) Green else Warning)
-        Column(Modifier.padding(start = 12.dp).weight(1f)) {
-            Text(state.profile?.name.orEmpty(), fontWeight = FontWeight.SemiBold)
-            Text(state.profile?.endpoint.orEmpty(), color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("Private HTTPS · Native Zed Agent", color = Subtle, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-        }
-        Text(state.status.uppercase(), color = if (state.live) Green else Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-      }
-      if (state.targets.size > 1) {
-        var expanded by remember { mutableStateOf(false) }
-        Box(Modifier.padding(top = 12.dp)) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) {
             TextButton(onClick = { expanded = true }) {
-                val label = state.targets.firstOrNull { it.id == state.targetId }?.label ?: "Choose Zed target"
-                Text("$label  ▾")
+                Text("${state.profile?.name} › ${state.targets.firstOrNull { it.id == state.targetId }?.label ?: "Workspace"} ▾", color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                state.targets.forEach { target ->
-                    DropdownMenuItem(text = { Text("${target.label}${if (target.available) "" else " · unavailable"}") },
-                        enabled = target.available, onClick = { expanded = false; model.selectTarget(target.id) })
-                }
+                DropdownMenuItem(text = { Text(state.profile?.endpoint.orEmpty()) }, onClick = {}, enabled = false)
+                state.targets.forEach { target -> DropdownMenuItem(text = { Text(target.label + if (target.available) "" else " · unavailable") }, enabled = target.available, onClick = { expanded = false; model.selectTarget(target.id) }) }
             }
         }
-      }
+        Text(if (state.live) "Connected" else state.status, color = if (state.live) Green else Warning, fontSize = 10.sp)
     }
     Rule()
 }
 
 @Composable
-private fun ThreadRow(thread: NativeThread, open: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = open).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(if (thread.status == "Idle") Icons.Default.ChatBubbleOutline else Icons.Default.GraphicEq, null,
-            tint = if (thread.status == "Idle") Muted else Blue, modifier = Modifier.size(21.dp))
-        Column(Modifier.padding(horizontal = 12.dp).weight(1f)) {
-            Text(thread.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (thread.status == "Idle") "● READY" else "● WORKING", color = if (thread.status == "Idle") Green else Blue,
-                    fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-                Text("  ·  ${thread.id.take(8)}", color = Subtle, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+private fun ThreadRow(thread: NativeThread, live: Boolean, pinned: Boolean, updated: Boolean, togglePin: () -> Unit, open: () -> Unit) {
+    val activity = SessionActivity.from(thread)
+    val tint = if (activity.attention) Warning else if (activity.running) Blue else Muted
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f).clickable(onClick = open).padding(start = 16.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (live && activity.running) CircularProgressIndicator(color = tint, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+            else Icon(if (activity.attention) Icons.Default.ErrorOutline else Icons.Default.ChatBubbleOutline, null, tint = tint, modifier = Modifier.size(20.dp))
+            Column(Modifier.padding(horizontal = 10.dp).weight(1f)) {
+                Text(thread.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                val count = if (activity == SessionActivity.APPROVAL) " (${thread.approvalCount})" else if (activity == SessionActivity.INPUT) " (${thread.inputCount})" else ""
+                Text("${thread.agentName} · ${if (live) "" else "Last known: "}${activity.label}$count", color = tint, fontSize = 11.sp)
+                if (updated) Text("New activity", color = Blue, fontSize = 10.sp)
             }
+            Icon(Icons.Default.ChevronRight, null, tint = Subtle, modifier = Modifier.size(18.dp))
         }
-        Icon(Icons.Default.ChevronRight, null, tint = Subtle)
+        IconButton(onClick = togglePin) { Icon(Icons.Default.PushPin, if (pinned) "Unpin session" else "Pin session", tint = if (pinned) Blue else Subtle) }
     }
-    Rule(48.dp)
+    Rule(16.dp)
 }
 
 @Composable
@@ -482,8 +480,17 @@ private fun AgentProgress(status: String, canCancel: Boolean) {
 private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier: Modifier = Modifier) {
     val list = rememberLazyListState()
     var rewindPoint by remember { mutableStateOf<NativeRewindPoint?>(null) }
-    LaunchedEffect(snapshot.lastSequence) { if (snapshot.entries.isNotEmpty()) list.animateScrollToItem(snapshot.entries.lastIndex + 1) }
-    LazyColumn(modifier.fillMaxWidth(), state = list, contentPadding = PaddingValues(bottom = 10.dp)) {
+    var following by remember(snapshot.threadId) { mutableStateOf(true) }
+    LaunchedEffect(list) {
+        snapshotFlow { list.isScrollInProgress to list.canScrollForward }.collect { (scrolling, canScroll) ->
+            if (scrolling) following = !canScroll
+        }
+    }
+    LaunchedEffect(snapshot.lastSequence, following) {
+        if (following && snapshot.entries.isNotEmpty()) list.scrollToItem(maxOf(0, list.layoutInfo.totalItemsCount - 1))
+    }
+    Column(modifier.fillMaxWidth()) {
+    LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, contentPadding = PaddingValues(bottom = 10.dp)) {
         if (snapshot.hasOlderEntries) item {
             TextButton(onClick = model::loadEarlierHistory, shape = androidx.compose.ui.graphics.RectangleShape) {
                 Text("LOAD EARLIER CONVERSATION · ${snapshot.entryStartIndex} REMAINING", color = Muted)
@@ -515,6 +522,8 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
         items(model.state.elicitations, key = { "elicitation:${it.id}" }) { ElicitationCard(it, model) }
         model.state.editReview?.let { review -> item("edit-review") { EditReviewCard(review, model) } }
         if (model.state.queuedMessages.isNotEmpty()) item("queue") { QueueCard(model.state.queuedMessages, model) }
+    }
+    if (!following) TextButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Latest ↓") }
     }
     rewindPoint?.let { point -> AlertDialog(
         onDismissRequest = { rewindPoint = null }, title = { Text("Rewind this conversation?") },

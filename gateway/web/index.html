@@ -60,6 +60,12 @@
         </form>
         <label class="sr-only" for="session-search">Search sessions</label>
         <input id="session-search" type="search" placeholder="Search sessions" autocomplete="off">
+        <nav id="session-filters" class="session-filters" aria-label="Filter sessions">
+          <button type="button" data-filter="All" aria-pressed="true">All</button>
+          <button type="button" data-filter="Needs attention" aria-pressed="false">Needs attention</button>
+          <button type="button" data-filter="Running" aria-pressed="false">Running</button>
+          <button type="button" data-filter="Pinned" aria-pressed="false">Pinned</button>
+        </nav>
         <div class="list-label"><span>EXPOSED THREADS</span><span id="thread-count">0</span></div>
         <div id="thread-list" class="thread-list" aria-label="Exposed Zed threads"></div>
         <p class="sidebar-tip">To expose another thread, choose <code>/remote-control</code> in desktop Zed.</p>

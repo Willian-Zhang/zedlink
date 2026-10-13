@@ -165,7 +165,7 @@ struct CodeReviewView: View {
     }
     private func lineBackground(_ line: ReviewLine) -> Color {
         guard diff else { return .clear }
-        switch line.kind { case .added: ZLTheme.healthy.opacity(0.08); case .removed: ZLTheme.danger.opacity(0.08); default: .clear }
+        return switch line.kind { case .added: ZLTheme.healthy.opacity(0.08); case .removed: ZLTheme.danger.opacity(0.08); default: .clear }
     }
 }
 

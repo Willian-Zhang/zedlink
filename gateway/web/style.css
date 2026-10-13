@@ -116,6 +116,14 @@ input[type=search] { appearance: none; }
 .thread-list { display: grid; gap: 4px; }
 .thread-item { display: block; width: 100%; min-height: 102px; padding: 16px 14px; border: 0; border-left: 2px solid transparent; border-radius: 0; background: #08090a; color: var(--ink); text-align: left; }
 .thread-item:hover { background: #111315; }
+.session-filters { display: flex; gap: 12px; overflow-x: auto; margin: 8px 0; }
+.session-filters button { flex-shrink: 0; min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 0 2px; font-size: .75rem; }
+.session-filters button[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+.session-group { color: var(--muted); font: .68rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: .1em; margin: 18px 0 8px; }
+.session-row { display: flex; border-bottom: 1px solid var(--line); }
+.session-row .thread-item { flex: 1; min-width: 0; background: transparent; }
+.session-pin { flex: 0 0 44px; border: 0; background: transparent; color: var(--muted); align-self: center; min-height: 44px; }
+.session-pin[aria-pressed="true"] { color: var(--ink); }
 .thread-item.active { border-left-color: var(--ink); background: #141618; }
 .thread-item.running { border-left-color: #78a8e8; background: linear-gradient(90deg, #101820 0, transparent 72%); }
 .thread-item strong { display: -webkit-box; overflow: hidden; margin-top: 9px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .93rem; font-weight: 600; line-height: 1.35; }

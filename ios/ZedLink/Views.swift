@@ -15,7 +15,7 @@ struct SessionsView: View {
     @FocusState private var searchFocused: Bool
     private let groups = ["Needs attention", "Running", "Ready & other"]
     private func key(_ thread: NativeThread) -> String {
-        SessionLibrary.key(profile: session.profile?.id.uuidString ?? "", target: session.targetID ?? "", thread: thread.id)
+        SessionLibrary.key(profile: session.profile?.gatewayID ?? "", target: session.targetID ?? "", thread: thread.id)
     }
     private var visibleThreads: [NativeThread] {
         session.threads.filter { thread in
@@ -96,7 +96,7 @@ struct SessionsView: View {
                 .sheet(isPresented: $showingNewSession) { NewSessionView() }
                 .navigationDestination(for: String.self) { ConversationView(threadID: $0) }
                 .onChange(of: session.threads, initial: true) { _, threads in
-                    library.observe(threads, profile: session.profile?.id.uuidString ?? "", target: session.targetID ?? "", selected: session.selectedThreadID)
+                    library.observe(threads, profile: session.profile?.gatewayID ?? "", target: session.targetID ?? "", selected: session.selectedThreadID)
                 }
                 .onChange(of: session.notificationThreadID) { _, thread in
                     if let thread { searchFocused = false; navigationPath = [thread]; session.notificationThreadID = nil }

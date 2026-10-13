@@ -25,6 +25,8 @@ data class AppState(
     val status: String = "Offline",
     val live: Boolean = false,
     val threads: List<NativeThread> = emptyList(),
+    val pinnedThreads: Set<String> = emptySet(),
+    val updatedThreads: Set<String> = emptySet(),
     val selectedThreadId: String? = null,
     val snapshot: ThreadSnapshot? = null,
     val commands: List<NativeCommand> = emptyList(),
@@ -211,7 +213,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val profile = state.profile ?: return
         pollJob?.cancel(); client = null; pendingId = null; pendingText = null
         preferences.edit().putString("target.${profile.gatewayId}", target.id).apply()
-        state = state.copy(targetId = target.id, threads = emptyList(), selectedThreadId = null,
+        state = state.copy(targetId = target.id, threads = emptyList(), selectedThreadId = null, updatedThreads = emptySet(), pinnedThreads = emptySet(),
             snapshot = null, commands = emptyList(), instanceId = null, epoch = null, live = false,
             projectFiles = emptyList(), projectFolderEntries = null, previewLoading = false, previewReadable = false, previewTitle = "", previewContent = "")
         connect()
@@ -220,7 +222,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     fun connect(profile: ConnectionProfile) {
         if (state.profile?.gatewayId != profile.gatewayId) {
             pollJob?.cancel(); client = null; pendingId = null; pendingText = null
-            state = state.copy(profile = profile, threads = emptyList(), selectedThreadId = null,
+            state = state.copy(profile = profile, threads = emptyList(), selectedThreadId = null, updatedThreads = emptySet(), pinnedThreads = emptySet(),
                 snapshot = null, commands = emptyList(), capabilities = emptySet(), targets = emptyList(), targetId = null,
                 instanceId = null, epoch = null, issue = "", delivery = "",
                 projectFiles = emptyList(), projectFolderEntries = null, previewLoading = false, previewReadable = false, previewTitle = "", previewContent = "")
@@ -234,6 +236,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val draft = preferences.getString("draft.$id", "").orEmpty()
         previewRequest += 1; directoryRequest += 1
         state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "",
+            updatedThreads = state.updatedThreads - id,
             projectFolderEntries = null, projectFiles = emptyList(), projectFilesTruncated = false, previewReadable = false, previewLoading = false, previewContent = "", previewTitle = "")
         runCatching { loadSnapshot(id); loadCommands(id) }
             .onFailure { state = state.copy(issue = it.message.orEmpty()) }
@@ -426,14 +429,43 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun loadThreads() {
-        val result = client!!.rpc("thread.list"); checkIdentity(result)
+        val rpcClient = client ?: return
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch)
+        val result = rpcClient.rpc("thread.list"); checkIdentity(result)
         val threads = result.optJSONArray("threads").objects().mapNotNull { row ->
             val id = row.optString("thread_id"); if (id.isBlank()) null else NativeThread(
-                id, row.optString("title", "Untitled Agent thread"), row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"))
+                id, row.optString("title", "Untitled Agent thread"), row.optString("status", "Unknown"), row.optIntOrNull("current_turn_id"),
+                row.optJSONObject("agent")?.optString("name")?.takeIf { it.isNotBlank() } ?: "Zed Agent",
+                row.optJSONObject("retry_status") != null, row.optBoolean("had_error") || row.optJSONObject("agent_error") != null)
+        }.map { thread ->
+            if (state.selectedThreadId != null) thread else {
+                val cacheKey = (scope + thread.id).joinToString("\n")
+                val cached = sessionCounts[cacheKey]
+                if (cached != null && System.currentTimeMillis() - cached.first < 5000 && cached.second.currentTurnId == thread.currentTurnId && cached.second.status == thread.status) {
+                    thread.copy(approvalCount = cached.second.approvalCount, inputCount = cached.second.inputCount)
+                } else {
+                    val params = JSONObject().put("thread_id", thread.id).put("instance_id", state.instanceId).put("epoch", state.epoch)
+                    val approvals = if ("thread.approvals" in state.capabilities) rpcClient.rpc("thread.approvals", params).optJSONArray("approvals")?.length() else null
+                    val inputs = if ("thread.elicitations" in state.capabilities) rpcClient.rpc("thread.elicitations", params).optJSONArray("elicitations").objects().count { it.optString("status") == "pending" } else null
+                    thread.copy(approvalCount = approvals, inputCount = inputs).also { sessionCounts[cacheKey] = System.currentTimeMillis() to it }
+                }
+            }
         }
+        if (scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch)) return
+        val changed = threads.filter { thread -> state.threads.any { it.id == thread.id && it != thread } && thread.id != state.selectedThreadId }.map { it.id }.toSet()
         val selected = state.selectedThreadId?.takeIf { id -> threads.any { it.id == id } }
         state = state.copy(threads = threads, selectedThreadId = selected,
+            pinnedThreads = preferences.getStringSet(sessionPinsKey(), emptySet()).orEmpty().toSet(),
+            updatedThreads = (state.updatedThreads + changed) - setOfNotNull(selected),
             snapshot = if (selected == null) null else state.snapshot)
+    }
+
+    private val sessionCounts = mutableMapOf<String, Pair<Long, NativeThread>>()
+    private fun sessionPinsKey() = "sessionPins." + listOf(state.profile?.gatewayId, state.targetId).joinToString("\n")
+    fun toggleSessionPin(id: String) {
+        val pins = if (id in state.pinnedThreads) state.pinnedThreads - id else state.pinnedThreads + id
+        preferences.edit().putStringSet(sessionPinsKey(), pins).apply()
+        state = state.copy(pinnedThreads = pins)
     }
 
     private suspend fun loadSnapshot(id: String) {

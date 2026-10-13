@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.12.13";
+const UI_BUILD = "2026.10.12.14";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -1153,6 +1153,30 @@ async function loadThreads() {
     nextSelected.status, nextSelected.current_turn_id, nextSelected.had_error,
     nextSelected.agent_error, nextSelected.retry_status,
   ]) : null;
+  const scope = JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch]);
+  for (const thread of result.threads) {
+    const key = sessionKey(thread);
+    const cached = sessionSummaryCache.get(key);
+    if (cached && Date.now() - cached.at < 5000 && cached.turn === thread.current_turn_id && cached.status === thread.status && cached.epoch === state.epoch) {
+      thread.approval_count = cached.approvals; thread.input_count = cached.inputs;
+    } else {
+      const params = { ...baseInstanceParams(), thread_id: thread.thread_id };
+      if (state.capabilities.includes("thread.approvals")) {
+        const result = await rpc("thread.approvals", params);
+        if (scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
+        thread.approval_count = Array.isArray(result.approvals) ? result.approvals.length : null;
+      }
+      if (state.capabilities.includes("thread.elicitations")) {
+        const result = await rpc("thread.elicitations", params);
+        if (scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
+        thread.input_count = Array.isArray(result.elicitations) ? result.elicitations.filter((row) => row.status === "pending").length : null;
+      }
+      sessionSummaryCache.set(key, { at: Date.now(), epoch: state.epoch, turn: thread.current_turn_id, status: thread.status, approvals: thread.approval_count, inputs: thread.input_count });
+    }
+    const signature = JSON.stringify([thread.status, thread.current_turn_id, !!thread.had_error, !!validRetryStatus(thread.retry_status), thread.approval_count, thread.input_count]);
+    if (sessionObserved.has(key) && sessionObserved.get(key) !== signature && state.threadId !== thread.thread_id) sessionUpdated.add(key);
+    sessionObserved.set(key, signature);
+  }
   state.threads = result.threads;
   state.lastThreadsAt = Date.now();
   renderThreads();
@@ -1345,54 +1369,69 @@ function renderAgentHealth() {
   }));
 }
 
+let sessionFilter = "All";
+const sessionSummaryCache = new Map();
+const sessionObserved = new Map();
+const sessionUpdated = new Set();
+function sessionKey(thread) { return JSON.stringify([state.gatewayId, state.targetId, thread.thread_id]); }
+function sessionPins() {
+  try { const saved = JSON.parse(safeStore.read(`zedlink.sessionPins.${targetScope()}`) || "[]"); return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []); }
+  catch { return new Set(); }
+}
+function sessionActivity(thread) {
+  if (thread.approval_count > 0) return { label: `Approval needed (${thread.approval_count})`, attention: true };
+  if (thread.input_count > 0) return { label: `Input needed (${thread.input_count})`, attention: true };
+  if (validRetryStatus(thread.retry_status)) return { label: "Retrying", running: true };
+  if (thread.status === "Idle" && (thread.had_error || validAgentError(thread.agent_error))) return { label: "Request failed", attention: true };
+  if (thread.status === "Generating") return { label: "Generating", running: true };
+  return { label: thread.status === "Idle" ? "Ready" : "Unknown" };
+}
 function renderThreads() {
-  const list = $("thread-list");
-  list.replaceChildren();
+  const list = $("thread-list"); list.replaceChildren();
+  const pins = sessionPins();
   const query = $("session-search").value.trim().toLocaleLowerCase();
-  const visible = state.threads.filter((thread) =>
-    `${thread.title || ""} ${thread.thread_id}`.toLocaleLowerCase().includes(query));
-  $("thread-count").textContent = String(state.threads.length);
-  if (visible.length === 0) {
-    const text = document.createElement("p");
-    text.className = "muted";
-    text.textContent = state.threads.length
-      ? "No sessions match this search."
-      : "No exposed threads. Choose /remote-control in a Zed Agent or external ACP agent thread.";
+  const visible = state.threads.filter((thread) => {
+    const activity = sessionActivity(thread);
+    return `${thread.title || ""} ${normalizeAgent(thread.agent).name} ${thread.thread_id}`.toLocaleLowerCase().includes(query) &&
+      (sessionFilter === "All" || sessionFilter === "Needs attention" && activity.attention || sessionFilter === "Running" && activity.running || sessionFilter === "Pinned" && pins.has(thread.thread_id));
+  }).sort((a, b) => Number(pins.has(b.thread_id)) - Number(pins.has(a.thread_id)) || (a.title || "").localeCompare(b.title || ""));
+  $("thread-count").textContent = String(visible.length);
+  if (!visible.length) {
+    const text = document.createElement("p"); text.className = "muted";
+    text.textContent = state.threads.length ? "No sessions match this search or filter." : state.live ? "No exposed sessions. Choose /remote-control in desktop Zed or create a session using +." : "Sessions unavailable. Reconnect to refresh the list.";
     list.append(text);
   }
-  for (const thread of visible) {
-    const button = document.createElement("button");
-    button.type = "button";
-    const busy = thread.status && thread.status !== "Idle";
-    const retrying = !!validRetryStatus(thread.retry_status);
-    const failed = !busy && !retrying && (thread.had_error === true || !!validAgentError(thread.agent_error));
-    button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${busy || retrying ? "running" : ""} ${failed ? "error" : ""}`;
-    const badge = document.createElement("span");
-    badge.className = "thread-badge";
-    const agent = normalizeAgent(thread.agent);
-    badge.textContent = agent.name.toLocaleUpperCase();
-    const status = document.createElement("span");
-    status.className = `thread-status ${busy || retrying ? "busy" : ""} ${failed ? "error" : ""}`;
-    if (busy || retrying) {
-      const progress = document.createElement("span");
-      progress.className = "thread-progress";
-      progress.setAttribute("aria-hidden", "true");
-      progress.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
-      const label = document.createElement("span");
-      label.textContent = retrying ? "Retrying" : "Working";
-      status.setAttribute("aria-label", retrying ? "Zed is retrying the model request" : `Agent is active: ${thread.status}`);
-      status.append(progress, label);
-    } else status.textContent = failed ? "Request failed" : thread.status || "Unknown";
-    const title = document.createElement("strong");
-    title.textContent = thread.title || "Untitled Agent thread";
-    const detail = document.createElement("small");
-    detail.textContent = `${agent.kind === "external_acp" ? "External ACP" : "Native Zed"} thread · ${String(thread.thread_id).slice(0, 10)}…`;
-    button.append(badge, status, title, detail);
-    button.addEventListener("click", () => selectThread(thread.thread_id));
-    list.append(button);
+  for (const group of ["Needs attention", "Running", "Ready & other"]) {
+    const rows = visible.filter((thread) => { const a = sessionActivity(thread); return (a.attention ? "Needs attention" : a.running ? "Running" : "Ready & other") === group; });
+    if (!rows.length) continue;
+    const heading = document.createElement("h3"); heading.className = "session-group"; heading.textContent = `${group} · ${rows.length}`; list.append(heading);
+    for (const thread of rows) {
+      const activity = sessionActivity(thread);
+      const row = document.createElement("div"); row.className = "session-row";
+      const button = document.createElement("button"); button.type = "button";
+      button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${activity.running && state.live ? "running" : ""} ${activity.attention ? "error" : ""}`;
+      const badge = document.createElement("span"); badge.className = "thread-badge"; badge.textContent = normalizeAgent(thread.agent).name.toLocaleUpperCase();
+      const status = document.createElement("span"); status.className = `thread-status ${activity.running ? "busy" : ""} ${activity.attention ? "error" : ""}`;
+      if (activity.running && state.live) { const progress = document.createElement("span"); progress.className = "thread-progress"; progress.setAttribute("aria-hidden", "true"); progress.append(document.createElement("i"), document.createElement("i"), document.createElement("i")); status.append(progress); }
+      const label = document.createElement("span"); label.textContent = `${state.live ? "" : "Last known: "}${activity.label}`; status.append(label);
+      const title = document.createElement("strong"); title.textContent = thread.title || "Untitled Agent thread";
+      button.append(badge, status, title);
+      if (sessionUpdated.has(sessionKey(thread))) { const update = document.createElement("small"); update.textContent = "New activity"; button.append(update); }
+      button.addEventListener("click", () => { sessionUpdated.delete(sessionKey(thread)); selectThread(thread.thread_id); });
+      const pin = document.createElement("button"); pin.type = "button"; pin.className = "session-pin"; pin.textContent = "⌖";
+      pin.setAttribute("aria-label", `${pins.has(thread.thread_id) ? "Unpin" : "Pin"} ${thread.title || "session"}`); pin.setAttribute("aria-pressed", String(pins.has(thread.thread_id)));
+      pin.addEventListener("click", () => { const saved = sessionPins(); if (saved.has(thread.thread_id)) saved.delete(thread.thread_id); else saved.add(thread.thread_id); safeStore.write(`zedlink.sessionPins.${targetScope()}`, JSON.stringify([...saved])); renderThreads(); });
+      row.append(button, pin); list.append(row);
+    }
   }
   renderEmptyWorkspace();
 }
+$("session-filters").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-filter]"); if (!button) return;
+  sessionFilter = button.dataset.filter;
+  for (const item of $("session-filters").querySelectorAll("button")) item.setAttribute("aria-pressed", String(item === button));
+  renderThreads();
+});
 
 async function selectThread(threadId) {
   stopDictation();

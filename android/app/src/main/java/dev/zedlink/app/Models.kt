@@ -14,7 +14,28 @@ data class NativeThread(
     val title: String,
     val status: String,
     val currentTurnId: Int?,
+    val agentName: String = "Zed Agent", val retrying: Boolean = false, val failed: Boolean = false,
+    val approvalCount: Int? = null, val inputCount: Int? = null,
 )
+
+enum class SessionActivity(val label: String) {
+    APPROVAL("Approval needed"), INPUT("Input needed"), FAILED("Request failed"),
+    RETRYING("Retrying"), GENERATING("Generating"), READY("Ready"), UNKNOWN("Unknown");
+    val attention get() = this in listOf(APPROVAL, INPUT, FAILED)
+    val running get() = this in listOf(RETRYING, GENERATING)
+    val group get() = if (attention) "Needs attention" else if (running) "Running" else "Ready & other"
+    companion object {
+        fun from(thread: NativeThread) = when {
+            (thread.approvalCount ?: 0) > 0 -> APPROVAL
+            (thread.inputCount ?: 0) > 0 -> INPUT
+            thread.retrying -> RETRYING
+            thread.status == "Idle" && thread.failed -> FAILED
+            thread.status == "Generating" -> GENERATING
+            thread.status == "Idle" -> READY
+            else -> UNKNOWN
+        }
+    }
+}
 
 data class NativeCommand(
     val name: String,
