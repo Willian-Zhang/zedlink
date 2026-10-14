@@ -90,3 +90,16 @@ The browser transport fixture is kept separate from real native Zed evidence. Br
 ## Maintainer review requested
 
 The initial request is for architectural direction before rebasing and reducing the prototype into upstream pull requests. No extension registry submission is proposed while the required capability is absent and new slash-command/agent-server submissions are disallowed.
+
+
+## Agent-core patch audit (October 13, 2026)
+
+Compared the local fork with pinned upstream `c66312b200d113694fca08c1d468669028a09a0e`. Both `crates/agent/src/thread.rs` and `crates/agent/src/agent.rs` now match upstream exactly. The experimental summary prompt, earlier global 2,048-token summary output cap, and custom stale-turn response-forwarding guard were removed. No diffs remain in `agent_settings`, `language_model`, `language_models`, or `open_ai`. Local GLM tuning belongs in the owner's settings/server configuration rather than universal runtime policy.
+
+The older forwarding guard reproducibly failed upstream `test_retried_auto_compaction_terminalizes_each_attempt`: expected Failed/InProgress compaction events were missing. Restoring upstream forwarding avoids maintaining a parallel interpretation of native turn state. The guard is also removed from the distributable integration patch.
+
+The rollback is recorded locally in fork commit `c13e3c8b7f`; 34 fake-model compaction tests passed, including retry, manual/automatic compaction and cancellation cases. These results do not establish real-provider coverage.
+
+The remaining change in these reviewed core areas is `AcpThread::current_turn_id`, a four-line read-only accessor used by the bridge. It does not change queueing, execution, cancellation, permissions, model requests, or compaction. ZedLink continues to check exact instance/epoch/thread/turn identity at its remote operation boundary and uses native execution paths.
+
+This comparison does not establish compatibility across every model or audit every UI/project integration file. Native integration and upstream review remain required before public release.
