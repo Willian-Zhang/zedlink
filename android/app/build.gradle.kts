@@ -12,9 +12,9 @@ android {
         applicationId = "dev.zedlink.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.2.5"
-        buildConfigField("String", "UI_REVISION", "\"2026.10.14.9\"")
+        versionCode = 9
+        versionName = "0.2.7"
+        buildConfigField("String", "UI_REVISION", "\"2026.10.14.10\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {

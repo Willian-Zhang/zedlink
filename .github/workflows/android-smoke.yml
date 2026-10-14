@@ -2,6 +2,11 @@ name: Android smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      emulator_tests:
+        description: "Run Android emulator instrumentation (uses additional Actions minutes)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +30,31 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
       - name: Unit test and build debug APK
         run: gradle -p android --no-daemon testDebugUnitTest assembleDebug lintDebug
+      - name: Enable emulator acceleration
+        if: inputs.emulator_tests
+        run: |
+          test -e /dev/kvm
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run Android 16 emulator tests
+        if: inputs.emulator_tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          ram-size: 2048M
+          emulator-boot-timeout: 180
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            adb shell settings put secure show_ime_with_hard_keyboard 1
+            mkdir -p android/app/build/reports/emulator-screenshots
+            test_result=0
+            gradle -p android --no-daemon connectedDebugAndroidTest || test_result=$?
+            adb pull /sdcard/Android/data/dev.zedlink.app/files/terminal-keyboard-fixture.png android/app/build/reports/emulator-screenshots/ || true
+            exit "$test_result"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

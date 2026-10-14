@@ -27,9 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.window.DialogWindowProvider
-import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.platform.LocalContext
 import androidx.activity.compose.LocalActivity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -279,6 +277,10 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     var showAgentSettings by remember { mutableStateOf(false) }
     if (showAgentSettings) AgentSettingsDialog(state, model) { showAgentSettings = false }
     var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
+    if (showContext) {
+        ProjectContextScreen(state, model) { showContext = false }
+        return
+    }
     Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = model::closeThread) { Icon(Icons.Default.ArrowBack, "Sessions", tint = Ink) }
@@ -351,29 +353,20 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         dismissButton = { TextButton(onClick = { showUnexpose = false }) { Text("CANCEL") } },
         containerColor = Surface,
     )
-    if (showContext) ProjectContextDialog(state, model) { showContext = false }
-}
-
-// Dialog windows need their own resize policy; the activity policy does not apply.
-@Composable
-internal fun ResizeDialogForKeyboard() {
-    val view = LocalView.current
-    DisposableEffect(view) {
-        val window = (view.parent as? DialogWindowProvider)?.window
-        val previous = window?.attributes?.softInputMode
-        window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        onDispose { if (previous != null) window?.setSoftInputMode(previous) }
-    }
 }
 
 @Composable
-private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
+internal fun ProjectContextScreen(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
     var page by rememberSaveable(state.selectedThreadId) { mutableStateOf("Terminal") }
     var fullFiles by remember { mutableStateOf(false) }
     var terminalOnly by rememberSaveable { mutableStateOf(false) }
     if (fullFiles) ProjectFileBrowser(state, model) { fullFiles = false }
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        ResizeDialogForKeyboard()
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    fun closeWorkspace() { keyboard?.hide(); focus.clearFocus(); close() }
+    BackHandler(onBack = ::closeWorkspace)
+    // Use the activity window and its IME insets, rather than a second dialog window.
+    Box(Modifier.fillMaxSize()) {
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -382,7 +375,7 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                         Icon(if (terminalOnly) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                             if (terminalOnly) "Show workspace tabs" else "Expand terminal")
                     }
-                    IconButton(onClick = close) { Icon(Icons.Default.Close, "Close workspace") }
+                    IconButton(onClick = ::closeWorkspace) { Icon(Icons.Default.Close, "Close workspace") }
                 }
                 if (!terminalOnly) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
                     listOf("Files", "Changes", "Terminal", "Tasks", "Debug").forEach { label ->
@@ -398,7 +391,7 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 Rule()
                 if (page != "Terminal" && state.issue.isNotBlank()) Notice(state.issue)
                 if (page == "Terminal") {
-                    Box(Modifier.weight(1f)) { TerminalScreen(state, model, close, embedded = true) }
+                    Box(Modifier.weight(1f)) { TerminalScreen(state, model) }
                 } else Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
                     when (page) {
                         "Files" -> {
@@ -820,7 +813,7 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
 
 
 @Composable
-private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -> Unit, embedded: Boolean = false) {
+private fun TerminalScreen(state: AppState, model: ZedLinkViewModel) {
     var input by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var tools by remember { mutableStateOf(false) }
@@ -889,9 +882,8 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
     }
     val content: @Composable () -> Unit = {
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().then(if (embedded) Modifier else Modifier.systemBarsPadding().imePadding())) {
+            Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (!embedded) IconButton(onClick = close) { Icon(Icons.Default.ArrowBack, "Back to workspace") }
                     Box(Modifier.weight(1f)) {
                         TextButton(onClick = { menu = true }, enabled = state.live && state.terminals.isNotEmpty()) { Text(state.terminalSnapshot?.terminal?.title ?: "Choose terminal", maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -954,8 +946,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
             }
         }
     }
-    if (embedded) content() else Dialog(onDismissRequest = close,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { ResizeDialogForKeyboard(); content() }
+    content()
 }
 
 @Composable internal fun TerminalOutput(text: AnnotatedString, vertical: ScrollState, horizontal: ScrollState,

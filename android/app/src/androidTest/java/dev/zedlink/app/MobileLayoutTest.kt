@@ -29,24 +29,58 @@ import org.junit.Test
 class MobileLayoutTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun workspaceDialogRequestsResizeForKeyboard() {
-        var dialogWindow: android.view.Window? = null
-        compose.setContent {
-            androidx.compose.ui.window.Dialog(onDismissRequest = {}, properties =
-                androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-                ResizeDialogForKeyboard()
-                val view = androidx.compose.ui.platform.LocalView.current
-                androidx.compose.runtime.SideEffect {
-                    dialogWindow = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
-                }
-                Surface(Modifier.width(320.dp).height(360.dp)) { androidx.compose.material3.Text("Workspace fixture") }
-            }
+    @Test fun actualWorkspaceKeepsTypedDraftVisibleWithSoftwareKeyboard() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val application = instrumentation.targetContext.applicationContext as android.app.Application
+        // Run only in an unpaired disposable install. Never connect to a user's gateway.
+        org.junit.Assume.assumeTrue(application.getSharedPreferences("zedlink-profile", 0).all.isEmpty())
+        val store = androidx.lifecycle.ViewModelStore()
+        lateinit var model: ZedLinkViewModel
+        compose.runOnIdle { model = ZedLinkViewModel(application); store.put("fixture", model) }
+        val terminal = NativeTerminal("keyboard-fixture", "Disposable terminal", null, null, null)
+        val fixture = AppState(live = true, selectedThreadId = "fixture", instanceId = "fixture", epoch = "fixture",
+            capabilities = setOf("terminal.list", "terminal.input"), terminals = listOf(terminal),
+            terminalSnapshot = NativeTerminalSnapshot(terminal,
+                "UI fixture only — no native transport\n" + "file.txt    directory/\n".repeat(40), false))
+        val automation = instrumentation.uiAutomation
+        val previousFlags = automation.serviceInfo.flags
+        automation.serviceInfo = automation.serviceInfo.apply {
+            flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
-        compose.onNodeWithText("Workspace fixture").assertIsDisplayed()
-        compose.runOnIdle {
-            assertNotNull(dialogWindow)
-            assertEquals(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
-                dialogWindow!!.attributes.softInputMode and android.view.WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST)
+        try {
+            compose.setContent {
+                val activity = androidx.activity.compose.LocalActivity.current!!
+                androidx.compose.runtime.SideEffect {
+                    androidx.core.view.WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+                    activity.window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+                }
+                ZedLinkTheme("dark") { ProjectContextScreen(fixture, model) {} }
+            }
+            compose.onNodeWithContentDescription("Type in terminal").performClick()
+            val field = compose.onNode(hasSetTextAction())
+            field.assertIsFocused().performTextInput("printf visible-draft")
+            field.assertTextContains("printf visible-draft").assertIsDisplayed()
+            compose.waitUntil(timeoutMillis = 5000) {
+                automation.windows.any { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            }
+            val keyboardBounds = android.graphics.Rect()
+            automation.windows.first { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+                .getBoundsInScreen(keyboardBounds)
+            val applicationBounds = android.graphics.Rect()
+            automation.windows.first { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused }
+                .getBoundsInScreen(applicationBounds)
+            val fieldBounds = field.fetchSemanticsNode().boundsInWindow
+            assertTrue("Command field must fit above the visible keyboard",
+                fieldBounds.bottom + applicationBounds.top <= keyboardBounds.top + 1)
+            compose.waitForIdle()
+            val bitmap = instrumentation.uiAutomation.takeScreenshot()
+            assertNotNull(bitmap)
+            val output = java.io.File(application.getExternalFilesDir(null), "terminal-keyboard-fixture.png")
+            output.outputStream().use { bitmap!!.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap?.recycle()
+        } finally {
+            automation.serviceInfo = automation.serviceInfo.apply { flags = previousFlags }
+            compose.runOnIdle { store.clear() }
         }
     }
 
