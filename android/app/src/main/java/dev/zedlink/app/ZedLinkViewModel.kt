@@ -300,7 +300,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val generation = connectionGeneration
         val draft = draftStorageKey(state.profile?.gatewayId, state.targetId, id)?.let { preferences.getString(it, "") }.orEmpty()
         previewRequest += 1; directoryRequest += 1
-        state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "",
+        state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "", sending = false,
             updatedThreads = state.updatedThreads - id,
             projectFolderEntries = null, projectFiles = emptyList(), projectFilesTruncated = false, previewReadable = false, previewLoading = false, previewContent = "", previewTitle = "")
         runCatching { loadSnapshot(id); if (generation == connectionGeneration && state.selectedThreadId == id) loadCommands(id) }
@@ -387,6 +387,15 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val instance = state.instanceId ?: return@launch
         val epoch = state.epoch ?: return@launch
         val activeClient = client ?: return@launch
+        val generation = connectionGeneration
+        val submissionScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
+        val submittedDraft = state.draft
+        fun current() = generation == connectionGeneration && activeClient === client &&
+            submissionScope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        if (pendingId != null && pendingScope == submissionScope && !state.sending) {
+            state = state.copy(delivery = "Delivery unknown: retry the original request before sending another message.")
+            return@launch
+        }
         if (text.isEmpty() || state.sending || !state.live) return@launch
         val command = state.commands.firstOrNull { "/${it.name}" == text && it.execution == "local" }
         if (command != null && !localConfirmed) {
@@ -396,17 +405,20 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         }
         if (command != null && state.contextPaths.isNotEmpty()) { state = state.copy(issue = "Run local commands without attachments."); return@launch }
         pendingLocalConfirmed = localConfirmed
-        pendingId = UUID.randomUUID().toString(); pendingText = text
+        val requestId = UUID.randomUUID().toString()
+        pendingId = requestId; pendingText = text
         pendingScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
         pendingContextPaths = state.contextPaths.toSet()
         state = state.copy(sending = true, delivery = "Sending to native Zed…")
         try {
             val result = activeClient.rpc("thread.send", JSONObject()
                 .put("instance_id", instance).put("epoch", epoch).put("thread_id", threadId).put("text", text)
-                .apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, pendingId!!)
+                .apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, requestId)
+            if (!current() || pendingId != requestId) return@launch
             pendingId = null; pendingText = null
-            setDraft("")
-            state = state.copy(sending = false, contextPaths = emptySet(), delivery = if (result.optString("outcome") == "queued")
+            if (state.draft == submittedDraft) setDraft("")
+            state = state.copy(sending = false, contextPaths = if (state.contextPaths == pendingContextPaths) emptySet() else state.contextPaths,
+                delivery = if (result.optString("outcome") == "queued")
                 "Queued in desktop Zed." else "Received by desktop Zed. Watching native progress.")
             if (result.optString("outcome") == "local_completed" || result.optString("outcome") == "desktop_review_required") {
                 state = state.copy(delivery = if (text == "/not-helpful") "Complete the feedback form in desktop Zed." else "Desktop action completed.")
@@ -414,6 +426,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             }
             loadSnapshot(threadId)
         } catch (error: Exception) {
+            if (!current() || pendingId != requestId) return@launch
             state = state.copy(sending = false, delivery = "Delivery unknown: ${error.message}. Check desktop Zed before retrying.")
         }
     }
@@ -425,6 +438,12 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val instance = state.instanceId ?: return@launch
         val epoch = state.epoch ?: return@launch
         val activeClient = client ?: return@launch
+        if (state.sending || !state.live) return@launch
+        val generation = connectionGeneration
+        val retryScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
+        val retryDraft = state.draft
+        fun current() = generation == connectionGeneration && activeClient === client && pendingId == id &&
+            retryScope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
         if (pendingScope != listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)) {
             state = state.copy(delivery = "Delivery remains unknown for the original Zed instance/session. The request was not resent.")
             return@launch
@@ -433,11 +452,12 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         try {
             activeClient.rpc("thread.send", JSONObject().put("instance_id", instance).put("epoch", epoch)
                 .put("thread_id", threadId).put("text", text).apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, id)
+            if (!current()) return@launch
             pendingId = null; pendingText = null
-            setDraft("")
+            if (state.draft == retryDraft && retryDraft.trim() == text) setDraft("")
             state = state.copy(sending = false, delivery = "Request reached desktop Zed.")
             loadSnapshot(threadId)
-        } catch (error: Exception) { state = state.copy(sending = false, issue = error.message.orEmpty()) }
+        } catch (error: Exception) { if (current()) state = state.copy(sending = false, issue = error.message.orEmpty()) }
     }
 
     fun cancel() = viewModelScope.launch {

@@ -91,3 +91,8 @@ Use a disposable project and isolated test pairing on both platforms. Rebuild th
 7. Check light/dark themes, large text, keyboard visibility and terminal layout on a small phone, including Android 16. Confirm notification status clearly says native push is not configured.
 
 These device checks are pending. The source includes the recovery tests; no new hosted build is authorized by this checklist.
+
+
+### Android send-race checks
+
+With a delayed response in an isolated gateway fixture, send from session A and switch to B before the response arrives. Verify B's draft and delivery state remain unchanged. Repeat by editing the draft or context attachments in A while sending; accepted delivery must preserve those new edits. Interrupt delivery, then explicitly choose Retry original request: it must reuse the same request ID and refuse a changed gateway/workspace/instance/epoch/thread. Repeated taps must not launch a second concurrent retry. These latest runtime tests remain NOT RUN.

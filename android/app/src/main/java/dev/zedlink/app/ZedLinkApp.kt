@@ -273,7 +273,10 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
                 DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
                     DropdownMenuItem(text = { Text("Agent history") }, onClick = { showActions = false; showAgentHistory = true })
                     DropdownMenuItem(text = { Text("Agent settings") }, onClick = { showActions = false; showAgentSettings = true })
-                    if (state.delivery.isNotBlank()) DropdownMenuItem(text = { Text(state.delivery) }, enabled = false, onClick = {})
+                    if (state.delivery.startsWith("Delivery unknown") && state.live && !state.sending) {
+            TextButton(onClick = { model.retryPending() }) { Text("Retry original request") }
+        }
+        if (state.delivery.isNotBlank()) DropdownMenuItem(text = { Text(state.delivery) }, enabled = false, onClick = {})
                     DropdownMenuItem(text = { Text("Rename session") }, leadingIcon = { Icon(Icons.Default.Edit, null) },
                         enabled = "thread.rename" in state.capabilities,
                         onClick = { proposedTitle = snapshot?.title.orEmpty(); showActions = false; showRename = true })
