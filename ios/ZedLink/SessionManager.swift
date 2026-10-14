@@ -1210,7 +1210,13 @@ import Combine
     }
 
     func handleApprovalNotification(_ data: [String: String], action: String) async {
-        await refresh()
+        // Foreground refresh can overlap an alert opened during connection restoration.
+        for _ in 0..<80 {
+            guard state == .connecting else { break }
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+        }
+        guard state != .connecting else { issue = "Connection is still restoring. Open the session to review current requests."; return }
+        if state != .live { await refresh() }
         guard state == .live else { issue = "Reconnect before reviewing this notification."; return }
         guard data["gateway"] == profile?.gatewayID, data["target"] == targetID,
               data["instance"] == instanceID, data["epoch"] == epoch,
@@ -1219,7 +1225,7 @@ import Combine
             return
         }
         await select(thread)
-        guard data["gateway"] == profile?.gatewayID, data["target"] == targetID,
+        guard state == .live, issue.isEmpty, data["gateway"] == profile?.gatewayID, data["target"] == targetID,
               data["instance"] == instanceID, data["epoch"] == epoch, thread == selectedThreadID else { return }
         notificationThreadID = thread
         guard action == "approve" || action == "deny" else { return }

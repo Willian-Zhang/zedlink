@@ -54,15 +54,19 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
         val target = targetId?.let { "&target_id=${java.net.URLEncoder.encode(it, "UTF-8")}" }.orEmpty()
         val url = "wss://${base.rawAuthority}/v1/events?thread_id=${java.net.URLEncoder.encode(threadId, "UTF-8")}&after_sequence=$afterSequence$target"
         val request = Request.Builder().url(url).header("Sec-WebSocket-Protocol", "zedlink-v1, zedlink-token-$credential").build()
-        return OkHttpClient().newWebSocket(request, object : WebSocketListener() {
+        val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun failed(error: Throwable) { if (completed.compareAndSet(false, true)) onFailure(error) }
+        return socketClient.newWebSocket(request, object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching {
                     val envelope = JSONObject(text)
                     envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code"))) }
                     envelope.optJSONObject("result") ?: throw GatewayException("Gateway returned an invalid live update.")
-                }.onSuccess(onEvent).onFailure(onFailure)
+                }.onSuccess(onEvent).onFailure(::failed)
             }
-            override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) = onFailure(throwable)
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { failed(GatewayException("Live connection closed. Reconnecting.")) }
+            override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) = failed(throwable)
         })
     }
 
@@ -109,6 +113,8 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
     }
 
     companion object {
+        private val socketClient = OkHttpClient()
+
         fun profileFromPairingLink(text: String): Pair<ConnectionProfile, String?> = ConnectionLinks.parse(text)
 
         private fun apiMessage(code: String): String = when (code) {

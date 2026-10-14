@@ -47,9 +47,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.RectangleShape
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
 private enum class Tab { Sessions, Connections, Settings }
 
@@ -57,6 +54,7 @@ private enum class Tab { Sessions, Connections, Settings }
 fun ZedLinkApp(model: ZedLinkViewModel) {
     val state = model.state
     var tab by remember { mutableStateOf(Tab.Sessions) }
+    LaunchedEffect(model.pairingImportRevision) { if (model.pairingImportRevision > 0) tab = Tab.Connections }
     ZedLinkTheme(state.appearance) {
         Surface(modifier = Modifier.fillMaxSize(), color = Black) {
             Column(Modifier.fillMaxSize().statusBarsPadding()) {

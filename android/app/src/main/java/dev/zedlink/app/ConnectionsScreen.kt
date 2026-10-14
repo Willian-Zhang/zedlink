@@ -19,9 +19,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
 /** Pairing codes are memory-only and never stored in preferences or logs. */
 data class ConnectionDraft(
@@ -38,6 +35,7 @@ data class ConnectionDraft(
 
 @Composable internal fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
     var adding by remember { mutableStateOf(false) }
+    LaunchedEffect(model.pairingImportRevision) { if (model.pairingImportPending) { adding = true; model.pairingImportPending = false } }
     var selected by remember { mutableStateOf<String?>(null) }
     if (adding) ConnectionEditor(state, model, model.pairingDraft, { model.pairingDraft = it }, { adding = false })
     selected?.let { id -> state.profiles.firstOrNull { it.id == id }?.let { profile ->
@@ -118,7 +116,6 @@ data class ConnectionDraft(
 @Composable private fun ConnectionEditor(state: AppState, model: ZedLinkViewModel, draft: ConnectionDraft, change: (ConnectionDraft) -> Unit, close: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    val scanner = remember { GmsBarcodeScanning.getClient(context, GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()) }
     var observed by remember { mutableStateOf("") }
     var tested by remember { mutableStateOf<ConnectionProfile?>(null) }
     var issue by remember { mutableStateOf("") }
@@ -136,13 +133,22 @@ data class ConnectionDraft(
             observed = ""; tested = null; issue = "Pairing link loaded. Test HTTPS before continuing."
         }.onFailure { issue = it.message ?: "Pairing link could not be read." }
     }
+    val scanner = androidx.activity.compose.rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) { result ->
+        scanning = false
+        if (active) {
+            result.contents?.let(::applyLink)
+            if (result.originalIntent?.getBooleanExtra(com.google.zxing.client.android.Intents.Scan.MISSING_CAMERA_PERMISSION, false) == true)
+                issue = "Camera permission was denied. Paste the pairing link instead, or allow camera access in Android Settings."
+        }
+    }
     ConnectionPage(if (draft.editing) "Edit connection" else "Add connection", { if (!busy) close() }) {
         if (!draft.editing) {
             TextButton(onClick = {
                 scanning = true
-                scanner.startScan().addOnSuccessListener { barcode -> if (active) { scanning = false; barcode.rawValue?.let(::applyLink) } }
-                    .addOnFailureListener { error -> if (active) { scanning = false; issue = error.message ?: "Camera scanner unavailable. Paste the pairing link instead." } }
-                    .addOnCanceledListener { if (active) scanning = false }
+                scanner.launch(com.journeyapps.barcodescanner.ScanOptions()
+                    .setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
+                    .setBeepEnabled(false).setBarcodeImageEnabled(false).setOrientationLocked(false)
+                    .setPrompt("Scan the workstation pairing QR"))
             }, enabled = !busy) { Text("Scan workstation QR") }
             TextButton(onClick = { applyLink(clipboard.getText()?.text.orEmpty()) }, enabled = !busy) { Text("Paste pairing link") }
         }

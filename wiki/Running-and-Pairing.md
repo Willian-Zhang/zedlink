@@ -236,7 +236,7 @@ Mobile browser and native client source now favor wrapping terminal output for r
 
 **Recover session** reconnects to the saved gateway/target and reconciles the existing exposed conversation. Clients remember terminal selection within the instance/epoch and restore only a terminal still present in the authoritative terminal list. Draft text is saved separately from submitted commands; recovery does not resend terminal commands or uncertain prompts. If Zed or a terminal was closed, launch Zed and reopen/expose the conversation or terminal explicitly. This does not provide terminal persistence across workstation reboots.
 
-The browser microphone fills the prompt draft; **Terminal tools → Dictate input** fills a terminal command draft. If the browser lacks speech recognition, focus the input and use the phone keyboard microphone. The browser asks before using its speech service, which may process audio online. Native iOS source uses Apple's on-device recognizer when supported for the current language, otherwise explains the keyboard fallback. Native Android source opens the system speech dialog and prefers offline recognition; the installed service determines availability and processing. Review the draft before pressing Send. No transcription provider keys or independent model client are added to ZedLink.
+The browser microphone fills the prompt draft; **Terminal tools → Dictate input** fills a terminal command draft. If the browser lacks speech recognition, focus the input and use the phone keyboard microphone. The browser asks before using its speech service, which may process audio online. Native iOS source uses Apple's on-device recognizer when supported for the current language, otherwise explains the keyboard fallback. Native Android uses its on-device speech recognizer on Android 12+ when available, requests microphone permission, and inserts final text only into the unchanged draft in the original session. Otherwise it asks before using the installed speech service, which may process audio online. Review the draft before pressing Send. No transcription provider keys or independent model client are added to ZedLink.
 
 In the browser, dictated words appear in the draft as recognition progresses. Tap the microphone again to finish, then review and press Send yourself. A status above the composer reports listening, empty results, or speech-service errors; granting microphone access alone does not guarantee the browser can transcribe. If no text returns, use the microphone on your phone keyboard.
 
@@ -245,3 +245,32 @@ Browser speech recognition has [limited availability and may use a server-based 
 Validation: Linux patched-Zed clipboard tests run in an isolated virtual display, plus authenticated Firefox gateway fixtures. Native mobile compilation, physical microphone input, Safari clipboard permission prompts, and physical-device recovery require device testing; they are not established by the fixture tests. Hosted Actions remain manual-only to respect the owner's budget.
 
 See [Agent commands](Agent-Commands.md) for runtime command discovery, scoped skills and confirmed local actions.
+
+
+### Android pairing and notification recovery
+
+The native Android scanner bundles its QR decoder and does not require Google Play Services. Camera permission is requested when scanning; **Paste pairing link** remains available when the device has no camera or permission is denied. Scanned images are not saved.
+
+Share the workstation HTTPS pairing link to **ZedLink** from the Android share sheet, or open a `zedlink://pair` link containing an encoded HTTPS `endpoint` and the same `gateway`, `v=1`, and `pair` fields. Imports open a memory-only connection draft. Select **Test HTTPS endpoint**, verify the identity, then **Pair and save**. The app does not intercept arbitrary HTTPS links or pair from an unverified intent.
+
+Android approval alerts use bounded, one-use routing receipts that survive process recreation for up to 24 hours. Opening an alert reloads the saved connection and checks the current gateway, workspace, Zed instance, epoch, thread, turn, approval, and decision before responding. Expired or resolved requests cannot be replayed. A locked-device action opens review rather than sending approval.
+
+Cloud push delivery is still **not configured**: there are no Firebase/APNs credentials. Local native alerts require incoming app updates; they are not a guarantee of delivery while suspended or force-stopped. Enable browser push on a paired HTTPS origin for background alerts for now. Watches may mirror permitted phone notifications; a standalone watch app is not included.
+
+Both native apps use the established ZedLink logo. Android applies its system adaptive launcher mask; iOS uses the checked-in AppIcon asset. Native icon appearance and camera/dictation behavior still need physical-device verification.
+
+
+### Native alert recovery checks
+
+iOS now queues notification responses until the saved connection has restored. The queue persists only bounded routing metadata, expires after 24 hours, and claims a response before dispatch so relaunching cannot automatically resend an approval. Notifications from older builds without creation timestamps open review only. Both clients require a fresh native snapshot and exact gateway/workspace/instance/epoch/thread/turn/approval/decision matches; resolved or stale alerts cannot authorize a different request.
+
+Android reports expired or already-opened alert receipts, waits up to 20 seconds for initial connection restoration, and fails closed when a fresh snapshot cannot load. Its on-device dictation stops when the app leaves the foreground or the session changes, and ignores callbacks from cancelled recognizers. Neither client sends dictated text automatically.
+
+These are source changes. Current native compilation, XCTest/instrumentation execution, and physical-device notification/camera/dictation checks remain **NOT RUN**. Native APNs/FCM, standalone watch apps, and Live Activities remain unavailable; browser push is the existing background delivery path.
+
+
+### Android connection isolation and cleanup
+
+Drafts now use gateway + workspace + persisted thread identity, so a matching thread ID on another workstation cannot load the same text. Route changes for the same gateway/workspace keep that draft. Older drafts keyed only by thread ID are preserved in preferences but are not automatically loaded into a newly scoped session because their ownership cannot be proven.
+
+The client guards replaced WebSocket callbacks, reconciles graceful socket closes through reconnect/polling, reuses its networking client, and cancels streams when its ViewModel closes. Removing a legacy connection no longer recreates it from obsolete settings. Unscoped legacy credentials can migrate only to their recorded gateway.

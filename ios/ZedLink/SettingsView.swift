@@ -87,7 +87,9 @@ private struct NotificationSettingsView: View {
                 if !notifications.lastError.isEmpty { Text(notifications.lastError).font(.caption).foregroundStyle(ZLTheme.danger) }
             }
             Section("Background delivery") {
-                Text("Native background push is not configured. Local alerts require the app to receive updates. Watches may mirror permitted phone alerts.").font(.footnote).foregroundStyle(ZLTheme.muted)
+                LabeledContent("Native push", value: "Not configured")
+                LabeledContent("Watch alerts", value: "Phone mirroring only")
+                Text("Local alerts need incoming app updates. They cannot guarantee delivery while the app is suspended or closed. Browser push is the available background option.").font(.footnote).foregroundStyle(ZLTheme.muted)
                 if let profile = session.profile, let url = URL(string: profile.endpoint), url.scheme == "https" {
                     Link("Set up browser push", destination: url)
                 }

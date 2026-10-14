@@ -82,6 +82,17 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         notificationMessage = if (allowed) "" else "Permission was not granted. Allow notifications in Android Settings."
         if (allowed) enableNotifications()
     }
+    var pairingImportPending by mutableStateOf(false)
+    var pairingImportRevision by mutableStateOf(0)
+        private set
+    fun importPairingLink(value: String) {
+        runCatching { ConnectionLinks.parse(value) }.onSuccess { (profile, code) ->
+            pairingDraft = ConnectionDraft(endpoint = profile.endpoint, gateway = profile.gatewayId, code = code.orEmpty())
+            state = state.copy(selectedThreadId = null)
+            pairingImportPending = true
+            pairingImportRevision++
+        }.onFailure { state = state.copy(issue = "Pairing link is invalid. Use the workstation QR or HTTPS pairing link.") }
+    }
     var pairingDraft by mutableStateOf(ConnectionDraft())
     val approvalNotifications = ApprovalNotifications(application)
     fun enableNotifications() { approvalNotifications.enable(); state = state.copy(notificationsEnabled = true); approvalNotifications.update(state) }
@@ -94,6 +105,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private var connectionGeneration = 0L
     private var eventSocket: WebSocket? = null
     private var eventStreamLive = false
+    private var eventStreamGeneration = 0L
     private var pendingId: String? = null
     private var pendingText: String? = null
     private var pendingScope: List<String?>? = null
@@ -162,7 +174,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     fun connect() {
         if (connectionJob?.isActive == true || state.connectionBusy) return
         requestedTerminalId = null
-        approvalNotifications.clear()
+        // Cold-start notification intents consume their receipt after ViewModel initialization.
+        approvalNotifications.clear(preserveReceipts = true)
         val profile = state.profile ?: return
         pollJob?.cancel(); eventSocket?.cancel()
         val generation = ++connectionGeneration
@@ -285,7 +298,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         if (state.selectedThreadId != id) childHistory.clear()
         if (state.threads.none { it.id == id }) return@launch
         val generation = connectionGeneration
-        val draft = preferences.getString("draft.$id", "").orEmpty()
+        val draft = draftStorageKey(state.profile?.gatewayId, state.targetId, id)?.let { preferences.getString(it, "") }.orEmpty()
         previewRequest += 1; directoryRequest += 1
         state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "",
             updatedThreads = state.updatedThreads - id,
@@ -295,26 +308,27 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         if (generation == connectionGeneration && state.selectedThreadId == id) startEventStream(id)
     }
 
-    fun closeThread() { approvalNotifications.clear(); eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
+    fun closeThread() { eventStreamGeneration++; approvalNotifications.clear(); eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
 
     private fun startEventStream(threadId: String) {
+        val streamGeneration = ++eventStreamGeneration
         eventSocket?.cancel()
         val activeClient = client ?: return
         val generation = connectionGeneration
         eventSocket = activeClient.eventStream(threadId, state.snapshot?.lastSequence ?: 0, { result ->
             viewModelScope.launch {
-                if (generation != connectionGeneration || activeClient !== client || state.selectedThreadId != threadId) return@launch
+                if (streamGeneration != eventStreamGeneration || generation != connectionGeneration || activeClient !== client || state.selectedThreadId != threadId) return@launch
                 eventStreamLive = true
                 runCatching { checkIdentity(result); loadSnapshot(threadId) }
                     .onFailure { state = state.copy(issue = it.message.orEmpty()) }
             }
         }, { error -> viewModelScope.launch {
-            if (generation != connectionGeneration || activeClient !== client) return@launch
+            if (streamGeneration != eventStreamGeneration || generation != connectionGeneration || activeClient !== client || state.selectedThreadId != threadId) return@launch
             eventStreamLive = false
             if (state.selectedThreadId == threadId) {
                 state = state.copy(issue = "Live updates reconnecting: ${error.message}")
                 delay(1_500)
-                if (generation == connectionGeneration && activeClient === client && state.selectedThreadId == threadId && !eventStreamLive) startEventStream(threadId)
+                if (streamGeneration == eventStreamGeneration && generation == connectionGeneration && activeClient === client && state.selectedThreadId == threadId && !eventStreamLive) startEventStream(threadId)
             }
         } })
     }
@@ -354,7 +368,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
 
     fun setDraft(value: String) {
         state = state.copy(draft = value)
-        state.selectedThreadId?.let { preferences.edit().putString("draft.$it", value).apply() }
+        draftStorageKey(state.profile?.gatewayId, state.targetId, state.selectedThreadId)?.let { preferences.edit().putString(it, value).apply() }
     }
 
     fun insertCommand(command: NativeCommand) = setDraft("/${command.name}${if (command.requiresArgument) " " else ""}")
@@ -1053,16 +1067,28 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun expiredNotification() {
+        state = state.copy(issue = "This notification expired or was already opened. Open the session to review current requests.")
+    }
     fun handleApprovalNotification(data: Map<String, String>, action: String) = viewModelScope.launch {
         fun matches() = data["gateway"] == state.profile?.gatewayId && data["target"] == state.targetId &&
             data["instance"] == state.instanceId && data["epoch"] == state.epoch
+        // A notification can cold-start the app before its saved connection has loaded.
+        for (attempt in 0 until 80) {
+            if (!state.connecting) break
+            delay(250)
+        }
+        if (state.connecting) {
+            state = state.copy(issue = "Connection is still restoring. Open the session to review current requests.")
+            return@launch
+        }
         val thread = data["thread"] ?: return@launch
         if (!matches() || state.threads.none { it.id == thread }) {
             state = state.copy(issue = "This notification belongs to an older or different connection. Open the session to review current requests.")
             return@launch
         }
         selectThread(thread).join()
-        if (!matches() || state.selectedThreadId != thread) return@launch
+        if (!matches() || !state.live || state.issue.isNotBlank() || state.selectedThreadId != thread || state.snapshot == null) return@launch
         if (action != "approve" && action != "deny") return@launch
         val approval = state.snapshot?.approvals?.firstOrNull { it.id == data["approval"] && it.turnId.toString() == data["turn"] && it.subagentId.orEmpty() == data["child"] }
         val kind = if (action == "approve") "allow_once" else "reject_once"
@@ -1118,16 +1144,27 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         if (saved.isNotEmpty()) return saved
         val endpoint = preferences.getString("endpoint", null) ?: return emptyList()
         val gateway = preferences.getString("gateway", null) ?: return emptyList()
-        val migrated = listOf(ConnectionProfile(preferences.getString("name", "My Zed")!!, endpoint, gateway))
+        val migrated = listOf(ConnectionProfile(preferences.getString("name", "Desktop")!!, endpoint, gateway))
+        // Scope the old credential while its legacy gateway identity still exists.
+        TokenVault.read(getApplication(), gateway)
         persistProfiles(migrated)
         return migrated
+    }
+
+    override fun onCleared() {
+        eventStreamGeneration++
+        eventSocket?.cancel(); eventSocket = null
+        pollJob?.cancel(); connectionJob?.cancel()
+        super.onCleared()
     }
 
     private fun persistProfiles(profiles: List<ConnectionProfile>) {
         val rows = JSONArray()
         profiles.forEach { profile -> rows.put(JSONObject().put("name", profile.name)
             .put("endpoint", profile.endpoint).put("gateway_id", profile.gatewayId).put("id", profile.id).put("route", profile.route)) }
-        preferences.edit().putString("profiles", rows.toString()).apply()
+        // Empty saved profiles must not resurrect a removed legacy connection.
+        preferences.edit().putString("profiles", rows.toString())
+            .remove("endpoint").remove("gateway").remove("name").apply()
     }
 
     private fun loadProfile(profiles: List<ConnectionProfile>): ConnectionProfile? {

@@ -5,7 +5,17 @@ import Combine
 /// Local delivery while the client receives native snapshots. APNs is not configured.
 @MainActor final class ApprovalNotifications: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = ApprovalNotifications()
-    var handler: (([String: String], String) async -> Void)?
+    var handler: (([String: String], String) async -> Void)? {
+        didSet { Task { await drainResponses() } }
+    }
+    private let responses = NotificationResponseQueue()
+    private var drainingResponses = false
+    private func drainResponses() async {
+        guard !drainingResponses, let handler else { return }
+        drainingResponses = true
+        defer { drainingResponses = false }
+        while let response = responses.claim() { await handler(response.data, response.action) }
+    }
     private var currentIDs: Set<String> = []
     private var scope = ""
     @Published private(set) var status = "Checking permission…"
@@ -64,6 +74,7 @@ import Combine
     func disable() {
         UserDefaults.standard.set(false, forKey: "zedlink.approvalNotifications")
         status = blocked ? "Blocked in iPhone Settings" : "Local approval alerts disabled"
+        responses.clear()
         clear()
     }
 
@@ -103,7 +114,7 @@ import Combine
             content.body = "A Zed Agent is waiting. Review the request before allowing it."
             content.sound = .default
             var data = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
-                        "thread": thread, "turn": String(turn), "approval": approval.id, "child": approval.subagentID ?? ""]
+                        "thread": thread, "turn": String(turn), "approval": approval.id, "child": approval.subagentID ?? "", "created": String(Date().timeIntervalSince1970)]
             let allow = approval.decisions.first { $0.optionKind == "allow_once" && $0.choiceIndex == nil && $0.selectedPatternIndices.isEmpty && $0.action == nil }
             let deny = approval.decisions.first { $0.optionKind == "reject_once" && $0.choiceIndex == nil && $0.selectedPatternIndices.isEmpty && $0.action == nil }
             if allowActions, approval.authorizationKind == "permission_grant", !approval.detailsTruncated, let allow, let deny {
@@ -137,8 +148,12 @@ import Combine
             if let key = pair.key as? String, let value = pair.value as? String { result[key] = value }
         }
         Task { @MainActor in
-            await self.handler?(data, response.actionIdentifier)
+            if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                self.responses.enqueue(id: response.notification.request.identifier, data: data, action: self.enabled ? response.actionIdentifier : "review")
+            }
+            // Acknowledge OS delivery promptly; network readiness is handled by the app.
             completionHandler()
+            await self.drainResponses()
         }
     }
 }

@@ -22,20 +22,25 @@ object ConnectionLinks {
         return uri
     }
     fun parse(value: String): Pair<ConnectionProfile, String?> {
+        require(value.length <= 4096) { "Pairing link is too long." }
         val uri = URI(value.trim())
-        val rows = uri.rawFragment.orEmpty().split('&').map {
+        val appLink = uri.scheme == "zedlink"
+        if (appLink) require(uri.host == "pair" && uri.rawUserInfo == null && uri.port == -1 &&
+            uri.rawFragment == null && uri.path.isNullOrEmpty()) { "Use a ZedLink pairing link." }
+        val rows = (if (appLink) uri.rawQuery else uri.rawFragment).orEmpty().split('&').map {
             val parts = it.split('=', limit = 2)
             require(parts.size == 2) { "Pairing link is incomplete." }
             java.net.URLDecoder.decode(parts[0], "UTF-8") to java.net.URLDecoder.decode(parts[1], "UTF-8")
         }
         require(rows.map { it.first }.distinct().size == rows.size) { "Pairing link contains duplicate fields." }
-        val fields = rows.toMap()
+        val allFields = rows.toMap()
+        val address = if (appLink) requireNotNull(allFields["endpoint"]) { "Pairing address is missing." } else value.trim().substringBefore('#')
+        val fields = if (appLink) allFields - "endpoint" else allFields
         require(fields.keys == setOf("gateway") || fields.keys == setOf("v", "gateway", "pair")) { "Use the workstation's ZedLink pairing link." }
         val gateway = fields.getValue("gateway").lowercase()
         require(UUID.fromString(gateway).toString() == gateway) { "Pairing link has an invalid gateway identity." }
         val code = fields["pair"]
         require(code == null || fields["v"] == "1" && code.length == 10 && code.all { it in '0'..'9' }) { "Pairing link has an invalid code or version." }
-        val address = value.trim().substringBefore('#')
         endpoint(address)
         return ConnectionProfile("Desktop", address.trimEnd('/'), gateway) to code
     }
@@ -47,4 +52,13 @@ object ConnectionProfiles {
             (it.gatewayId.equals(profile.gatewayId, true) && it.endpoint.trimEnd('/').equals(profile.endpoint.trimEnd('/'), true)) }
         return profile.copy(id = existing?.id ?: profile.id)
     }
+}
+
+/** Persisted conversation drafts belong to a gateway and workspace, across route/epoch changes. */
+fun draftStorageKey(gateway: String?, target: String?, thread: String?): String? {
+    if (gateway.isNullOrBlank() || target.isNullOrBlank() || thread.isNullOrBlank()) return null
+    val fields = listOf(gateway.lowercase(), target, thread)
+    val material = fields.joinToString("") { "${it.length}:$it" }
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(material.toByteArray(Charsets.UTF_8))
+    return "draft.v2." + digest.joinToString("") { "%02x".format(it.toInt() and 255) }
 }

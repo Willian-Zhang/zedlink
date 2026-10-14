@@ -1,6 +1,7 @@
 import SwiftUI
 
-@main struct ZedLinkApp: App {
+@main @MainActor struct ZedLinkApp: App {
+    init() { ApprovalNotifications.shared.configure() }
     @StateObject private var library = SessionLibrary()
     @StateObject private var profiles = ProfileStore()
     @StateObject private var session = SessionManager()
@@ -55,13 +56,14 @@ import SwiftUI
                 if ProcessInfo.processInfo.arguments.contains("--zedlink-demo") { session.loadDemoPreview(); return }
                 #endif
                 ApprovalNotifications.shared.configure()
-                ApprovalNotifications.shared.handler = { data, action in
-                    selectedTab = 0
-                    await session.handleApprovalNotification(data, action: action)
-                }
                 if session.profile == nil, let profile = profiles.preferredProfile {
                     await session.connect(profile)
                     if session.state == .live { profiles.markUsed(profile) }
+                }
+                // Install only after initial profile restoration; earlier responses are queued.
+                ApprovalNotifications.shared.handler = { data, action in
+                    selectedTab = 0
+                    await session.handleApprovalNotification(data, action: action)
                 }
             }
             .onChange(of: scenePhase) { _, phase in

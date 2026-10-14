@@ -78,7 +78,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
         }) { Text("System notification settings") }
         if (feedback.isNotBlank()) Text(feedback, fontSize = 12.sp)
         if (model.notificationMessage.isNotBlank()) Text(model.notificationMessage, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-        Text("Local alerts require the app to receive updates. Native background push is not configured. Watches may mirror permitted phone alerts.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+        SettingsValue("Native push", "Not configured")
+        SettingsValue("Watch alerts", "Phone mirroring only")
+        Text("Local alerts need incoming app updates. They cannot guarantee delivery while suspended or force-stopped. Browser push is the available background option.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
         state.profile?.let { profile ->
             TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(profile.endpoint))) }) { Text("Set up browser push") }
         }

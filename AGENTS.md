@@ -53,3 +53,8 @@ Follow IOS_APP.md for modern native controls, readable chat, simple onboarding, 
 ## GitHub Actions budget
 
 The owner's Actions allowance is nearly exhausted and there is no budget for overages. Keep Android/macOS workflows manual-only. Do not dispatch hosted builds, re-enable automatic triggers, or launch cloud validation without explicit owner approval. Use local verification; report native app compilation as NOT RUN when the local toolchain is unavailable.
+
+
+## Local build memory
+
+This workstation has 16 GB RAM and `/tmp` is a RAM-backed tmpfs. Do not download or bootstrap SDKs, JDKs, Gradle distributions, or dependency caches inside this repository or `/tmp`. Use an existing system toolchain and a disk-backed cache outside the project. If the required tools are unavailable, report the missing prerequisite rather than automatically downloading a toolchain. Check `free -h` and `df -h /tmp` before native builds. Run one native build at a time; retain the Android 1 GB heap limit, one worker, and in-process Kotlin compilation. Do not increase build memory or start overlapping build processes while the workstation is under memory pressure. Preserve concise test results, then remove disposable build artifacts when they are no longer needed.

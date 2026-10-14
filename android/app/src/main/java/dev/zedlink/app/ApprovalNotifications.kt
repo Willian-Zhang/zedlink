@@ -10,14 +10,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import java.util.UUID
 
 /** Phone notifications may bridge to Wear OS. No FCM or background service is configured. */
 class ApprovalNotifications(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
     private val preferences = context.getSharedPreferences("zedlink-notifications", Context.MODE_PRIVATE)
-    private val receipts = mutableMapOf<String, Pair<Map<String, String>, String>>()
-    private var current = emptySet<String>()
+    private val receipts = NotificationReceipts(preferences)
+    private var current = preferences.getStringSet("current", emptySet()).orEmpty().toSet()
     private var scope = ""
     val enabled get() = preferences.getBoolean("enabled", false)
     data class DeliveryStatus(val allowed: Boolean, val message: String, val requestable: Boolean = false)
@@ -33,17 +32,18 @@ class ApprovalNotifications(private val context: Context) {
         check(enabled && deliveryStatus().allowed) { "Enable alerts and allow notifications in Android Settings first." }
         manager.createNotificationChannel(NotificationChannel("zedlink-approvals", "Agent approvals", NotificationManager.IMPORTANCE_HIGH))
         manager.notify("zedlink-test", 2, Notification.Builder(context, "zedlink-approvals")
-            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("ZedLink")
+            .setSmallIcon(R.drawable.ic_notification).setContentTitle("ZedLink")
             .setContentText("Test notification. No Agent approval is requested.")
             .setVisibility(Notification.VISIBILITY_PRIVATE).setAutoCancel(true).build())
     }
     fun enable() { preferences.edit().putBoolean("enabled", true).apply() }
     fun disable() { preferences.edit().putBoolean("enabled", false).apply(); clear() }
-    fun clear() {
-        current.forEach { manager.cancel(it, 1) }; current = emptySet(); receipts.clear(); scope = ""
+    fun clear(preserveReceipts: Boolean = false) {
+        current.forEach { manager.cancel(it, 1) }; current = emptySet(); if (!preserveReceipts) receipts.prune { false }; scope = ""
+        preferences.edit().remove("current").apply()
     }
     fun consume(intent: Intent): Pair<Map<String, String>, String>? =
-        intent.getStringExtra("zedlink_notification_receipt")?.let(receipts::remove)
+        intent.getStringExtra("zedlink_notification_receipt")?.let(receipts::consume)
 
     fun update(state: AppState) {
         if (!enabled || !deliveryStatus().allowed) {
@@ -63,8 +63,7 @@ class ApprovalNotifications(private val context: Context) {
             next.add(key)
             if (key in current) return@forEach
             fun pending(action: String, fields: Map<String, String>): PendingIntent {
-                val nonce = UUID.randomUUID().toString()
-                receipts[nonce] = fields to action
+                val nonce = receipts.put(fields, action)
                 val intent = Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     this.data = Uri.parse("zedlink://notification/$nonce")
@@ -74,7 +73,7 @@ class ApprovalNotifications(private val context: Context) {
             }
             val review = pending("review", info)
             val builder = Notification.Builder(context, "zedlink-approvals")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle("ZedLink · Approval needed")
                 .setContentText("A Zed Agent is waiting. Review the request before allowing it.")
                 .setContentIntent(review).setAutoCancel(true).setOnlyAlertOnce(true)
@@ -95,7 +94,12 @@ class ApprovalNotifications(private val context: Context) {
         }
         val removed = current - next
         removed.forEach { manager.cancel(it, 1) }
-        receipts.entries.removeAll { (_, value) -> value.first["approval"] !in snapshot.approvals.map { it.id } }
+        receipts.prune { fields ->
+            data.all { (key, value) -> fields[key] == value } && snapshot.approvals.any {
+                fields["approval"] == it.id && fields["turn"] == it.turnId?.toString() && fields["child"] == it.subagentId.orEmpty()
+            }
+        }
         current = next
+        preferences.edit().putStringSet("current", next).apply()
     }
 }

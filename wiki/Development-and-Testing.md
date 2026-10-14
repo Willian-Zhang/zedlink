@@ -67,3 +67,27 @@ Xcode/simulator and physical iPhone validation of this revision have not run on 
 No hosted Actions build was dispatched for this layout change. Local syntax parsing cannot establish SwiftUI type checking or rendered layout correctness.
 
 The expanded [iOS end-to-end guide](iOS-End-to-End-Testing.md) includes the local Mac runner, opt-in disposable-thread UI tests, and physical-device acceptance matrix.
+
+
+### Local build memory
+
+On small workstations, keep SDKs, JDKs, and Gradle caches on a disk-backed filesystem. Check `free -h` and `df -h /tmp` first: a tmpfs consumes memory and may also exhaust swap. The Android project limits Gradle to a 1 GB Java heap and one worker and compiles Kotlin inside Gradle. Native tooling still consumes additional memory outside that heap, so avoid simultaneous native builds.
+
+Use an existing installed JDK, Android SDK, and Gradle 8.10.2. Set `JAVA_HOME` and `ANDROID_HOME` to those installations and keep `GRADLE_USER_HOME` in a disk-backed cache outside the repository. Do not bootstrap toolchains into this checkout or RAM-backed `/tmp`. When prerequisites are missing, report compilation as NOT RUN.
+
+Run the discovered tasks `gradle -p android --no-daemon :app:testDebugUnitTest :app:assembleDebug` once for the current changes. Run lint or instrumentation compilation when that gate is needed; device tests require a connected device or emulator and are distinct from compiling the test APK. Preserve a concise result record and only the APK needed for device testing, then clean disposable outputs. An interrupted build does not establish that lint or device tests passed.
+
+
+### Native notification and input acceptance checks
+
+Use a disposable project and isolated test pairing on both platforms. Rebuild the current source with an installed toolchain before testing. Do not use the owner's active project.
+
+1. Run iOS `NotificationResponseQueueTests` in the generated ZedLink scheme; run Android `NotificationReceiptsTest` and `AppearanceTest` on a device/emulator. Compiling the test APK is separate from running it.
+2. Enable local approval alerts. Create an approval in the selected disposable session, terminate the phone app, and reopen through the alert. Confirm session navigation waits for connection restoration.
+3. Approve/deny once, then reopen the same alert. Confirm there is no second native response. Resolve another approval on desktop before opening its phone alert; confirm the stale request is rejected. Repeat with a restarted Zed epoch and changed workspace.
+4. Interrupt the private route while opening an alert. Confirm no automatic response or route failover occurs. Reconnect and explicitly review current requests. Test lock-screen authentication and permitted watch mirroring separately.
+5. Deny camera permission and use Paste pairing link. Share a pairing link into Android; verify it opens a draft and requires Test HTTPS followed by Pair and save. Reject duplicate fields, HTTP destinations, and wrong gateway identities.
+6. Deny microphone permission, then retry after permitting it. Dictate editable text; switch sessions and background the app mid-dictation. Confirm no stale text reaches another draft and capture stops. Check on-device support and the explicit device-service fallback separately.
+7. Check light/dark themes, large text, keyboard visibility and terminal layout on a small phone, including Android 16. Confirm notification status clearly says native push is not configured.
+
+These device checks are pending. The source includes the recovery tests; no new hosted build is authorized by this checklist.

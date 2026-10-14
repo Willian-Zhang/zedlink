@@ -30,9 +30,12 @@ object TokenVault {
             ?: preferences.getString(legacyAccount, null)?.also {
                 if (legacyAccount != canonical) preferences.edit().putString(canonical, it).remove(legacyAccount).apply()
             }
-            ?: preferences.getString("token", null)?.also {
-                preferences.edit().putString(canonical, it).remove("token").apply()
-            } ?: return null
+            // Only the recorded legacy gateway may claim an old unscoped credential.
+            ?: context.getSharedPreferences("zedlink-profile", Context.MODE_PRIVATE).getString("gateway", null)
+                ?.takeIf { it.equals(gatewayId, ignoreCase = true) }
+                ?.let { preferences.getString("token", null) }?.also {
+                    preferences.edit().putString(canonical, it).remove("token").apply()
+                } ?: return null
         val bytes = Base64.decode(value, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
