@@ -29,6 +29,27 @@ import org.junit.Test
 class MobileLayoutTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun workspaceDialogRequestsResizeForKeyboard() {
+        var dialogWindow: android.view.Window? = null
+        compose.setContent {
+            androidx.compose.ui.window.Dialog(onDismissRequest = {}, properties =
+                androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+                ResizeDialogForKeyboard()
+                val view = androidx.compose.ui.platform.LocalView.current
+                androidx.compose.runtime.SideEffect {
+                    dialogWindow = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
+                }
+                Surface(Modifier.width(320.dp).height(360.dp)) { androidx.compose.material3.Text("Workspace fixture") }
+            }
+        }
+        compose.onNodeWithText("Workspace fixture").assertIsDisplayed()
+        compose.runOnIdle {
+            assertNotNull(dialogWindow)
+            assertEquals(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
+                dialogWindow!!.attributes.softInputMode and android.view.WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST)
+        }
+    }
+
     @Test fun tappingTerminalFocusesVisibleCommandField() {
         compose.setContent {
             val requester = remember { FocusRequester() }

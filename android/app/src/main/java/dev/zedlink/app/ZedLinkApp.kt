@@ -27,6 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import android.view.WindowManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.activity.compose.LocalActivity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -351,19 +354,37 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     if (showContext) ProjectContextDialog(state, model) { showContext = false }
 }
 
+// Dialog windows need their own resize policy; the activity policy does not apply.
+@Composable
+internal fun ResizeDialogForKeyboard() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = (view.parent as? DialogWindowProvider)?.window
+        val previous = window?.attributes?.softInputMode
+        window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        onDispose { if (previous != null) window?.setSoftInputMode(previous) }
+    }
+}
+
 @Composable
 private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
     var page by rememberSaveable(state.selectedThreadId) { mutableStateOf("Terminal") }
     var fullFiles by remember { mutableStateOf(false) }
+    var terminalOnly by rememberSaveable { mutableStateOf(false) }
     if (fullFiles) ProjectFileBrowser(state, model) { fullFiles = false }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        ResizeDialogForKeyboard()
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Workspace", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text(if (terminalOnly) "Terminal" else "Workspace", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    if (page == "Terminal") IconButton(onClick = { terminalOnly = !terminalOnly }) {
+                        Icon(if (terminalOnly) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            if (terminalOnly) "Show workspace tabs" else "Expand terminal")
+                    }
                     IconButton(onClick = close) { Icon(Icons.Default.Close, "Close workspace") }
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                if (!terminalOnly) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
                     listOf("Files", "Changes", "Terminal", "Tasks", "Debug").forEach { label ->
                         val selected = page == label
                         val underline = Ink
@@ -806,6 +827,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
     var clipboard by remember { mutableStateOf(false) }
     val preferences = LocalContext.current.getSharedPreferences("zedlink-terminal", 0)
     var wrapOutput by remember { mutableStateOf(preferences.getBoolean("wrap", true)) }
+    var terminalFontSize by remember { mutableStateOf(preferences.getInt("font-size", 14).coerceIn(12, 20)) }
     if (clipboard) RemoteClipboardDialog(state, model, { input = it }, { clipboard = false })
     val scrollScope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -867,7 +889,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
     }
     val content: @Composable () -> Unit = {
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().then(if (embedded) Modifier else Modifier.systemBarsPadding()).imePadding()) {
+            Column(Modifier.fillMaxSize().then(if (embedded) Modifier else Modifier.systemBarsPadding().imePadding())) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (!embedded) IconButton(onClick = close) { Icon(Icons.Default.ArrowBack, "Back to workspace") }
                     Box(Modifier.weight(1f)) {
@@ -888,7 +910,13 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                         IconButton(onClick = { tools = true }) { Icon(Icons.Default.MoreVert, "Terminal tools") }
                         DropdownMenu(expanded = tools, onDismissRequest = { tools = false }) {
                             DropdownMenuItem(text = { Text("Refresh terminals") }, onClick = { model.loadProjectContext(); tools = false }, enabled = state.live)
-                            DropdownMenuItem(text = { Text(if (wrapOutput) "Keep original columns" else "Wrap output") }, onClick = { wrapOutput = !wrapOutput; preferences.edit().putBoolean("wrap", wrapOutput).apply(); tools = false })
+                            DropdownMenuItem(text = { Text(if (wrapOutput) "Keep original columns (scroll sideways)" else "Wrap long lines") }, onClick = { wrapOutput = !wrapOutput; preferences.edit().putBoolean("wrap", wrapOutput).apply(); tools = false })
+                            DropdownMenuItem(text = { Text("Larger text") }, enabled = terminalFontSize < 20, onClick = {
+                                terminalFontSize += 2; preferences.edit().putInt("font-size", terminalFontSize).apply()
+                            })
+                            DropdownMenuItem(text = { Text("Smaller text") }, enabled = terminalFontSize > 12, onClick = {
+                                terminalFontSize -= 2; preferences.edit().putInt("font-size", terminalFontSize).apply()
+                            })
                             DropdownMenuItem(text = { Text("Remote clipboard") }, onClick = { clipboard = true; tools = false })
                             DropdownMenuItem(text = { Text("Recover session") }, onClick = { model.refresh(); tools = false })
                             if (state.terminalInputUncertain) DropdownMenuItem(text = { Text("I checked previous input in Zed") },
@@ -907,7 +935,7 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                         if ("terminal.list" !in state.capabilities) "Enable View Project Terminals in desktop ZedLink settings."
                         else if (!state.live) "Reconnect to view live terminal output."
                         else if (state.terminals.isEmpty()) "Open a terminal in this Zed workspace."
-                        else "Loading terminal…"), terminalScroll, horizontalScroll, wrapOutput, canType) { showTerminalKeyboard() }
+                        else "Loading terminal…"), terminalScroll, horizontalScroll, wrapOutput, canType, fontSize = terminalFontSize) { showTerminalKeyboard() }
                 }
                 if ("terminal.input" in state.capabilities) {
                     TerminalKeyStrip(canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) { bytes -> sendTerminal(bytes) }
@@ -927,13 +955,13 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
         }
     }
     if (embedded) content() else Dialog(onDismissRequest = close,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { content() }
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { ResizeDialogForKeyboard(); content() }
 }
 
 @Composable internal fun TerminalOutput(text: AnnotatedString, vertical: ScrollState, horizontal: ScrollState,
-    wrap: Boolean, canType: Boolean, onType: () -> Unit) {
+    wrap: Boolean, canType: Boolean, fontSize: Int = 14, onType: () -> Unit) {
     SelectionContainer(Modifier.fillMaxSize()) {
-        Text(text, color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+        Text(text, color = Ink, fontFamily = FontFamily.Monospace, fontSize = fontSize.sp, lineHeight = (fontSize + 4).sp, softWrap = wrap,
             modifier = Modifier.fillMaxSize().verticalScroll(vertical)
                 .then(if (wrap) Modifier else Modifier.horizontalScroll(horizontal))
                 .clickable(enabled = canType, onClickLabel = "Type in terminal", onClick = onType).padding(10.dp))

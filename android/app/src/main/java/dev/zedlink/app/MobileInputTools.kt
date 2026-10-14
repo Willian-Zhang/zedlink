@@ -16,6 +16,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 @Composable
 internal fun VoiceDraftButton(text: String, scope: String, update: (String) -> Unit) {
@@ -29,6 +31,11 @@ internal fun VoiceDraftButton(text: String, scope: String, update: (String) -> U
     val latestScope by rememberUpdatedState(scope)
     val latestUpdate by rememberUpdatedState(update)
     val offline = remember { runCatching { android.os.Build.VERSION.SDK_INT >= 31 && android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }.getOrDefault(false) }
+    // The platform speech activity is the default; on-device recognition remains opt-in.
+    val inlineAvailable = remember { runCatching { android.speech.SpeechRecognizer.isRecognitionAvailable(context) || offline }.getOrDefault(false) }
+    var useDeviceService by remember { mutableStateOf(true) }
+    var pendingRecognition by remember { mutableStateOf(false) }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     var recognitionGeneration by remember { mutableStateOf(0) }
     var recognizer by remember { mutableStateOf<android.speech.SpeechRecognizer?>(null) }
     fun result(words: String) {
@@ -36,12 +43,14 @@ internal fun VoiceDraftButton(text: String, scope: String, update: (String) -> U
         if (latestScope == originalScope && latestText == original && words.isNotBlank())
             latestUpdate((original + if (original.isEmpty()) words else " $words").take(3000))
     }
-    fun startOffline() {
-        if (android.os.Build.VERSION.SDK_INT < 31 || !offline) return
+    fun startInline() {
+        if (!inlineAvailable) { issue = "No in-app speech service is available."; return }
         recognitionGeneration++
         val currentGeneration = recognitionGeneration
         recognizer?.destroy()
-        val speech = android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        val speech = if (offline && android.os.Build.VERSION.SDK_INT >= 31)
+            android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        else android.speech.SpeechRecognizer.createSpeechRecognizer(context)
         recognizer = speech
         speech.setRecognitionListener(object : android.speech.RecognitionListener {
             override fun onReadyForSpeech(params: android.os.Bundle?) { if (currentGeneration == recognitionGeneration) listening = true }
@@ -52,14 +61,20 @@ internal fun VoiceDraftButton(text: String, scope: String, update: (String) -> U
             override fun onError(error: Int) {
                 if (currentGeneration != recognitionGeneration || latestScope != originalScope) return
                 listening = false
+                recognizer?.destroy(); recognizer = null
                 issue = when (error) {
-                    android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required."
+                    android.speech.SpeechRecognizer.ERROR_AUDIO -> "Android could not record audio. Check that microphone access is enabled and close other apps using it. You can also try the device speech service."
+                    android.speech.SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "The speech service is busy. Close other dictation or recording sessions and try again."
+                    android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required. Enable it for ZedLink in Android settings."
                     android.speech.SpeechRecognizer.ERROR_NO_MATCH, android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech recognized. Try again."
-                    else -> "On-device dictation failed ($error). Try again or use your keyboard microphone."
+                    else -> "In-app dictation failed ($error). Try again or use your keyboard microphone."
                 }
             }
             override fun onResults(results: android.os.Bundle?) {
-                if (currentGeneration == recognitionGeneration) result(results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty())
+                if (currentGeneration == recognitionGeneration) {
+                    result(results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty())
+                    recognizer?.destroy(); recognizer = null
+                }
             }
             override fun onPartialResults(partialResults: android.os.Bundle?) {}
             override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
@@ -69,14 +84,33 @@ internal fun VoiceDraftButton(text: String, scope: String, update: (String) -> U
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
     }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
-        if (allowed && latestScope == originalScope && latestText == original) runCatching { startOffline() }.onFailure { listening = false; issue = "On-device speech service is unavailable." }
+        if (allowed && latestScope == originalScope && latestText == original) pendingRecognition = true
         else if (!allowed) issue = "Microphone permission was denied. Use keyboard input or change Android permissions."
     }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { response ->
         listening = false
-        if (response.resultCode == Activity.RESULT_OK) result(response.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty())
+        if (response.resultCode == Activity.RESULT_OK) {
+            val words = response.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty()
+            if (words.isBlank()) issue = "The speech service returned no text. Try again or use keyboard input."
+            else result(words)
+        }
     }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(pendingRecognition, scope) {
+        if (pendingRecognition) {
+            lifecycle.lifecycle.currentStateFlow.first { it.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) }
+            // Let permission/consent windows close and keyboard audio input release capture.
+            delay(250)
+            lifecycle.lifecycle.currentStateFlow.first { it.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) }
+            pendingRecognition = false
+            if (latestScope == originalScope && latestText == original) {
+                runCatching { startInline() }.onFailure {
+                    listening = false; recognizer?.destroy(); recognizer = null
+                    issue = "In-app speech service is unavailable. Try the device speech service."
+                }
+            }
+        }
+    }
     fun stopSpeech() {
         recognitionGeneration++
         recognizer?.cancel(); recognizer?.destroy(); recognizer = null; listening = false
@@ -92,20 +126,29 @@ internal fun VoiceDraftButton(text: String, scope: String, update: (String) -> U
         Icon(Icons.Default.Mic, if (listening) "Finish dictation" else "Dictate draft text", tint = if (listening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
     }
     if (consent) AlertDialog(onDismissRequest = { consent = false }, title = { Text("Dictate a draft") }, text = {
-        Text(if (offline) "On-device recognition keeps audio on this phone. Text is added to an editable draft and never sent automatically."
-            else "On-device recognition is unavailable. Your device’s speech service may process audio online. Text is added to an editable draft and never sent automatically.")
+        Column {
+            Text(if (offline && !useDeviceService) "On-device recognition keeps audio on this phone. Text is added to an editable draft and never sent automatically."
+                else "Your device’s speech service may process audio online. Text is added to an editable draft and never sent automatically.")
+            if (inlineAvailable) TextButton(onClick = { useDeviceService = !useDeviceService }) {
+                Text(if (useDeviceService) { if (offline) "Use on-device recognition instead" else "Use in-app recognition instead" } else "Use device speech popup instead")
+            }
+        }
     }, confirmButton = { TextButton(onClick = {
-        consent = false; original = text; originalScope = scope
-        if (offline) permission.launch(android.Manifest.permission.RECORD_AUDIO)
+        consent = false; original = text; originalScope = scope; keyboard?.hide()
+        if (!useDeviceService && inlineAvailable) permission.launch(android.Manifest.permission.RECORD_AUDIO)
         else try {
             listening = true
             launcher.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                 .putExtra(RecognizerIntent.EXTRA_PROMPT, "Draft text — review before sending"))
         } catch (_: ActivityNotFoundException) { listening = false; issue = "No speech service is installed. Use the microphone on your keyboard." }
-    }) { Text(if (offline) "Use on-device speech" else "Use device speech service") } }, dismissButton = { TextButton(onClick = { consent = false }) { Text("Cancel") } })
-    if (issue.isNotEmpty()) AlertDialog(onDismissRequest = { issue = "" }, text = { Text(issue) }, confirmButton = { TextButton(onClick = { issue = "" }) { Text("OK") } })
+        catch (_: SecurityException) { listening = false; issue = "Android blocked the speech service. Check its microphone permission in Android settings." }
+    }) { Text(if (!useDeviceService) { if (offline) "Use on-device speech" else "Use in-app speech" } else "Use device speech service") } }, dismissButton = { TextButton(onClick = { consent = false }) { Text("Cancel") } })
+    if (issue.isNotEmpty()) AlertDialog(onDismissRequest = { issue = "" }, text = { Text(issue) },
+        confirmButton = { TextButton(onClick = { issue = "" }) { Text("OK") } },
+        dismissButton = { if (!useDeviceService) TextButton(onClick = {
+            issue = ""; useDeviceService = true; consent = true
+        }) { Text("Try device speech service") } })
 }
 
 @Composable
