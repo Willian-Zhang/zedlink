@@ -6,7 +6,9 @@ import html
 import json
 import os
 import pathlib
+import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import uuid
@@ -50,32 +52,90 @@ def qr_svg(value: str) -> str:
     )
 
 
-def qr_terminal(value: str) -> str:
-    """Render a camera-readable QR using explicit terminal background colors."""
+def qr_terminal(value: str, *, columns: int | None = None, lines: int | None = None,
+                reserved_lines: int = 12) -> str:
+    """Pack two module rows per terminal row, preserving the four-module quiet zone.
+
+    A monospace terminal cell is roughly twice as tall as it is wide, so half
+    blocks keep modules square while using one column per module. RGB colors
+    avoid theme-dependent ANSI black/white palette entries.
+    """
+    cells = qr_cells(value)
+    width = len(cells)
+    height = (width + 1) // 2
+    # Keep a spare column to avoid terminals' right-margin autowrap, and room
+    # for the heading, code and pairing instructions below the QR.
+    if ((columns is not None and width >= columns)
+            or (lines is not None and height + reserved_lines > lines)):
+        raise ValueError(f"Enlarge this terminal to at least {width + 1} columns × {height + reserved_lines} rows "
+                         "and press Enter to redraw the QR.")
+    indent = " " * ((columns - width - 1) // 2) if columns is not None else ""
     rows = []
-    for row in qr_cells(value):
-        runs = []
-        prior = None
-        for black in row:
-            if black != prior:
-                runs.append("\x1b[40m" if black else "\x1b[47m")
-                prior = black
-            runs.append("  ")
-        runs.append("\x1b[0m")
-        rows.append("".join(runs))
+    for y in range(0, width, 2):
+        top = cells[y]
+        bottom = cells[y + 1] if y + 1 < width else [False] * width
+        blocks = "".join({(False, False): " ", (True, False): "▀",
+                          (False, True): "▄", (True, True): "█"}[upper, lower]
+                         for upper, lower in zip(top, bottom))
+        rows.append(indent + "\x1b[0;38;2;0;0;0;48;2;255;255;255m" + blocks + "\x1b[0m")
     return "\n".join(rows)
 
 
 def choose_mode(requested: str | None) -> str:
-    if requested:
-        return requested
-    if not os.isatty(0):
-        return "browser"
-    print("\nHow should ZedLink show this one-use pairing challenge?")
-    print("  1. Live browser page with QR and status")
-    print("  2. Terminal QR")
-    choice = input("Select [1]: ").strip()
-    return "terminal" if choice == "2" else "browser"
+    return requested or "terminal"
+
+
+def terminal_size() -> os.terminal_size:
+    # Read the actual PTY rather than stale COLUMNS/LINES inherited from Zed.
+    try:
+        return os.get_terminal_size(sys.stdout.fileno())
+    except (OSError, ValueError):
+        return shutil.get_terminal_size()
+
+
+def open_pairing_terminal(url: str, state_dir: pathlib.Path, manual_code: bool) -> bool:
+    """Launch a dedicated Linux terminal before creating any pairing challenge."""
+    executable = shutil.which("xterm") if sys.platform.startswith("linux") and os.environ.get("DISPLAY") else None
+    if not executable:
+        return False
+    command = [executable, "-geometry", "90x50", "-fa", "Monospace", "-fs", "10", "-u8",
+               "-title", "ZedLink · Pair a device", "-e", sys.executable,
+               str(pathlib.Path(__file__).resolve()), url, str(state_dir),
+               "--mode", "terminal", "--in-terminal-window"]
+    if manual_code:
+        command.append("--manual-code")
+    try:
+        subprocess.Popen(command, start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    return True
+
+
+def open_pairing_window(path: pathlib.Path) -> bool:
+    """Request a separate window in the desktop's selected browser.
+
+    Linux's generic xdg-open ignores the new-window argument. Use a supported
+    browser controller for known defaults, otherwise use the normal launcher.
+    """
+    if sys.platform.startswith("linux") and shutil.which("xdg-settings"):
+        try:
+            result = subprocess.run(["xdg-settings", "get", "default-web-browser"],
+                                    capture_output=True, text=True, timeout=3, check=True)
+            desktop = result.stdout.strip().lower()
+            browsers = (("firefox", ("firefox-esr", "firefox"), webbrowser.Mozilla),
+                        ("chromium", ("chromium", "chromium-browser"), webbrowser.Chrome),
+                        ("google-chrome", ("google-chrome", "google-chrome-stable"), webbrowser.Chrome),
+                        ("brave", ("brave-browser", "brave"), webbrowser.Chrome))
+            for name, executables, controller in browsers:
+                if name in desktop:
+                    executable = next((found for candidate in executables
+                                       if (found := shutil.which(candidate))), None)
+                    if executable:
+                        return controller(executable).open(path.as_uri(), new=1)
+        except (OSError, subprocess.SubprocessError, webbrowser.Error):
+            pass
+    return webbrowser.open(path.as_uri(), new=1)
 
 
 def validate_challenge(challenge: dict) -> tuple[str, str, str, int]:
@@ -179,8 +239,9 @@ def main() -> None:
     parser.add_argument("url", help="trusted HTTPS gateway URL opened by the client browser")
     parser.add_argument("state_dir", type=pathlib.Path, help="private gateway state directory")
     parser.add_argument("--mode", choices=("browser", "terminal"),
-                        help="where to show the QR; prompts in an interactive terminal")
-    parser.add_argument("--no-open", action="store_true", help="create the page without opening it")
+                        help="where to show the QR; defaults to terminal")
+    parser.add_argument("--in-terminal-window", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-open", action="store_true", help="do not open a pairing window")
     parser.add_argument("--manual-code", action="store_true", help="keep the one-time code out of the QR and enter it on the destination device")
     args = parser.parse_args()
     parsed = urllib.parse.urlsplit(args.url)
@@ -191,6 +252,11 @@ def main() -> None:
     if not binary.is_file():
         parser.error("build the gateway first with cargo build --manifest-path gateway/Cargo.toml")
     state_dir = args.state_dir.resolve(strict=True)
+    mode = choose_mode(args.mode)
+    if mode == "terminal" and not args.in_terminal_window and not args.no_open:
+        if open_pairing_terminal(args.url, state_dir, args.manual_code):
+            print("Opened ZedLink pairing in a dedicated terminal window.")
+            return
     identity = admin(binary, state_dir, "devices")["gateway_id"]
     uuid.UUID(identity)
     challenge = admin(binary, state_dir, "pair-short-code")
@@ -200,16 +266,45 @@ def main() -> None:
     link = (manual_link if args.manual_code else base + "#" + urllib.parse.urlencode(
         {"v": "1", "gateway": identity, "pair": code}))
     expires = datetime.now(timezone.utc) + timedelta(seconds=expires_seconds)
-    mode = choose_mode(args.mode)
     if mode == "terminal":
-        print("\nZedLink private device pairing")
-        print("Scan this QR from the trusted device:\n")
-        print(qr_terminal(link))
-        print(f"\nOne-time code: {code[:5]} {code[5:]}")
-        print(f"HTTPS address: {base}")
-        print(f"Gateway ID: {identity}")
-        print(f"Expires: {expires.strftime('%H:%M UTC')} · one use · at most five attempts")
-        print("The challenge remains active after this task exits.")
+        size = terminal_size() if sys.stdout.isatty() else None
+        heading = ["ZedLink private device pairing", "Scan with your phone camera.",
+                   "Keep the entire white border visible.", ""]
+        footer = ["", f"One-time code: {code[:5]} {code[5:]}", f"HTTPS address: {base}",
+                  f"Gateway ID: {identity}",
+                  f"Expires: {expires.strftime('%H:%M UTC')} · one use · at most five attempts",
+                  "The challenge remains active after this task exits."]
+        reserved = sum(max(1, (len(line) // size.columns) + 1) for line in heading + footer) + 1 if size else 12
+        print(heading[0])
+        try:
+            rendered = qr_terminal(link, columns=size.columns if size else None,
+                                   lines=size.lines if size else None, reserved_lines=reserved)
+        except ValueError as error:
+            print(f"\nQR does not fit this terminal. {error}")
+            if sys.stdin.isatty():
+                while datetime.now(timezone.utc) < expires:
+                    try:
+                        input("Enlarge the terminal, then press Enter (Ctrl+C to close): ")
+                        size = terminal_size()
+                        reserved = sum(max(1, (len(line) // size.columns) + 1) for line in heading + footer) + 1
+                        rendered = qr_terminal(link, columns=size.columns, lines=size.lines,
+                                               reserved_lines=reserved)
+                    except ValueError as resize_error:
+                        print(resize_error)
+                        continue
+                    except (EOFError, KeyboardInterrupt):
+                        break
+                    print(rendered)
+                    break
+        else:
+            print("\n".join(heading[1:]))
+            print(rendered)
+        print("\n".join(footer))
+        if args.in_terminal_window and sys.stdin.isatty():
+            try:
+                input("Press Enter to close this pairing window: ")
+            except (EOFError, KeyboardInterrupt):
+                pass
         return
 
     page = pairing_page(base=base, identity=identity, code=code, pairing_id=pairing_id,
@@ -232,7 +327,8 @@ def main() -> None:
     print(f"Private pairing page: {path}")
     print(f"Open it on this workstation. Its live status follows this challenge over WSS. Expires {expires.strftime('%H:%M UTC')}.")
     if not args.no_open:
-        webbrowser.open(path.as_uri())
+        if not open_pairing_window(path):
+            raise SystemExit(f"The pairing window could not be opened. Open this private page manually: {path}")
 
 
 if __name__ == "__main__":

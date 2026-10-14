@@ -200,14 +200,19 @@ def main() -> None:
         assert launch.call_args_list[1].args[0][-1] == "restart-gateway"
 
         # Settings actions choose the primary route without prompting for a route.
-        for action, mode in [("pair-primary", "browser"), ("pair-primary-terminal", "terminal")]:
+        for action, mode in [("pair-primary", "browser"), ("pair-primary-terminal", "terminal"),
+                             ("pair", None), ("pair-browser", "browser")]:
             with patch.object(sys, "argv", ["zedlink_manager.py", action]), \
                  patch.object(manager, "config_path", return_value=root / "configured.json"), \
                  patch.object(manager, "read_config", return_value=data), \
+                 patch.object(manager, "choose_route", side_effect=AssertionError("Pairing window must not prompt in a hidden terminal")), \
                  patch.object(manager.subprocess, "run") as launch:
                 (root / "configured.json").write_text("{}")
                 manager.main()
-                assert launch.call_args.args[0][-2:] == ["--mode", mode]
+                if mode:
+                    assert launch.call_args.args[0][-2:] == ["--mode", mode]
+                else:
+                    assert "--mode" not in launch.call_args.args[0]
                 assert launch.call_args.args[0][2] == data["routes"][0]["url"]
 
         settings_source = (manager.ROOT / "zed-source/crates/settings_ui/src/page_data.rs").read_text()

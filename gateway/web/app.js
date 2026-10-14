@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.13.17";
+const UI_BUILD = "2026.10.14.2";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -4329,10 +4329,20 @@ function appViewportHeight(viewport, standalone, keyboardOpen, fullHeight) {
   return Math.min(fullHeight, visibleBottom);
 }
 function syncVisualViewport(viewport = window.visualViewport) {
-  // A Home Screen app owns the full screen. Its safe-area padding keeps controls
-  // clear of the home indicator, so do not shorten the app to innerHeight.
+  document.documentElement.classList.toggle("ios-home-screen", navigator.standalone === true);
+  // screen.height includes space the OS may not allocate to the web app.
+  // Measure CSS's dynamic viewport independently of body sizing: installed Safari
+  // can report an innerHeight shorter than its allocated viewport.
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-  const fullHeight = Math.max(window.innerHeight, document.documentElement.clientHeight, window.screen?.height || 0);
+  let viewportProbe = document.getElementById("app-viewport-probe");
+  if (!viewportProbe) {
+    viewportProbe = document.createElement("div");
+    viewportProbe.id = "app-viewport-probe";
+    viewportProbe.setAttribute("aria-hidden", "true");
+    viewportProbe.style.cssText = "position:fixed;top:0;left:0;width:0;height:100dvh;visibility:hidden;pointer-events:none";
+    document.documentElement.append(viewportProbe);
+  }
+  const fullHeight = viewportProbe.getBoundingClientRect().height || window.innerHeight || document.documentElement.clientHeight;
   const active = document.activeElement;
   const acceptsKeyboard = active?.matches?.("input:not([type=button]):not([type=checkbox]):not([type=radio]), textarea, [contenteditable=true]") === true;
   const keyboardOpen = acceptsKeyboard && viewport && viewport.height < fullHeight - 120;
@@ -4343,6 +4353,46 @@ syncVisualViewport();
 window.visualViewport?.addEventListener("resize", () => syncVisualViewport());
 window.visualViewport?.addEventListener("scroll", () => syncVisualViewport());
 window.addEventListener("orientationchange", () => syncVisualViewport());
+window.addEventListener("resize", () => syncVisualViewport());
+function layoutReport() {
+  const round = value => Math.round(value * 100) / 100;
+  const rect = selector => {
+    const element = document.querySelector(selector);
+    if (!element || !element.getClientRects().length) return null;
+    const bounds = element.getBoundingClientRect();
+    return { top: round(bounds.top), bottom: round(bounds.bottom), height: round(bounds.height),
+      width: round(bounds.width), scrollHeight: element.scrollHeight, scrollTop: round(element.scrollTop) };
+  };
+  const insetProbe = document.createElement("div");
+  insetProbe.style.cssText = "position:fixed;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)";
+  document.body.append(insetProbe);
+  const style = getComputedStyle(insetProbe);
+  const safeArea = { top: style.paddingTop, right: style.paddingRight, bottom: style.paddingBottom, left: style.paddingLeft };
+  insetProbe.remove();
+  const viewport = window.visualViewport;
+  // Deliberate allowlist: no URLs, storage, credentials, session text or identity.
+  return JSON.stringify({ build: UI_BUILD,
+    standalone: matchMedia("(display-mode: standalone)").matches || navigator.standalone === true,
+    viewportFit: document.querySelector('meta[name="viewport"]').content,
+    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]').content,
+    screen: { width: screen.width, height: screen.height },
+    inner: { width: innerWidth, height: innerHeight },
+    client: { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight },
+    visual: viewport ? { height: round(viewport.height), width: round(viewport.width), offsetTop: round(viewport.offsetTop), scale: viewport.scale } : null,
+    appHeight: document.documentElement.style.getPropertyValue("--app-height"), safeArea,
+    headerPaddingTop: getComputedStyle(document.querySelector(".topbar")).paddingTop,
+    bounds: { body: rect("body"), header: rect(".topbar"), brand: rect(".brand"), layout: rect(".layout"),
+      sidebar: rect(".sidebar"), tabs: rect(".mobile-tabs"), conversationHeader: rect(".conversation-toolbar"),
+      pairButton: rect("#pair-button"), viewportProbe: rect("#app-viewport-probe") }
+  }, null, 2);
+}
+document.querySelectorAll(".layout-report").forEach(button => button.addEventListener("click", () => {
+  const output = button.parentElement.querySelector(".layout-report-output");
+  output.value = layoutReport();
+  output.classList.remove("hidden");
+  output.focus();
+  output.select();
+}));
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("code-review").classList.contains("hidden")) closeCodeReview();
 });

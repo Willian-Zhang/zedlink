@@ -2032,7 +2032,7 @@ def main() -> None:
             else:
                 print("ZedLink gateway is not running.")
         elif args.action in ("pair", "pair-browser", "pair-terminal"):
-            route = choose_route(data)
+            route = choose_route(data) if args.action == "pair-terminal" else primary_route(data)
             command = [sys.executable, str(ROOT / "tools/pair_phone.py"), route["url"],
                        str(state / "gateway")]
             if args.action != "pair":

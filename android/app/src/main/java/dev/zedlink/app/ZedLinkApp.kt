@@ -3,6 +3,7 @@ package dev.zedlink.app
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -48,6 +49,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.semantics.Role
 
 private enum class Tab { Sessions, Connections, Settings }
 
@@ -77,14 +80,17 @@ fun ZedLinkApp(model: ZedLinkViewModel) {
 
 @Composable
 private fun BottomTabs(selected: Tab, inThread: Boolean, onSelect: (Tab) -> Unit) {
-    Row(Modifier.fillMaxWidth().navigationBarsPadding().height(66.dp).border(1.dp, Line)) {
-        listOf(Triple(Tab.Sessions, Icons.Default.Forum, "Sessions"), Triple(Tab.Connections, Icons.Default.Language, "Connections"),
-            Triple(Tab.Settings, Icons.Default.Settings, "Settings")).forEach { (tab, icon, label) ->
-            val active = !inThread && selected == tab || inThread && tab == Tab.Sessions
-            Column(Modifier.weight(1f).fillMaxHeight().clickable { onSelect(tab) },
-                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(icon, null, tint = if (active) Blue else Subtle, modifier = Modifier.size(24.dp))
-                Text(label, color = if (active) Blue else Subtle, fontSize = 11.sp)
+    Column(Modifier.fillMaxWidth().background(Black).navigationBarsPadding()) {
+        Rule()
+        Row(Modifier.fillMaxWidth().height(66.dp)) {
+            listOf(Triple(Tab.Sessions, Icons.Default.Forum, "Sessions"), Triple(Tab.Connections, Icons.Default.Language, "Connections"),
+                Triple(Tab.Settings, Icons.Default.Settings, "Settings")).forEach { (tab, icon, label) ->
+                val active = !inThread && selected == tab || inThread && tab == Tab.Sessions
+                Column(Modifier.weight(1f).fillMaxHeight().selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Icon(icon, null, tint = if (active) Blue else Subtle, modifier = Modifier.size(21.dp))
+                    Text(label, color = if (active) Blue else Subtle, fontSize = 11.sp)
+                }
             }
         }
     }
@@ -114,7 +120,10 @@ private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnect
             FlatInput(query, { query = it }, "Search sessions or agents", Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp)) {
                 listOf("All", "Needs attention", "Running", "Pinned").forEach { label ->
-                    TextButton(onClick = { filter = label; focusManager.clearFocus() }) { Text(label, color = if (filter == label) Ink else Muted) }
+                    val selected = filter == label
+                    val underline = Ink
+                    TextButton(onClick = { filter = label; focusManager.clearFocus() }, shape = RectangleShape,
+                        modifier = Modifier.drawBehind { if (selected) drawRect(underline, topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()), size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx())) }) { Text(label, color = if (selected) Ink else Muted, fontSize = 12.sp) }
                 }
             }
             Rule()
@@ -182,7 +191,7 @@ private fun NewSessionDialog(state: AppState, model: ZedLinkViewModel, dismiss: 
 @Composable
 private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
     var expanded by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) {
             TextButton(onClick = { expanded = true }) {
                 Text("${state.profile?.name} › ${state.targets.firstOrNull { it.id == state.targetId }?.label ?: "Workspace"} ▾", color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -194,26 +203,32 @@ private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
         }
         Text(if (state.live) "Connected" else state.status, color = if (state.live) Green else Warning, fontSize = 10.sp)
     }
-    Rule()
 }
 
 @Composable
-private fun ThreadRow(thread: NativeThread, live: Boolean, pinned: Boolean, updated: Boolean, togglePin: () -> Unit, open: () -> Unit) {
+internal fun ThreadRow(thread: NativeThread, live: Boolean, pinned: Boolean, updated: Boolean, togglePin: () -> Unit, open: () -> Unit) {
     val activity = SessionActivity.from(thread)
     val tint = if (activity.attention) Warning else if (activity.running) Blue else Muted
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Row(Modifier.weight(1f).clickable(onClick = open).padding(start = 16.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (live && activity.running) CircularProgressIndicator(color = tint, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-            else Icon(if (activity.attention) Icons.Default.ErrorOutline else Icons.Default.ChatBubbleOutline, null, tint = tint, modifier = Modifier.size(20.dp))
-            Column(Modifier.padding(horizontal = 10.dp).weight(1f)) {
-                Text(thread.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                val count = if (activity == SessionActivity.APPROVAL) " (${thread.approvalCount})" else if (activity == SessionActivity.INPUT) " (${thread.inputCount})" else ""
-                Text("${thread.agentName} · ${if (live) "" else "Last known: "}${activity.label}$count", color = tint, fontSize = 11.sp)
-                if (updated) Text("New activity", color = Blue, fontSize = 10.sp)
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth()
+        .background(tint.copy(alpha = if (activity.attention || activity.running) 0.07f else 0.03f))
+        .drawBehind { drawRect(tint, size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height)) },
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).clickable(onClick = open).padding(start = 12.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            val count = when {
+                activity == SessionActivity.APPROVAL && thread.approvalCount != null -> " (${thread.approvalCount})"
+                activity == SessionActivity.INPUT && thread.inputCount != null -> " (${thread.inputCount})"
+                else -> ""
             }
-            Icon(Icons.Default.ChevronRight, null, tint = Subtle, modifier = Modifier.size(18.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(thread.agentName.uppercase(), style = monoLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (live && activity.running) CircularProgressIndicator(color = tint, strokeWidth = 1.5.dp, modifier = Modifier.size(12.dp))
+                Text("${if (live) "" else "Last known · "}${activity.label}$count", color = tint, fontSize = 11.sp, modifier = Modifier.widthIn(max = 150.dp))
+            }
+            Text(thread.title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            if (updated) Text("New activity", color = Blue, fontSize = 10.sp)
         }
-        IconButton(onClick = togglePin) { Icon(Icons.Default.PushPin, if (pinned) "Unpin session" else "Pin session", tint = if (pinned) Blue else Subtle) }
+        IconButton(onClick = togglePin) { Icon(Icons.Default.PushPin, if (pinned) "Unpin session" else "Pin session", tint = if (pinned) Blue else Subtle, modifier = Modifier.size(18.dp)) }
     }
     Rule(16.dp)
 }
@@ -259,15 +274,16 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
     if (showAgentSettings) AgentSettingsDialog(state, model) { showAgentSettings = false }
     var proposedTitle by remember(snapshot?.threadId) { mutableStateOf(snapshot?.title.orEmpty()) }
     Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).border(1.dp, Line).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = model::closeThread) { Icon(Icons.Default.ArrowBack, "Sessions", tint = Ink) }
             Column(Modifier.weight(1f)) {
-                Text(lastKnownTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(if (snapshot?.isBusy == true) "ZED IS WORKING" else "NATIVE THREAD READY", color = if (snapshot?.isBusy == true) Blue else Green,
-                    fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                val activity = state.threads.firstOrNull { it.id == state.selectedThreadId }?.let { SessionActivity.from(it) }
+                Text(if (!state.live) state.status else if (snapshot == null) "Loading conversation…" else activity?.label ?: snapshot.status,
+                    color = if (!state.live) Warning else if (snapshot?.isBusy == true) Blue else Muted,
+                    fontSize = 11.sp)
             }
             Box {
-                IconButton(onClick = { showContext = true; model.loadProjectContext() }) { Icon(Icons.Default.Description, "Project context", tint = Ink) }
+                IconButton(onClick = { showContext = true; model.loadProjectContext() }) { Icon(Icons.Default.GridView, "Workspace", tint = Ink) }
             }
             Box {
                 IconButton(onClick = { showActions = true }) { Icon(Icons.Default.MoreVert, "Session actions", tint = Ink) }
@@ -287,6 +303,9 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
                 }
             }
         }
+        Text(lastKnownTitle, fontWeight = FontWeight.SemiBold, fontSize = 18.sp,
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
+        Rule()
         if (state.issue.isNotBlank()) Notice(state.issue)
         if (snapshot == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Ink) }
         else Messages(snapshot, model, Modifier.weight(1f))
@@ -306,7 +325,6 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); chosenSlashDraft = model.state.draft; showCommands = false }
         if (state.delivery.isNotBlank() && (!state.live || state.sending || state.delivery.startsWith("Delivery unknown"))) Text(state.delivery, color = Warning, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().background(Surface).padding(8.dp))
-        if (snapshot?.isBusy == true) AgentProgress(snapshot.status, snapshot.currentTurnId != null && "thread.cancel" in state.capabilities)
         Composer(state, model, { showCommands = !showCommands; if (showCommands) model.refreshCommands() })
     }
     if (showRename) AlertDialog(
@@ -482,27 +500,6 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                 }
             }
         } }, confirmButton = { TextButton(onClick = close) { Text("DONE") } }, containerColor = Surface)
-}
-
-@Composable
-private fun AgentProgress(status: String, canCancel: Boolean) {
-    val detail = when {
-        status.contains("generat", true) -> "Generating in desktop Zed"
-        status.contains("tool", true) || status.contains("run", true) -> "Running native tools"
-        status.contains("wait", true) || status.contains("queue", true) -> "Waiting in desktop Zed"
-        else -> "$status in desktop Zed"
-    }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)
-        .border(1.dp, Blue.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
-        .background(Blue.copy(alpha = 0.08f), RoundedCornerShape(10.dp)).padding(horizontal = 11.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        CircularProgressIndicator(color = Blue, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-        Column(Modifier.padding(start = 10.dp).weight(1f)) {
-            Text("Zed Agent is working", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Text(detail, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-        }
-        Text(if (canCancel) "STOP AVAILABLE" else "LIVE", color = Blue, fontFamily = FontFamily.Monospace, fontSize = 9.sp)
-    }
 }
 
 @Composable
@@ -783,7 +780,7 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
         .border(1.dp, Line).background(Surface).padding(5.dp),
         verticalAlignment = Alignment.Bottom) {
-        FlatIconButton("/", commands)
+        IconButton(onClick = commands) { Icon(Icons.Default.Add, "Commands and context", tint = Ink) }
         BasicTextField(state.draft, model::setDraft, Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp).padding(11.dp),
             textStyle = TextStyle(color = Ink, fontSize = 16.sp), cursorBrush = SolidColor(Ink),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -795,22 +792,31 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
         val canCancel = state.live && state.snapshot?.currentTurnId != null && "thread.cancel" in state.capabilities
         val sendEnabled = state.live && state.draft.isNotBlank() && !state.sending
         IconButton(onClick = { if (canCancel) model.cancel() else submit() }, enabled = if (canCancel) !state.sending else sendEnabled,
-            modifier = Modifier.background(if (canCancel) Color(0xFF592828) else if (sendEnabled) Ink else Line, RoundedCornerShape(50))) {
+            modifier = Modifier.size(44.dp).background(if (canCancel || sendEnabled) Ink else Line, RoundedCornerShape(50))) {
             Icon(if (canCancel) Icons.Default.Stop else Icons.Default.ArrowUpward, if (canCancel) "Stop current turn" else "Send",
-                tint = if (canCancel) Color(0xFFFFD4D4) else if (sendEnabled) Black else Subtle)
+                tint = if (canCancel || sendEnabled) Black else Subtle)
         }
     }
 }
 
-@Composable private fun Header(title: String, subtitle: String, action: @Composable () -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) { Text(title, fontSize = 31.sp, fontWeight = FontWeight.Bold); Text(subtitle, color = Muted, fontSize = 12.sp) }
+@Composable internal fun Header(title: String, subtitle: String, action: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) { Text(title, fontSize = 24.sp, fontWeight = FontWeight.SemiBold); if (subtitle.isNotBlank()) Text(subtitle, color = Muted, fontSize = 12.sp) }
         action()
     }
     Rule()
 }
-@Composable private fun SectionHeading(label: String, value: String) { Row(Modifier.fillMaxWidth().padding(16.dp, 22.dp, 16.dp, 9.dp)) { Text(label, style = monoLabel()); Spacer(Modifier.weight(1f)); Text(value, color = Subtle, style = monoLabel()) } }
-@Composable private fun Notice(text: String) { Text(text, color = Warning, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().background(Surface).padding(11.dp)) }
+@Composable private fun SectionHeading(label: String, value: String) { Row(Modifier.fillMaxWidth().padding(16.dp, 14.dp, 16.dp, 7.dp)) { Text(label, style = monoLabel()); Spacer(Modifier.weight(1f)); Text(value, color = Subtle, style = monoLabel()) } }
+@Composable internal fun Notice(text: String) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    var dismissed by remember(text) { mutableStateOf(false) }
+    if (!dismissed) Row(Modifier.fillMaxWidth().background(Surface), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, color = Warning, fontSize = 12.sp, maxLines = if (expanded) Int.MAX_VALUE else 2,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).heightIn(max = 120.dp)
+                .verticalScroll(rememberScrollState()).clickable { expanded = !expanded }.padding(12.dp))
+        IconButton(onClick = { dismissed = true }) { Icon(Icons.Default.Close, "Dismiss notice", tint = Muted, modifier = Modifier.size(18.dp)) }
+    }
+}
 @Composable private fun Rule(start: androidx.compose.ui.unit.Dp = 0.dp) { HorizontalDivider(Modifier.padding(start = start), color = Line, thickness = 1.dp) }
 @Composable private fun FlatInput(value: String, change: (String) -> Unit, hint: String, modifier: Modifier = Modifier) { BasicTextField(value, change, modifier.fillMaxWidth().heightIn(min = 48.dp).border(1.dp, Line).background(Surface).padding(13.dp), textStyle = TextStyle(color = Ink), cursorBrush = SolidColor(Ink), decorationBox = { inner -> Box { if (value.isEmpty()) Text(hint, color = Subtle); inner() } }) }
 @Composable private fun FlatButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, action: () -> Unit) { Button(action, modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = enabled, shape = androidx.compose.ui.graphics.RectangleShape, colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Black)) { Text(label, fontWeight = FontWeight.Bold) } }

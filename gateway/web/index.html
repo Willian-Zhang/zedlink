@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=contain">
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="ZedLink">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
@@ -48,6 +48,7 @@
         </form>
         <div id="pair-notice" class="notice hidden" role="status" aria-live="polite"></div>
         <p class="note">The link and code are single use and expire after five minutes. Pair only a private browser. Model credentials always remain in desktop Zed.</p>
+        <details class="layout-diagnostics"><summary>Display troubleshooting</summary><button type="button" class="quiet layout-report">Show layout report</button><textarea class="layout-report-output hidden" readonly aria-label="Layout report" rows="8"></textarea><p class="note">Copy this report when reporting a cut-off screen. It contains screen measurements only.</p></details>
       </section>
       <section class="panel hidden" id="sessions-panel">
         <div class="section-head"><div><p class="eyebrow">YOUR DESKTOP</p><h1>Sessions</h1><p id="host-label" class="muted"></p></div><div class="session-actions"><button id="new-session" type="button" class="quiet" aria-label="Create native Zed Agent session" disabled title="Start patched Zed to create a session"><span aria-hidden="true">+</span><b>New</b></button><button id="refresh" type="button" class="quiet" aria-label="Refresh exposed sessions">↻</button><button id="open-settings" type="button" class="quiet" aria-label="Open settings">⚙</button></div></div>
@@ -114,6 +115,7 @@
           <div class="settings-row"><span>Appearance</span><strong>OLED dark</strong></div>
           <div class="settings-row"><span>Runtime</span><strong>Zed hosted agent</strong></div>
           <div class="settings-row"><span>Web UI build</span><code id="ui-build">2026.10.12.3</code></div>
+          <details class="layout-diagnostics"><summary>Display troubleshooting</summary><button type="button" class="quiet layout-report">Show layout report</button><textarea class="layout-report-output hidden" readonly aria-label="Layout report" rows="8"></textarea><p class="note">Copy this report when reporting a cut-off screen. It contains screen measurements only.</p></details>
         </section>
         <button id="install-app" type="button" class="primary hidden">Install ZedLink</button>
         <p id="install-help" class="muted">You can bookmark ZedLink in this browser.</p>

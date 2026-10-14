@@ -1742,7 +1742,7 @@ def main():
                     capture_output=True, text=True, check=True, timeout=5,
                 )
                 assert "ZedLink private device pairing" in terminal_helper.stdout
-                assert "\x1b[40m" in terminal_helper.stdout and "\x1b[47m" in terminal_helper.stdout
+                assert "\x1b[0;38;2;0;0;0;48;2;255;255;255m" in terminal_helper.stdout
                 assert "One-time code:" in terminal_helper.stdout and "Gateway ID:" in terminal_helper.stdout
                 manager_config = root / "manager-config" / "zedlink"
                 manager_config.mkdir(parents=True)

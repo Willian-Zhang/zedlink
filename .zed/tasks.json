@@ -158,8 +158,8 @@
     "cwd": "$ZED_WORKTREE_ROOT",
     "shell": { "program": "/bin/sh" },
     "use_new_terminal": true,
-    "reveal": "always",
-    "hide": "never",
+    "reveal": "never",
+    "hide": "on_success",
     "show_summary": false,
     "show_command": false
   },
@@ -169,7 +169,11 @@
     "args": ["tools/zedlink_manager.py", "pair-browser"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "shell": { "program": "/bin/sh" },
-    "use_new_terminal": true
+    "use_new_terminal": true,
+    "reveal": "never",
+    "hide": "on_success",
+    "show_summary": false,
+    "show_command": false
   },
   {
     "label": "ZedLink: Pair in terminal",

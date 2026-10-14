@@ -7,10 +7,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -41,45 +44,51 @@ data class ConnectionDraft(
     selected?.let { id -> state.profiles.firstOrNull { it.id == id }?.let { profile ->
         ConnectionDetail(state, model, profile) { selected = null }
     } }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 16.dp)) {
-            Text("Connections", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            TextButton(onClick = { adding = true }, enabled = !state.connectionBusy && !state.connecting) { Text("Add") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Header("Connections", "") {
+            IconButton(onClick = { adding = true }, enabled = !state.connectionBusy && !state.connecting) { Icon(Icons.Default.Add, "Add connection", tint = Ink) }
         }
-        ConnectionSection("Saved connections")
-        if (state.profiles.isEmpty()) {
-            Text("No connections", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
-            Text("Add your workstation using its private pairing QR or link.", color = Muted)
-            TextButton(onClick = { adding = true }) { Text("Add connection") }
-        }
-        state.profiles.forEach { profile ->
-            Row(Modifier.fillMaxWidth().clickable { selected = profile.id }.padding(vertical = 14.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text(profile.name, fontWeight = FontWeight.SemiBold)
-                    Text(profile.route, color = Muted, fontSize = 12.sp)
-                    Text(if (state.profile?.id == profile.id) "Selected · ${state.status}" else "Saved", color = Muted, fontSize = 12.sp)
-                }
-                Icon(Icons.Default.ChevronRight, "Connection details")
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            ConnectionSection("Saved connections")
+            if (state.profiles.isEmpty()) {
+                Text("No connections", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
+                Text("Add your workstation using its private pairing QR or link.", color = Muted)
+                TextButton(onClick = { adding = true }) { Text("Add connection") }
             }
-            HorizontalDivider(color = Line)
-        }
-        state.profile?.let { profile ->
-            ConnectionSection("Workspaces · ${profile.name}")
-            if (state.targets.isEmpty()) Text("Connect to load workspaces.", color = Muted)
-            state.targets.forEach { target ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    Column(Modifier.weight(1f)) {
-                        Text(target.label)
-                        Text((if (state.live) "" else "Last known · ") + if (target.available) "Available" else "Unavailable", color = Muted, fontSize = 12.sp)
+            state.profiles.forEach { profile ->
+                val active = state.profile?.id == profile.id
+                Row(Modifier.fillMaxWidth().clickable { selected = profile.id }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(profile.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text(if (active) state.status else "Saved", color = if (active && state.live) Green else Muted, fontSize = 11.sp, modifier = Modifier.widthIn(max = 140.dp))
+                        }
+                        Text(profile.route, color = Muted, fontSize = 11.sp)
+                        Text(profile.endpoint, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     }
-                    TextButton(onClick = { model.selectTarget(target.id) }, enabled = state.live && target.available && target.id != state.targetId && !state.connectionBusy && !state.connecting) {
-                        Text(if (target.id == state.targetId) "Selected" else "Switch")
-                    }
+                    Icon(Icons.Default.ChevronRight, "Connection details", tint = Muted, modifier = Modifier.padding(start = 8.dp).size(18.dp))
                 }
                 HorizontalDivider(color = Line)
             }
+            state.profile?.let { profile ->
+                ConnectionSection("Workspaces · ${profile.name}")
+                if (state.targets.isEmpty()) Text("Connect to load workspaces.", color = Muted)
+                state.targets.forEach { target ->
+                    val canSwitch = state.live && target.available && target.id != state.targetId && !state.connectionBusy && !state.connecting
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(enabled = canSwitch) { model.selectTarget(target.id) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(target.label)
+                            Text((if (state.live) "" else "Last known · ") + if (target.available) "Available" else "Unavailable", color = Muted, fontSize = 12.sp)
+                        }
+                        Icon(if (target.id == state.targetId) Icons.Default.Check else Icons.Default.ChevronRight,
+                            if (target.id == state.targetId) "Selected workspace" else "Switch workspace",
+                            tint = if (target.id == state.targetId) Blue else Muted, modifier = Modifier.size(20.dp))
+                    }
+                    HorizontalDivider(color = Line)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -178,8 +187,8 @@ data class ConnectionDraft(
 }
 
 @Composable private fun ConnectionSection(title: String) {
-    HorizontalDivider(color = Line)
-    Text(title, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+    Text(title.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        letterSpacing = 1.sp, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
 }
 @Composable private fun ConnectionPage(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {

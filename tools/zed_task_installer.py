@@ -129,7 +129,10 @@ def zedlink_tasks() -> list:
     ):
         task = {"label": f"ZedLink: {label}", "command": "python3",
                 "args": [manager, action], **common}
-        if action in ("pair", "pair-terminal"):
+        if action in ("pair", "pair-browser"):
+            task.update({"reveal": "never", "hide": "on_success",
+                         "show_summary": False, "show_command": False})
+        if action == "pair-terminal":
             task.update({
                 "reveal": "always",
                 "hide": "never",

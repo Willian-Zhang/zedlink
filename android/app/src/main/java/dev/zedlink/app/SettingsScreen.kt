@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
     }
     if (help) SettingsDetailDialog("Help & about", { help = false }) {
         SettingsValue("Version", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+        SettingsValue("Interface revision", BuildConfig.UI_REVISION)
         TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/tjnull/zedlink/blob/main/wiki/Running-and-Pairing.md"))) }) { Text("Setup & pairing") }
         TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/tjnull/zedlink/blob/main/wiki/Security.md"))) }) { Text("Security & access") }
         TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/tjnull/zedlink/blob/main/LICENSE"))) }) { Text("License") }
