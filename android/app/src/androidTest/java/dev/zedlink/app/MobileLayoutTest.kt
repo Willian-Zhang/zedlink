@@ -1,16 +1,25 @@
 package dev.zedlink.app
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.*
@@ -19,6 +28,27 @@ import org.junit.Test
 
 class MobileLayoutTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun tappingTerminalFocusesVisibleCommandField() {
+        compose.setContent {
+            val requester = remember { FocusRequester() }
+            ZedLinkTheme("dark") {
+                Surface {
+                    Column(Modifier.width(320.dp).height(360.dp)) {
+                        Box(Modifier.weight(1f)) {
+                            TerminalOutput(AnnotatedString("Disposable terminal prompt $"), rememberScrollState(),
+                                rememberScrollState(), true, true) { requester.requestFocus() }
+                        }
+                        TerminalKeyStrip(true) {}
+                        BasicTextField("", {}, Modifier.focusRequester(requester).height(48.dp).testTag("terminal-input"))
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("terminal-input").assertIsDisplayed().assertIsNotFocused()
+        compose.onNodeWithText("Disposable terminal prompt $").performClick()
+        compose.onNodeWithTag("terminal-input").assertIsFocused()
+    }
 
     @Test fun longSessionTitleWrapsAtLargeTextAndPinDoesNotOpenConversation() {
         val title = "Review the disposable project configuration and explain the remaining changes across mobile clients"

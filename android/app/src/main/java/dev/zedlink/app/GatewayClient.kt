@@ -11,7 +11,7 @@ import java.util.UUID
 import java.io.ByteArrayOutputStream
 import okhttp3.*
 
-class GatewayException(message: String) : IOException(message)
+class GatewayException(message: String, val code: String? = null) : IOException(message)
 
 class GatewayClient(private val profile: ConnectionProfile, private val token: String?, private val targetId: String? = null) {
     private val origin = profile.endpoint.trimEnd('/')
@@ -44,7 +44,7 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
         if (envelope.optInt("version") != 1 || envelope.optString("request_id") != requestId) {
             throw GatewayException("Gateway response did not match this request.")
         }
-        envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code"))) }
+        envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code")), it.optString("code")) }
         return envelope.optJSONObject("result") ?: throw GatewayException("Gateway response was incomplete.")
     }
 
@@ -60,7 +60,7 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching {
                     val envelope = JSONObject(text)
-                    envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code"))) }
+                    envelope.optJSONObject("error")?.let { throw GatewayException(apiMessage(it.optString("code")), it.optString("code")) }
                     envelope.optJSONObject("result") ?: throw GatewayException("Gateway returned an invalid live update.")
                 }.onSuccess(onEvent).onFailure(::failed)
             }
@@ -116,7 +116,10 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
             if (bytes.size > 1_048_576) throw GatewayException("Gateway response was too large.")
             val objectValue = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }
                 .getOrElse { throw GatewayException("Gateway returned an invalid response.") }
-            if (status !in 200..299) throw GatewayException(apiMessage(objectValue.optString("error", "HTTP $status")))
+            if (status !in 200..299) {
+                val code = objectValue.optJSONObject("error")?.optString("code") ?: objectValue.optString("error", "HTTP $status")
+                throw GatewayException(apiMessage(code), code)
+            }
             objectValue
         } catch (error: java.net.SocketTimeoutException) {
             val operation = when (path) { "/v1/gateway" -> "discovery"; "/v1/pair" -> "pairing"; else -> "request" }
@@ -135,6 +138,9 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
             "INSTANCE_UNAVAILABLE" -> "Desktop Zed is unavailable."
             "RESYNC_REQUIRED" -> "Native event history changed; refreshing the conversation."
             "UNSUPPORTED_CAPABILITY" -> "This operation is unavailable in the current Zed build."
+            "UNSUPPORTED_FILE" -> "This file is binary or is not UTF-8 text. Open it in desktop Zed."
+            "FILE_UNAVAILABLE" -> "This file is missing or excluded from remote project access."
+            "FILE_TOO_LARGE" -> "This file exceeds the supported size limit."
             else -> code.ifBlank { "Gateway request failed." }
         }
     }

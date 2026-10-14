@@ -12,6 +12,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -53,6 +57,10 @@ data class AppState(
     val changesRevision: String? = null,
     val terminals: List<NativeTerminal> = emptyList(),
     val terminalSnapshot: NativeTerminalSnapshot? = null,
+    val terminalInputPending: Boolean = false,
+    val terminalInputUncertain: Boolean = false,
+    val terminalDelivery: String = "",
+    val terminalAcceptedDraft: String? = null,
     val configuredTasks: List<NativeConfiguredTask> = emptyList(),
     val debuggerCatalog: List<NativeDebugScenario> = emptyList(),
     val debuggerSessions: List<NativeDebuggerSession> = emptyList(),
@@ -61,16 +69,36 @@ data class AppState(
     val updatingModel: Boolean = false,
     val projectFolderEntries: List<NativeProjectFile>? = null,
     val projectFolderTruncated: Boolean = false,
+    val projectFolderLoading: Boolean = false,
+    val projectFolderError: String = "",
+    val projectFolderPath: String = "",
     val projectFilesTruncated: Boolean = false,
+    val projectFilesLoading: Boolean = false,
+    val projectFilesError: String = "",
     val previewReadable: Boolean = false,
     val previewLoading: Boolean = false,
     val previewTruncated: Boolean = false,
     val previewTitle: String = "",
     val previewContent: String = "",
+    val previewError: String = "",
     val contextPaths: Set<String> = emptySet(),
+    val contextScope: List<String?> = emptyList(),
 )
 
+internal fun AppState.clearProjectAccess() = copy(
+    contextPaths = emptySet(), contextScope = emptyList(),
+    projectFiles = emptyList(), projectFilesLoading = false, projectFilesError = "", projectFilesTruncated = false,
+    projectFolderEntries = null, projectFolderPath = "", projectFolderLoading = false, projectFolderError = "", projectFolderTruncated = false,
+    previewTitle = "", previewContent = "", previewLoading = false, previewReadable = false, previewError = "", previewTruncated = false,
+    terminalSnapshot = null, terminals = emptyList(), terminalInputPending = false, terminalInputUncertain = false,
+    terminalDelivery = "", terminalAcceptedDraft = null,
+)
+
+internal fun projectAccessScope(state: AppState) = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+internal fun terminalDraftKey(state: AppState) = "draft.${state.profile?.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}.${state.terminalSnapshot?.terminal?.id}"
+
 class ZedLinkViewModel(application: Application) : AndroidViewModel(application) {
+    private val terminalPreferences = application.getSharedPreferences("zedlink-terminal", 0)
     var state by mutableStateOf(AppState())
         private set
     var notificationRevision by mutableStateOf(0)
@@ -90,7 +118,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     fun reportPairingScanIssue(message: String) {
         pairingScanInFlight = false
         pairingScanIssue = message
-        state = state.copy(selectedThreadId = null)
+        state = state.clearProjectAccess().copy(selectedThreadId = null)
         pairingImportPending = true
         pairingImportRevision++
     }
@@ -101,7 +129,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         runCatching { ConnectionLinks.parse(value) }.onSuccess { (profile, code) ->
             pairingScanIssue = ""
             pairingDraft = ConnectionDraft(endpoint = profile.endpoint, gateway = profile.gatewayId, code = code.orEmpty())
-            state = state.copy(selectedThreadId = null)
+            state = state.clearProjectAccess().copy(selectedThreadId = null)
             pairingImportPending = true
             pairingImportRevision++
         }.onFailure { reportPairingScanIssue("Pairing link is invalid. Use the workstation QR or HTTPS pairing link.") }
@@ -217,8 +245,15 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 val info = next.rpc("instance.info")
                 if (generation != connectionGeneration) return@launch
                 client = next
-                val sameEpoch = state.instanceId == info.getString("instance_id") && state.epoch == info.getString("epoch")
-                if (!sameEpoch) state = state.copy(snapshot = null, commands = emptyList(), threadSettings = null, elicitations = emptyList(), queuedMessages = emptyList(), editReview = null)
+                val sameEpoch = state.targetId == selectedTarget.id && state.instanceId == info.getString("instance_id") && state.epoch == info.getString("epoch")
+                if (!sameEpoch) state = state.clearProjectAccess().copy(
+                    snapshot = null,
+                    commands = emptyList(),
+                    threadSettings = null,
+                    elicitations = emptyList(),
+                    queuedMessages = emptyList(),
+                    editReview = null,
+                )
                 state = state.copy(
                     status = "Loading sessions…", live = false, connecting = true,
                     targets = targets, targetId = selectedTarget.id,
@@ -286,9 +321,18 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val profile = state.profile ?: return
         pollJob?.cancel(); client = null; pendingId = null; pendingText = null
         preferences.edit().putString("target.${profile.gatewayId}", target.id).apply()
-        state = state.copy(targetId = target.id, threads = emptyList(), selectedThreadId = null, updatedThreads = emptySet(), pinnedThreads = emptySet(),
-            snapshot = null, commands = emptyList(), instanceId = null, epoch = null, live = false,
-            projectFiles = emptyList(), projectFolderEntries = null, previewLoading = false, previewReadable = false, previewTitle = "", previewContent = "")
+        state = state.clearProjectAccess().copy(
+            targetId = target.id,
+            threads = emptyList(),
+            selectedThreadId = null,
+            updatedThreads = emptySet(),
+            pinnedThreads = emptySet(),
+            snapshot = null,
+            commands = emptyList(),
+            instanceId = null,
+            epoch = null,
+            live = false,
+        )
         connect()
     }
 
@@ -297,10 +341,22 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         connectionGeneration++; connectionJob?.cancel(); connectionJob = null
         if (state.profile?.gatewayId?.equals(profile.gatewayId, true) != true) {
             pollJob?.cancel(); client = null; pendingId = null; pendingText = null
-            state = state.copy(profile = profile, threads = emptyList(), selectedThreadId = null, updatedThreads = emptySet(), pinnedThreads = emptySet(),
-                snapshot = null, commands = emptyList(), capabilities = emptySet(), targets = emptyList(), targetId = null,
-                instanceId = null, epoch = null, issue = "", delivery = "",
-                projectFiles = emptyList(), projectFolderEntries = null, previewLoading = false, previewReadable = false, previewTitle = "", previewContent = "")
+            state = state.clearProjectAccess().copy(
+                profile = profile,
+                threads = emptyList(),
+                selectedThreadId = null,
+                updatedThreads = emptySet(),
+                pinnedThreads = emptySet(),
+                snapshot = null,
+                commands = emptyList(),
+                capabilities = emptySet(),
+                targets = emptyList(),
+                targetId = null,
+                instanceId = null,
+                epoch = null,
+                issue = "",
+                delivery = "",
+            )
         }
         state = state.copy(profile = profile)
         preferences.edit().putString("active_profile", profile.id).putString("active_gateway", profile.gatewayId).apply()
@@ -313,15 +369,21 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val generation = connectionGeneration
         val draft = draftStorageKey(state.profile?.gatewayId, state.targetId, id)?.let { preferences.getString(it, "") }.orEmpty()
         previewRequest += 1; directoryRequest += 1
-        state = state.copy(selectedThreadId = id, snapshot = null, commands = emptyList(), draft = draft, issue = "", sending = false,
+        state = state.clearProjectAccess().copy(
+            selectedThreadId = id,
+            snapshot = null,
+            commands = emptyList(),
+            draft = draft,
+            issue = "",
+            sending = false,
             updatedThreads = state.updatedThreads - id,
-            projectFolderEntries = null, projectFiles = emptyList(), projectFilesTruncated = false, previewReadable = false, previewLoading = false, previewContent = "", previewTitle = "")
+        )
         runCatching { loadSnapshot(id); if (generation == connectionGeneration && state.selectedThreadId == id) loadCommands(id) }
             .onFailure { if (generation == connectionGeneration && state.selectedThreadId == id) state = state.copy(issue = it.message.orEmpty()) }
         if (generation == connectionGeneration && state.selectedThreadId == id) startEventStream(id)
     }
 
-    fun closeThread() { eventStreamGeneration++; approvalNotifications.clear(); eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
+    fun closeThread() { eventStreamGeneration++; approvalNotifications.clear(); eventSocket?.cancel(); eventSocket = null; eventStreamLive = false; state = state.clearProjectAccess().copy(selectedThreadId = null, snapshot = null, commands = emptyList()) }
 
     private fun startEventStream(threadId: String) {
         val streamGeneration = ++eventStreamGeneration
@@ -417,6 +479,14 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(localConfirmation = command); return@launch
         }
         if (command != null && state.contextPaths.isNotEmpty()) { state = state.copy(issue = "Run local commands without attachments."); return@launch }
+        if (state.contextPaths.isNotEmpty() && scopedAttachments(state.contextPaths, state.contextScope, projectAccessScope(state)).isEmpty()) {
+            state = state.copy(contextPaths = emptySet(), contextScope = emptyList(), issue = "Attached files belong to another session. Select files again before sending.")
+            return@launch
+        }
+        if (state.contextPaths.isNotEmpty() && "thread.attachments" !in state.capabilities) {
+            state = state.copy(contextPaths = emptySet(), contextScope = emptyList(), issue = "Prompt attachments are unavailable in this Zed session. Your message was not sent; send it without attachments or enable them in desktop Zed.")
+            return@launch
+        }
         pendingLocalConfirmed = localConfirmed
         val requestId = UUID.randomUUID().toString()
         pendingId = requestId; pendingText = text
@@ -871,6 +941,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         val threadId = state.selectedThreadId ?: return@launch
         val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, threadId)
         fun current() = scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        state = state.copy(projectFilesLoading = true, projectFilesError = "")
         try {
             val info = client!!.rpc("instance.info")
             if (!current()) return@launch
@@ -884,7 +955,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 if (!current()) return@launch
                 files = result.optJSONArray("entries").objects().mapNotNull { row ->
                     val path = row.optString("path"); if (path.isBlank()) null else NativeProjectFile(path, row.optString("kind", "file"), row.optIntOrNull("size")) }
-                state = state.copy(projectFilesTruncated = result.optBoolean("truncated"))
+                state = state.copy(projectFiles = files, projectFilesTruncated = result.optBoolean("truncated"), projectFilesLoading = false)
             }
             if ("changes.snapshot" in state.capabilities) {
                 val result = client!!.rpc("changes.snapshot", JSONObject(base.toString()))
@@ -921,7 +992,10 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 val remembered = preferences.getString(terminalRecoveryKey(), null)
                 terminals.firstOrNull { it.id == remembered }?.let { loadTerminal(it) }
             }
-        } catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty()) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { if (current()) state = state.copy(issue = error.message.orEmpty(),
+            projectFilesError = if (state.projectFilesLoading) error.message ?: "Project catalog unavailable." else state.projectFilesError) }
+        finally { if (current()) state = state.copy(projectFilesLoading = false) }
     }
     suspend fun transferClipboard(text: String? = null): String? {
         val method = if (text == null) "clipboard.read" else "clipboard.write"
@@ -941,7 +1015,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private var requestedTerminalId: String? = null
     fun loadTerminal(terminal: NativeTerminal, refresh: Boolean = false): Job = viewModelScope.launch {
         if (refresh && requestedTerminalId != terminal.id) return@launch
-        if (!refresh) requestedTerminalId = terminal.id
+        if (!refresh) {
+            requestedTerminalId = terminal.id
+            if (state.terminalSnapshot?.terminal?.id != terminal.id) state = state.copy(terminalSnapshot = null,
+                terminalInputPending = false, terminalInputUncertain = false, terminalDelivery = "", terminalAcceptedDraft = null)
+        }
         val transport = client ?: return@launch
         val recoveryKey = terminalRecoveryKey()
         try {
@@ -954,27 +1032,72 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             NativeTerminalRun(row.optString("text"), row.optString("foreground"), row.optString("background"), row.optBoolean("bold"), row.optBoolean("italic"), row.optBoolean("underline"), row.optBoolean("dim"))
         }
         preferences.edit().putString(recoveryKey, terminal.id).apply()
-        state = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated"), styles))
+        val next = state.copy(terminalSnapshot = NativeTerminalSnapshot(decoded, result.optString("content"), result.optBoolean("truncated"), styles))
+        val uncertain = terminalPreferences.getString("delivery.${terminalDraftKey(next)}", null) != null
+        state = next.copy(terminalInputUncertain = uncertain && !next.terminalInputPending,
+            terminalDelivery = if (uncertain && !next.terminalInputPending) "Delivery unknown. Check desktop Zed before sending more input." else next.terminalDelivery)
     } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
     private val terminalInputMutex = Mutex()
     private var terminalInputGeneration = 0
-    fun sendTerminalInput(input: String, appendReturn: Boolean = true): kotlinx.coroutines.Job {
+    fun sendTerminalInput(input: String, appendReturn: Boolean = true, draft: String? = null): kotlinx.coroutines.Deferred<Boolean> {
         val terminal = state.terminalSnapshot?.terminal
         val instance = state.instanceId
         val epoch = state.epoch
         val transport = client
         val generation = terminalInputGeneration
-        return viewModelScope.launch {
+        val draftKey = terminalDraftKey(state)
+        return viewModelScope.async {
             terminalInputMutex.withLock {
-                if (generation != terminalInputGeneration || terminal == null || transport == null || input.isEmpty() || "terminal.input" !in state.capabilities ||
-                    instance != state.instanceId || epoch != state.epoch || transport !== client || terminal.id != state.terminalSnapshot?.terminal?.id) return@withLock
+                if (generation != terminalInputGeneration || state.terminalInputUncertain || state.terminalInputPending || terminal == null || transport == null || !state.live || input.isEmpty() || "terminal.input" !in state.capabilities ||
+                    instance != state.instanceId || epoch != state.epoch || transport !== client || terminal.id != state.terminalSnapshot?.terminal?.id) return@withLock false
+                state = state.copy(terminalInputPending = true, terminalDelivery = "Sending terminal input…", terminalAcceptedDraft = null)
                 try {
-                    transport.rpc("terminal.input", JSONObject().put("instance_id", instance).put("epoch", epoch)
-                        .put("terminal_id", terminal.id).put("input", if (appendReturn) "$input\n" else input), UUID.randomUUID().toString())
+                    val recorded = withContext(Dispatchers.IO) { terminalPreferences.edit().putString("delivery.$draftKey", "pending").commit() }
+                    if (!recorded || instance != state.instanceId || epoch != state.epoch || transport !== client ||
+                        terminal.id != state.terminalSnapshot?.terminal?.id || !state.live || "terminal.input" !in state.capabilities) {
+                        terminalPreferences.edit().remove("delivery.$draftKey").apply()
+                        if (terminalDraftKey(state) == draftKey) state = state.copy(terminalDelivery = "Input not sent. Reconnect or check device storage.", issue = "Input not sent. Your draft is retained.")
+                        return@withLock false
+                    }
+                    val accepted = transport.rpc("terminal.input", JSONObject().put("instance_id", instance).put("epoch", epoch)
+                        .put("terminal_id", terminal.id).put("input", if (appendReturn) "$input\r" else input), UUID.randomUUID().toString())
+                    if (accepted.optString("outcome") != "accepted") throw GatewayException("Zed did not confirm terminal input.")
+                    val savedDraft = terminalPreferences.getString(draftKey, "")
+                    terminalPreferences.edit().remove("delivery.$draftKey").apply {
+                        if (draft != null && savedDraft == draft) remove(draftKey)
+                    }.apply()
+                    if (instance != state.instanceId || epoch != state.epoch || transport !== client || terminal.id != state.terminalSnapshot?.terminal?.id) return@withLock false
+                    state = state.copy(terminalDelivery = "Input accepted by Zed", terminalAcceptedDraft = draft, terminalInputUncertain = false,
+                        issue = if (state.issue.startsWith("Terminal input rejected.") || state.issue.startsWith("Terminal delivery unknown.")) "" else state.issue)
                     loadTerminal(terminal, refresh = true)
-                } catch (error: Exception) { terminalInputGeneration += 1; state = state.copy(issue = "Terminal input failed. Check the terminal before retrying: ${error.message.orEmpty()}") }
+                    true
+                } catch (cancelled: CancellationException) {
+                    if (terminalDraftKey(state) == draftKey) state = state.copy(terminalInputUncertain = true, terminalDelivery = "Delivery unknown. Check desktop Zed before sending more input.")
+                    throw cancelled
+                }
+                catch (error: Exception) {
+                    terminalInputGeneration += 1
+                    val rejected = terminalInputRejected((error as? GatewayException)?.code)
+                    if (rejected) terminalPreferences.edit().remove("delivery.$draftKey").apply()
+                    else terminalPreferences.edit().putString("delivery.$draftKey", "unknown").apply()
+                    if (instance == state.instanceId && epoch == state.epoch && transport === client && terminal.id == state.terminalSnapshot?.terminal?.id) {
+                        val message = if (rejected) "Terminal input rejected. Your draft is retained: ${error.message.orEmpty()}"
+                            else "Terminal delivery unknown. Your draft is retained. Check desktop Zed before resending; the command may have run: ${error.message.orEmpty()}"
+                        state = state.copy(issue = message, terminalDelivery = message, terminalInputUncertain = !rejected,
+                            capabilities = if ((error as? GatewayException)?.code == "UNSUPPORTED_CAPABILITY") state.capabilities - "terminal.input" else state.capabilities)
+                    }
+                    false
+                } finally {
+                    if (terminalDraftKey(state) == draftKey) state = state.copy(terminalInputPending = false)
+                }
             }
         }
+    }
+    fun acknowledgeTerminalDelivery() {
+        if (state.terminalInputPending || !state.terminalInputUncertain) return
+        terminalPreferences.edit().remove("delivery.${terminalDraftKey(state)}").apply()
+        state = state.copy(terminalInputUncertain = false, terminalDelivery = "Previous input reviewed. Nothing was resent.",
+            issue = if (state.issue.startsWith("Terminal delivery unknown.")) "" else state.issue)
     }
     fun stopTerminalTask() = viewModelScope.launch {
         val terminal = state.terminalSnapshot?.terminal ?: return@launch
@@ -1029,41 +1152,83 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             capabilities?.optBoolean("step_back") ?: false, threads)
     }
     fun loadDirectory(path: String) = viewModelScope.launch {
-        state = state.copy(projectFolderEntries = null, projectFolderTruncated = false)
         val request = ++directoryRequest
-        if ("project.directory" !in state.capabilities) return@launch
-        val transport = client ?: return@launch
-        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        val scope = projectAccessScope(state)
+        fun current() = request == directoryRequest && scope == projectAccessScope(state)
+        state = state.copy(projectFolderEntries = null, projectFolderPath = path, projectFolderTruncated = false,
+            projectFolderLoading = true, projectFolderError = "")
+        val transport = client
+        val unavailable = when {
+            !state.live || transport == null -> "Reconnect to browse this workspace."
+            state.selectedThreadId == null -> "Open an exposed session to browse its project."
+            "project.directory" !in state.capabilities && "project.files" !in state.capabilities -> "Enable project file access in desktop ZedLink settings."
+            else -> null
+        }
+        if (unavailable != null) {
+            state = state.copy(projectFolderLoading = false, projectFolderError = unavailable)
+            return@launch
+        }
+        if ("project.directory" !in state.capabilities) {
+            val prefix = if (path.isEmpty()) "" else "$path/"
+            state = state.copy(projectFolderLoading = false, projectFolderEntries = state.projectFiles.filter {
+                it.id.startsWith(prefix) && !it.id.removePrefix(prefix).contains('/')
+            }, projectFolderTruncated = state.projectFilesTruncated)
+            return@launch
+        }
         try {
-            val result = transport.rpc("project.directory", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3]).put("thread_id", scope[4]).put("path", path))
-            if (request != directoryRequest || scope != listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) return@launch
-            if (result.optString("directory") != path || !result.has("entries")) throw GatewayException("Invalid directory listing")
+            val result = transport!!.rpc("project.directory", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3]).put("thread_id", scope[4]).put("path", path))
+            if (!current()) return@launch
+            if (result.optString("directory") != path || result.optJSONArray("entries") == null) throw GatewayException("Invalid directory listing")
             val files = result.optJSONArray("entries").objects().mapNotNull { row ->
                 val name = row.optString("path"); if (name.isBlank()) null else NativeProjectFile(name, row.optString("kind", "file"), row.optIntOrNull("size")) }
-            state = state.copy(projectFolderEntries = files, projectFolderTruncated = result.optBoolean("truncated"))
+            state = state.copy(projectFolderEntries = files, projectFolderLoading = false, projectFolderTruncated = result.optBoolean("truncated"))
+        } catch (cancelled: CancellationException) {
+            if (current()) state = state.copy(projectFolderLoading = false)
+            throw cancelled
         } catch (error: Exception) {
-            if (request == directoryRequest && scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)) state = state.copy(issue = error.message.orEmpty())
+            if (current()) state = state.copy(projectFolderLoading = false, projectFolderError = error.message ?: "Folder unavailable.")
         }
     }
     fun previewFile(path: String) = viewModelScope.launch {
-        val transport = client ?: return@launch
-        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        val scope = projectAccessScope(state)
         val request = ++previewRequest
-        state = state.copy(previewTitle = path, previewContent = "", previewReadable = false, previewLoading = true, previewTruncated = false)
-        fun current() = request == previewRequest && scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.selectedThreadId)
+        state = state.copy(previewTitle = path, previewContent = "", previewReadable = false, previewLoading = true, previewTruncated = false, previewError = "")
+        fun current() = request == previewRequest && scope == projectAccessScope(state)
+        val transport = client
+        val unavailable = when {
+            !state.live || transport == null -> "Reconnect to read this file."
+            state.selectedThreadId == null -> "Open an exposed session first."
+            "project.file" !in state.capabilities -> "File reading is unavailable. Enable project file access in desktop ZedLink settings."
+            else -> null
+        }
+        if (unavailable != null) {
+            state = state.copy(previewLoading = false, previewError = unavailable)
+            return@launch
+        }
         try {
-            val result = transport.rpc("project.file", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3]).put("thread_id", scope[4]).put("path", path))
+            val result = transport!!.rpc("project.file", JSONObject().put("instance_id", scope[2]).put("epoch", scope[3]).put("thread_id", scope[4]).put("path", path))
             if (!current()) return@launch
-            if (result.optString("path") != path || !result.has("content")) throw GatewayException("Invalid file preview")
+            if (result.optString("path") != path || result.opt("content") !is String) throw GatewayException("Invalid file preview")
             state = state.copy(previewContent = result.getString("content"), previewReadable = true, previewLoading = false, previewTruncated = result.optBoolean("truncated"))
+        } catch (cancelled: CancellationException) {
+            if (current()) state = state.copy(previewLoading = false)
+            throw cancelled
         } catch (error: Exception) {
-            if (current()) state = state.copy(previewLoading = false, previewContent = "File unavailable: ${error.message.orEmpty()}")
+            if (current()) state = state.copy(previewLoading = false, previewError = error.message ?: "File unavailable.")
         }
     }
-    fun toggleContextPath(path: String) { state = state.copy(contextPaths = state.contextPaths.toMutableSet().apply { if (!add(path)) remove(path) }) }
+    fun toggleContextPath(path: String) {
+        if (path in state.contextPaths) {
+            state = state.copy(contextPaths = state.contextPaths - path)
+        } else if (state.live && state.selectedThreadId != null && "project.file" in state.capabilities && "thread.attachments" in state.capabilities &&
+            path == state.previewTitle && state.previewReadable && !state.previewTruncated && state.previewError.isBlank()) {
+            state = state.copy(contextPaths = state.contextPaths + path, contextScope = projectAccessScope(state))
+        }
+    }
     fun loadDiff() = viewModelScope.launch { try {
         val result = client!!.rpc("changes.diff", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", state.selectedThreadId).put("revision", state.changesRevision))
-        state = state.copy(previewTitle = "Working tree diff", previewContent = result.optString("diff", "Diff is still loading."))
+        state = state.copy(previewTitle = "Working tree diff", previewContent = result.optString("diff", "Diff is still loading."),
+            previewReadable = false, previewLoading = false, previewError = "", previewTruncated = result.optBoolean("truncated"))
     } catch (error: Exception) { state = state.copy(issue = error.message.orEmpty()) } }
     fun mutateChange(change: NativeChange) = viewModelScope.launch { try {
         val method = if (change.staging == "staged") "changes.unstage" else "changes.stage"

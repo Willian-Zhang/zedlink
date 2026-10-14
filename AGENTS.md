@@ -50,6 +50,10 @@ Working mobile UI alone is not completion. A demonstrated shared native Zed thre
 Follow IOS_APP.md for modern native controls, readable chat, simple onboarding, accessibility, and truthful status. Follow NETWORKING.md for profile identity, TLS, VPN/service prerequisites, proxy trust boundaries, and provider-independent recovery. Embedded VPN engines are optional later work requiring verified entitlement/API feasibility. Never silently fall back from a private route to a public endpoint.
 
 
+## Android test versions
+
+Increment Android versionCode and versionName for each APK-affecting update, and update UI_REVISION when the interface changes, so the owner can identify each test build.
+
 ## GitHub Actions budget
 
 The owner's Actions allowance is nearly exhausted and there is no budget for overages. Keep Android/macOS workflows manual-only. Do not dispatch hosted builds, re-enable automatic triggers, or launch cloud validation without explicit owner approval. Use local verification; report native app compilation as NOT RUN when the local toolchain is unavailable.

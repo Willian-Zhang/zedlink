@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -50,6 +51,8 @@ import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 
 private enum class Tab { Sessions, Connections, Settings }
@@ -811,11 +814,26 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
     val horizontalScroll = rememberScrollState()
     val latestState by rememberUpdatedState(state)
     val canType = state.live && state.terminalSnapshot != null && "terminal.input" in state.capabilities
+    val inputFocus = remember { FocusRequester() }
+    fun showTerminalKeyboard() {
+        if (canType) {
+            inputFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
     var followOutput by remember(state.terminalSnapshot?.terminal?.id) { mutableStateOf(true) }
-    val draftKey = "draft.${state.profile?.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}.${state.terminalSnapshot?.terminal?.id}"
+    val draftKey = terminalDraftKey(state)
     var loadedDraftKey by remember { mutableStateOf("") }
+    var terminalSending by remember(draftKey) { mutableStateOf(false) }
+    fun updateTerminalDraft(value: String) {
+        input = value
+        if (loadedDraftKey == draftKey && state.terminalSnapshot != null) preferences.edit().putString(draftKey, value).apply()
+    }
     LaunchedEffect(draftKey) { input = preferences.getString(draftKey, "").orEmpty(); loadedDraftKey = draftKey }
     LaunchedEffect(input, loadedDraftKey) { if (loadedDraftKey == draftKey && state.terminalSnapshot != null) preferences.edit().putString(draftKey, input).apply() }
+    LaunchedEffect(state.terminalAcceptedDraft, loadedDraftKey) {
+        if (state.terminalAcceptedDraft != null && input == state.terminalAcceptedDraft && loadedDraftKey == draftKey) input = ""
+    }
     LaunchedEffect(terminalScroll) {
         snapshotFlow { terminalScroll.isScrollInProgress to (terminalScroll.value >= terminalScroll.maxValue - 40) }
             .collect { (scrolling, nearBottom) -> if (scrolling) followOutput = nearBottom }
@@ -835,10 +853,17 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
             delay(1000)
         }
     }
-    fun submitTerminal() {
-        if (!canType) return
-        model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false)
-        input = ""
+    fun sendTerminal(bytes: String) {
+        if (!canType || loadedDraftKey != draftKey || terminalSending || state.terminalInputPending || state.terminalInputUncertain) return
+        val draft = input
+        val scopeKey = draftKey
+        terminalSending = true
+        scrollScope.launch {
+            try {
+                if (model.sendTerminalInput(draft + bytes, appendReturn = false, draft = draft).await() &&
+                    loadedDraftKey == scopeKey && input == draft) input = ""
+            } finally { terminalSending = false }
+        }
     }
     val content: @Composable () -> Unit = {
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
@@ -853,6 +878,9 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                     }
                     Text(if (!state.live) "Offline" else if ("terminal.input" in state.capabilities) "Interactive" else "Read only",
                         color = if (canType) Green else Muted, fontSize = 10.sp)
+                    IconButton(onClick = { showTerminalKeyboard() }, enabled = canType) {
+                        Icon(Icons.Default.Keyboard, "Type in terminal")
+                    }
                     if (state.terminalSnapshot?.terminal?.taskState == "running" && "task.stop" in state.capabilities) {
                         IconButton(onClick = model::stopTerminalTask, enabled = state.live) { Icon(Icons.Default.Stop, "Stop task", tint = MaterialTheme.colorScheme.error) }
                     }
@@ -863,34 +891,35 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
                             DropdownMenuItem(text = { Text(if (wrapOutput) "Keep original columns" else "Wrap output") }, onClick = { wrapOutput = !wrapOutput; preferences.edit().putBoolean("wrap", wrapOutput).apply(); tools = false })
                             DropdownMenuItem(text = { Text("Remote clipboard") }, onClick = { clipboard = true; tools = false })
                             DropdownMenuItem(text = { Text("Recover session") }, onClick = { model.refresh(); tools = false })
+                            if (state.terminalInputUncertain) DropdownMenuItem(text = { Text("I checked previous input in Zed") },
+                                onClick = { model.acknowledgeTerminalDelivery(); tools = false })
                         }
                     }
                     if (!followOutput) IconButton(onClick = { followOutput = true; scrollScope.launch { terminalScroll.scrollTo(terminalScroll.maxValue) } }) { Icon(Icons.Default.ArrowDownward, "Latest output") }
                 }
                 Rule()
-                if (state.issue.isNotBlank()) Notice(state.issue)
-                SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
-                    Text(if (state.terminalSnapshot != null) terminalText(state.terminalSnapshot) else AnnotatedString(
+                if (state.terminalDelivery.isNotBlank() && (state.terminalInputPending || state.terminalInputUncertain)) {
+                    Text(state.terminalDelivery, color = Warning, fontSize = 12.sp, modifier = Modifier.padding(10.dp))
+                }
+                if (state.issue.isNotBlank() && !state.terminalInputPending && !state.terminalInputUncertain) Notice(state.issue)
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    TerminalOutput(if (state.terminalSnapshot != null) terminalText(state.terminalSnapshot) else AnnotatedString(
                         if ("terminal.list" !in state.capabilities) "Enable View Project Terminals in desktop ZedLink settings."
                         else if (!state.live) "Reconnect to view live terminal output."
                         else if (state.terminals.isEmpty()) "Open a terminal in this Zed workspace."
-                        else "Loading terminal…"), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                        modifier = Modifier.fillMaxSize().verticalScroll(terminalScroll).then(if (wrapOutput) Modifier else Modifier.horizontalScroll(horizontalScroll)).padding(10.dp))
+                        else "Loading terminal…"), terminalScroll, horizontalScroll, wrapOutput, canType) { showTerminalKeyboard() }
                 }
                 if ("terminal.input" in state.capabilities) {
-                    TerminalKeyStrip(canType) { bytes ->
-                        if (input.isNotEmpty()) { model.sendTerminalInput(input, appendReturn = false); input = "" }
-                        model.sendTerminalInput(bytes, appendReturn = false)
-                    }
+                    TerminalKeyStrip(canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) { bytes -> sendTerminal(bytes) }
                     Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("›", color = Green); Spacer(Modifier.width(8.dp))
-                        BasicTextField(value = input, onValueChange = { input = it }, enabled = canType, modifier = Modifier.weight(1f).heightIn(min = 44.dp).padding(vertical = 10.dp), singleLine = true,
+                        BasicTextField(value = input, onValueChange = { updateTerminalDraft(it) }, enabled = canType, modifier = Modifier.weight(1f).focusRequester(inputFocus).heightIn(min = 44.dp).padding(vertical = 10.dp), singleLine = true,
                             textStyle = TextStyle(color = Ink, fontSize = 16.sp, fontFamily = FontFamily.Monospace), cursorBrush = SolidColor(Green),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
-                            keyboardActions = KeyboardActions(onSend = { submitTerminal() }),
+                            keyboardActions = KeyboardActions(onSend = { sendTerminal("\r") }),
                             decorationBox = { field -> Box { if (input.isEmpty()) Text("Command or reply", color = Muted, fontSize = 16.sp); field() } })
-                        VoiceDraftButton(input, draftKey) { input = it }
-                        IconButton(onClick = { submitTerminal() }, enabled = canType) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
+                        VoiceDraftButton(input, draftKey) { updateTerminalDraft(it) }
+                        IconButton(onClick = { sendTerminal("\r") }, enabled = canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
                         IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
                     }
                 } else { Text("Enable Send Terminal Input in desktop ZedLink settings.", color = Muted, modifier = Modifier.padding(12.dp)) }
@@ -899,6 +928,16 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
     }
     if (embedded) content() else Dialog(onDismissRequest = close,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { content() }
+}
+
+@Composable internal fun TerminalOutput(text: AnnotatedString, vertical: ScrollState, horizontal: ScrollState,
+    wrap: Boolean, canType: Boolean, onType: () -> Unit) {
+    SelectionContainer(Modifier.fillMaxSize()) {
+        Text(text, color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+            modifier = Modifier.fillMaxSize().verticalScroll(vertical)
+                .then(if (wrap) Modifier else Modifier.horizontalScroll(horizontal))
+                .clickable(enabled = canType, onClickLabel = "Type in terminal", onClick = onType).padding(10.dp))
+    }
 }
 
 @Composable internal fun TerminalKeyStrip(enabled: Boolean, onKey: (String) -> Unit) {
