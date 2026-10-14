@@ -92,12 +92,34 @@ class ApprovalNotifications(private val context: Context) {
             }
             manager.notify(key, 1, builder.build())
         }
+        snapshot.agentError?.takeUnless { it.retrying }?.let { error ->
+            val material = listOf(error.kind, error.title, error.message).joinToString("\n")
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(material.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 255) }
+            val key = "$nextScope:error:$digest"
+            next.add(key)
+            if (key !in current) {
+                val nonce = receipts.put(data + ("error" to key), "review")
+                val intent = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    this.data = Uri.parse("zedlink://notification/$nonce")
+                    putExtra("zedlink_notification_receipt", nonce)
+                }
+                val review = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                manager.notify(key, 1, Notification.Builder(context, "zedlink-approvals")
+                    .setSmallIcon(R.drawable.ic_notification).setContentTitle("ZedLink · Agent request failed")
+                    .setContentText("Open the session to review the error reported by desktop Zed.")
+                    .setContentIntent(review).setAutoCancel(true).setOnlyAlertOnce(true)
+                    .setVisibility(Notification.VISIBILITY_PRIVATE).build())
+            }
+        }
         val removed = current - next
         removed.forEach { manager.cancel(it, 1) }
         receipts.prune { fields ->
-            data.all { (key, value) -> fields[key] == value } && snapshot.approvals.any {
-                fields["approval"] == it.id && fields["turn"] == it.turnId?.toString() && fields["child"] == it.subagentId.orEmpty()
-            }
+            data.all { (key, value) -> fields[key] == value } &&
+                (fields["error"]?.let { it in next } == true || snapshot.approvals.any {
+                    fields["approval"] == it.id && fields["turn"] == it.turnId?.toString() && fields["child"] == it.subagentId.orEmpty()
+                })
         }
         current = next
         preferences.edit().putStringSet("current", next).apply()

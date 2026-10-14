@@ -219,6 +219,27 @@ struct NativeDebuggerSession: Identifiable, Equatable {
     let threads: [NativeDebuggerThread]
 }
 
+/// Authoritative native failure, separate from gateway connectivity and send delivery.
+struct NativeAgentError: Equatable {
+    let kind: String
+    let title: String
+    let message: String
+    let retrying: Bool
+
+    init?(snapshot: [String: Any]) {
+        if let error = snapshot["agent_error"] as? [String: Any],
+           let title = error["title"] as? String, let message = error["message"] as? String {
+            kind = error["kind"] as? String ?? "agent_error"
+            self.title = title; self.message = message
+            retrying = error["retrying"] as? Bool ?? false
+        } else if snapshot["had_error"] as? Bool == true {
+            kind = "agent_error"; title = "Agent request failed"
+            message = "The last native Zed Agent turn failed. Open desktop Zed for additional details."
+            retrying = false
+        } else { return nil }
+    }
+}
+
 struct ThreadSnapshot {
     let threadID: String
     let title: String
@@ -237,6 +258,7 @@ struct ThreadSnapshot {
     let pendingApprovals: [NativeApproval]
     let rewindPoints: [NativeRewindPoint]
     let subagents: [NativeSubagent]
+    var agentError: NativeAgentError? = nil
 
     var isBusy: Bool { status == "Generating" || currentTurnID != nil }
 }

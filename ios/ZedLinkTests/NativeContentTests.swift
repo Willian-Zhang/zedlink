@@ -256,3 +256,20 @@ final class MarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(MarkdownDocument.parse("- long\n  continued\n- next"), [.item("•", 0, "long\ncontinued"), .item("•", 0, "next")])
     }
 }
+
+final class NativeAgentErrorTests: XCTestCase {
+    func testContextAndConnectionFailuresKeepNativeDetails() {
+        for message in ["Input too long (~76332 tokens, max 65536). Shorten your context.", "Connection refused by model server"] {
+            let decoded = NativeAgentError(snapshot: ["agent_error": ["kind": "model_error", "title": "An error happened", "message": message, "retrying": false]])
+            XCTAssertEqual(decoded?.message, message)
+            XCTAssertEqual(decoded?.kind, "model_error")
+            XCTAssertEqual(decoded?.retrying, false)
+        }
+    }
+    func testFallbackRetryAndRecovery() {
+        XCTAssertNotNil(NativeAgentError(snapshot: ["had_error": true]))
+        XCTAssertNil(NativeAgentError(snapshot: ["had_error": false, "agent_error": NSNull()]))
+        XCTAssertNil(NativeAgentError(snapshot: ["agent_error": ["title": 42, "message": "invalid"]]))
+        XCTAssertEqual(NativeAgentError(snapshot: ["agent_error": ["title": "Retry", "message": "Busy", "retrying": true]])?.retrying, true)
+    }
+}

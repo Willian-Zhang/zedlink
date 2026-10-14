@@ -388,15 +388,22 @@ import Combine
                     eventStreamLive = true
                     delay = 1
                     for try await result in stream {
-                        try checkIdentity(result)
                         guard current == generation, selectedThreadID == threadID else { return }
-                        if !(result["events"] as? [[String: Any]] ?? []).isEmpty || snapshot?.isBusy == true {
+                        try checkIdentity(result)
+                        let events = result["events"] as? [[String: Any]] ?? []
+                        if events.contains(where: { $0["kind"] as? String == "entry.removed" }) { snapshot = nil }
+                        if !events.isEmpty || snapshot == nil || snapshot?.isBusy == true {
                             try await loadSnapshot(threadID)
                         }
                     }
                 } catch {
                     eventStreamLive = false
-                    if Task.isCancelled { return }
+                    if Task.isCancelled || current != generation || selectedThreadID != threadID { return }
+                    if case GatewayFailure.native("RESYNC_REQUIRED") = error {
+                        snapshot = nil
+                        do { try await loadSnapshot(threadID) }
+                        catch { if current == generation { issue = error.localizedDescription; state = .stale } }
+                    }
                     try? await Task.sleep(for: .seconds(delay))
                     delay = min(10, delay * 2)
                 }
@@ -456,6 +463,8 @@ import Combine
               let entries = result["entries_markdown"] as? [String],
               let sequence = result["last_sequence"] as? Int else { throw GatewayFailure.invalidResponse }
         guard selectedThreadID == id else { return }
+        // A slower poll must not overwrite a newer streamed snapshot.
+        if let old = snapshot, old.threadID == id, sequence < old.lastSequence { return }
         let pageStart = result["entry_start_index"] as? Int ?? 0
         let pageEnd = result["entry_end_index"] as? Int ?? pageStart + entries.count
         let totalEntries = result["total_entries"] as? Int ?? pageEnd
@@ -538,10 +547,11 @@ import Combine
                                   activityEntries: result["activity_entries_markdown"] as? [String] ?? entries,
                                   truncated: result["truncated"] as? Bool ?? false,
                                   activityTruncated: result["activity_truncated"] as? Bool ?? false,
-                                  pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: uniqueSubagents)
+                                  pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: uniqueSubagents,
+                                  agentError: NativeAgentError(snapshot: result))
         if let profile, let targetID, let instanceID, let epoch {
             ApprovalNotifications.shared.update(gateway: profile.gatewayID, target: targetID,
-                instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"))
+                instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"), agentError: snapshot?.agentError)
         }
         try await loadAuxiliaryState(id)
     }
@@ -1054,12 +1064,15 @@ import Combine
     func loadEarlierHistory() async {
         guard capabilities.contains("thread.history"), let client, let old = snapshot,
               old.threadID == selectedThreadID, old.entryStartIndex > 0 else { return }
+        let scope = operationScope
         do {
             let result = try await client.rpc("thread.history", params: [
                 "thread_id": old.threadID, "before_entry_index": old.entryStartIndex
             ])
+            guard scope == operationScope else { return }
             try checkIdentity(result)
             guard selectedThreadID == old.threadID, let current = snapshot,
+                  current.instanceID == old.instanceID, current.epoch == old.epoch,
                   current.threadID == old.threadID,
                   current.entryStartIndex == old.entryStartIndex,
                   result["thread_id"] as? String == old.threadID,
@@ -1079,9 +1092,9 @@ import Combine
                                       activityEntries: current.activityEntries,
                                       truncated: start > 0, activityTruncated: current.activityTruncated,
                                       pendingApprovals: current.pendingApprovals, rewindPoints: current.rewindPoints,
-                                      subagents: current.subagents)
+                                      subagents: current.subagents, agentError: current.agentError)
         } catch {
-            issue = error.localizedDescription
+            if scope == operationScope { issue = error.localizedDescription }
         }
     }
 
@@ -1128,6 +1141,7 @@ import Combine
                     let result = try await client.rpc("thread.events", params: [
                         "thread_id": id, "after_sequence": snapshot?.lastSequence ?? 0
                     ])
+                    guard current == generation, selectedThreadID == id else { continue }
                     try checkIdentity(result)
                     guard result["thread_id"] as? String == id else { throw GatewayFailure.invalidResponse }
                     if let events = result["events"] as? [[String: Any]], !events.isEmpty {
@@ -1135,7 +1149,7 @@ import Combine
                             snapshot = nil
                         }
                         try await loadSnapshot(id)
-                    } else if snapshot?.isBusy == true || (snapshot?.subagents.isEmpty == false && Date().timeIntervalSince(lastChildSnapshot) > 3) {
+                    } else if snapshot == nil || snapshot?.isBusy == true || (snapshot?.subagents.isEmpty == false && Date().timeIntervalSince(lastChildSnapshot) > 3) {
                         try await loadSnapshot(id)
                     } else if let sequence = result["last_sequence"] as? Int,
                               var old = snapshot, sequence >= old.lastSequence {
@@ -1149,7 +1163,7 @@ import Combine
                                              activityEntries: old.activityEntries,
                                              truncated: old.truncated, activityTruncated: old.activityTruncated,
                                              pendingApprovals: old.pendingApprovals, rewindPoints: old.rewindPoints,
-                                             subagents: old.subagents)
+                                             subagents: old.subagents, agentError: old.agentError)
                         snapshot = old
                     }
                 } else {

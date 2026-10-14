@@ -9,9 +9,9 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -34,7 +34,7 @@ data class ConnectionDraft(
 }
 
 @Composable internal fun ConnectionsScreen(state: AppState, model: ZedLinkViewModel) {
-    var adding by remember { mutableStateOf(false) }
+    var adding by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(model.pairingImportRevision) { if (model.pairingImportPending) { adding = true; model.pairingImportPending = false } }
     var selected by remember { mutableStateOf<String?>(null) }
     if (adding) ConnectionEditor(state, model, model.pairingDraft, { model.pairingDraft = it }, { adding = false })
@@ -115,41 +115,25 @@ data class ConnectionDraft(
 
 @Composable private fun ConnectionEditor(state: AppState, model: ZedLinkViewModel, draft: ConnectionDraft, change: (ConnectionDraft) -> Unit, close: () -> Unit) {
     val clipboard = LocalClipboardManager.current
-    val context = LocalContext.current
+    val activity = androidx.activity.compose.LocalActivity.current as? MainActivity
     var observed by remember { mutableStateOf("") }
     var tested by remember { mutableStateOf<ConnectionProfile?>(null) }
     var issue by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
-    var scanning by remember { mutableStateOf(false) }
     var advanced by remember { mutableStateOf(false) }
-    var active by remember { mutableStateOf(true) }
     val latest by rememberUpdatedState(draft)
     val scope = rememberCoroutineScope()
-    val busy = testing || scanning || state.connectionBusy || state.connecting
-    DisposableEffect(Unit) { onDispose { active = false } }
+    val busy = testing || model.pairingScanInFlight || state.connectionBusy || state.connecting
     fun applyLink(value: String) {
         runCatching { ConnectionLinks.parse(value) }.onSuccess { (profile, code) ->
+            model.clearPairingScanIssue()
             change(latest.copy(endpoint = profile.endpoint, gateway = profile.gatewayId, code = code.orEmpty()))
             observed = ""; tested = null; issue = "Pairing link loaded. Test HTTPS before continuing."
         }.onFailure { issue = it.message ?: "Pairing link could not be read." }
     }
-    val scanner = androidx.activity.compose.rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) { result ->
-        scanning = false
-        if (active) {
-            result.contents?.let(::applyLink)
-            if (result.originalIntent?.getBooleanExtra(com.google.zxing.client.android.Intents.Scan.MISSING_CAMERA_PERMISSION, false) == true)
-                issue = "Camera permission was denied. Paste the pairing link instead, or allow camera access in Android Settings."
-        }
-    }
     ConnectionPage(if (draft.editing) "Edit connection" else "Add connection", { if (!busy) close() }) {
         if (!draft.editing) {
-            TextButton(onClick = {
-                scanning = true
-                scanner.launch(com.journeyapps.barcodescanner.ScanOptions()
-                    .setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
-                    .setBeepEnabled(false).setBarcodeImageEnabled(false).setOrientationLocked(false)
-                    .setPrompt("Scan the workstation pairing QR"))
-            }, enabled = !busy) { Text("Scan workstation QR") }
+            TextButton(onClick = { activity?.scanPairingQR() }, enabled = !busy && activity != null) { Text("Scan workstation QR") }
             TextButton(onClick = { applyLink(clipboard.getText()?.text.orEmpty()) }, enabled = !busy) { Text("Paste pairing link") }
         }
         OutlinedTextField(draft.name, { change(draft.copy(name = it)) }, label = { Text("Name") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
@@ -187,6 +171,7 @@ data class ConnectionDraft(
             TextButton(onClick = { model.pair(draft.profile(), draft.code, draft.device) { saved -> if (saved) { change(ConnectionDraft()); close() } } }, enabled = !busy && verified && draft.name.isNotBlank() && draft.code.isNotBlank()) { Text("Pair and save") }
         }
         if (paired) TextButton(onClick = { model.updateRoute(draft.profile()) { saved -> if (saved) { change(ConnectionDraft()); close() } } }, enabled = !busy && verified && draft.name.isNotBlank()) { Text(if (draft.editing) "Save changes and connect" else "Save another address") }
+        if (!draft.editing && model.pairingScanIssue.isNotBlank()) Text(model.pairingScanIssue, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
         if (issue.isNotBlank()) Text(issue, fontSize = 12.sp)
         if (state.connectionIssue.isNotBlank()) Text(state.connectionIssue, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
     }

@@ -16,6 +16,13 @@
         android:theme="@style/Theme.ZedLink"
         android:usesCleartextTraffic="false">
         <activity
+            android:name=".PairingCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize"
+            android:theme="@style/zxing_CaptureTheme"
+            android:windowSoftInputMode="stateAlwaysHidden" />
+        <activity
             android:name=".MainActivity"
             android:launchMode="singleTop"
             android:exported="true"

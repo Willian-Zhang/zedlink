@@ -25,14 +25,15 @@ import Foundation
     }
     func enqueue(id: String, data: [String: String], action: String) {
         prune()
-        let required = ["gateway", "target", "instance", "epoch", "thread", "turn", "approval", "child"]
+        let reviewOnly = data["type"] == "agent_error"
+        let required = ["gateway", "target", "instance", "epoch", "thread"] + (reviewOnly ? [] : ["turn", "approval", "child"])
         guard id.utf8.count <= 2048, required.allSatisfy({ data[$0] != nil }),
               data.count <= 12, data.values.allSatisfy({ $0.utf8.count <= 2048 }),
               state.consumed[id] == nil, !state.pending.contains(where: { $0.id == id }) else { return }
         let created = data["created"].flatMap { TimeInterval($0) } ?? now()
         guard created.isFinite, now() - created >= 0, now() - created <= lifetime else { return }
         // Older notifications lack a creation timestamp and can only navigate to review.
-        let safeAction = data["created"] != nil && ["approve", "deny"].contains(action) ? action : "review"
+        let safeAction = !reviewOnly && data["created"] != nil && ["approve", "deny"].contains(action) ? action : "review"
         state.pending.append(Response(id: id, data: data, action: safeAction, created: created))
         if state.pending.count > 16 { state.pending.removeFirst(state.pending.count - 16) }
         save()

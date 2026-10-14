@@ -189,3 +189,32 @@ Connection attempts and reads discard obsolete results after route/workspace cha
 Local Kotlin policy/regression tests pass (18 tests total, including four new connection tests); Swift and changed Kotlin syntax checks pass. Native iOS/Android compilation, updated XCTest, camera/scanner, migration/credential storage and physical route switching are **NOT RUN** on this Linux host. No hosted Actions were dispatched.
 
 Also verify a Zed restart between pages: Android must discard the old indexed transcript before reading the new epoch. An explicit retry must remain bound to its original gateway/workspace/instance/epoch/thread and original context paths; it must not submit to a newly restarted instance. This source guard is not a completed native idempotency test.
+
+
+## Exposure recovery and native errors (2026-10-14)
+
+Rebuild the native clients before testing these source changes. Use a disposable project and an explicitly exposed test conversation, not a real work transcript.
+
+1. Open that session on iOS. Stop its exposure from desktop Zed. The client must stop displaying it as current and show the unavailable/exposure message.
+2. Re-expose the same desktop conversation. Without changing the iOS navigation destination, its current transcript must reload. Confirm the persisted thread ID, instance ID and epoch match; no prompt should be resent.
+3. Kill and relaunch the iOS app, reconnect and select that session. The newest transcript page must be visible initially. While following, streamed text and thinking updates must remain visible; manually scrolling upward must pause following, and Latest must resume it.
+4. Using a deterministic local test model in an isolated Zed profile, return a context-limit failure and then a model-connection failure. Both mobile clients must display the native title/message even if the gateway remains reachable. Refresh and load earlier history: the current failure must remain visible until the authoritative snapshot clears it.
+5. Enable local notifications. A non-retrying native failure must produce a generic Review alert while snapshots are received, without exposing the error text, transcript or tool arguments in the notification. Repeated identical snapshots must not repeatedly alert; after recovery the old alert must be removed. Tapping Review must open the matching exposed conversation and must not submit/retry/approve anything.
+
+APNs/FCM are still unconfigured. Local failure alerts cannot promise delivery while the OS suspends or terminates the app. Browser Web Push is a separate channel.
+
+### Android QR recovery
+
+Use a disposable emulator or test app installation. `CameraNavigationRecoveryTest` checks that the Connections/Add screen survives activity recreation; `NativeAgentErrorTest` exercises Android's real JSON decoder. Neither proves physical camera delivery or HTTPS pairing.
+
+On a physical Android device: Add a connection, launch Scan, rotate the device while scanning, then scan a freshly generated workstation QR. The Add screen must remain open with the endpoint and expected gateway filled. Test HTTPS, then explicitly Pair and save. Relaunch and confirm the saved profile connects. Also test camera denial, cancellation, invalid/expired QR, activity recreation with Don't keep activities enabled, and a revoked credential. Do not store one-use codes in saved-instance state or logs.
+
+Local Android Gradle/SDK and Apple toolchains are unavailable on the Linux workstation; these native gates remain NOT RUN until executed on their respective toolchains/devices.
+
+### Android camera stutter follow-up
+
+QR result and camera-permission launchers now register unconditionally in MainActivity; the callback imports the result into the ViewModel and explicitly opens Connections/Add after recreation. A private PairingCaptureActivity uses the library capture theme and portrait orientation, with orientation/screen-size configuration handling; options lock orientation and prohibit barcode image files. Scan-in-progress is restored as a boolean, blocking duplicate launches. Successful scans never pair or transmit a saved credential automatically; users must verify HTTPS and choose Pair and save. Null/denied/invalid results reopen the pairing form with visible feedback.
+
+CameraNavigationRecoveryTest also feeds results parsed by the real ScanContract into the activity callback after recreation and checks that HTTPS verification remains required, plus cancellation feedback. These are callback fixtures, not a physical camera/ActivityResultRegistry round trip; all remain NOT RUN here.
+
+If the host is pingable but pairing still fails, open the exact gateway HTTPS URL on the phone, or run `curl --max-time 10 https://<gateway-host>:<port>/v1/gateway` in Termux. Do not use `-k` or disable TLS verification. Ping does not test the gateway port, HTTPS certificate, device authorization or camera lifecycle. Do not share QR codes, one-use codes or tokens in diagnostics.

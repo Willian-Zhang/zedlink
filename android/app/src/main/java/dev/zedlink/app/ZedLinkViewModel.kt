@@ -82,16 +82,29 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         notificationMessage = if (allowed) "" else "Permission was not granted. Allow notifications in Android Settings."
         if (allowed) enableNotifications()
     }
+    // Only UI lifecycle state is saved; pairing secrets remain memory-only.
+    var pairingScanInFlight by mutableStateOf(false)
+    var pairingScanIssue by mutableStateOf("")
+        private set
+    fun clearPairingScanIssue() { pairingScanIssue = "" }
+    fun reportPairingScanIssue(message: String) {
+        pairingScanInFlight = false
+        pairingScanIssue = message
+        state = state.copy(selectedThreadId = null)
+        pairingImportPending = true
+        pairingImportRevision++
+    }
     var pairingImportPending by mutableStateOf(false)
     var pairingImportRevision by mutableStateOf(0)
         private set
     fun importPairingLink(value: String) {
         runCatching { ConnectionLinks.parse(value) }.onSuccess { (profile, code) ->
+            pairingScanIssue = ""
             pairingDraft = ConnectionDraft(endpoint = profile.endpoint, gateway = profile.gatewayId, code = code.orEmpty())
             state = state.copy(selectedThreadId = null)
             pairingImportPending = true
             pairingImportRevision++
-        }.onFailure { state = state.copy(issue = "Pairing link is invalid. Use the workstation QR or HTTPS pairing link.") }
+        }.onFailure { reportPairingScanIssue("Pairing link is invalid. Use the workstation QR or HTTPS pairing link.") }
     }
     var pairingDraft by mutableStateOf(ConnectionDraft())
     val approvalNotifications = ApprovalNotifications(application)
@@ -632,6 +645,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             throw GatewayException("Invalid transcript page from desktop Zed.")
         }
         val old = state.snapshot
+        if (old?.threadId == id && old.instanceId == state.instanceId && old.epoch == state.epoch && result.optInt("last_sequence") < old.lastSequence) return
         val canMerge = old?.instanceId == state.instanceId && old?.epoch == state.epoch && old?.threadId == id && pageStart >= old.entryStartIndex
             && pageStart <= old.entryStartIndex + old.entries.size
         val mergedStart = if (canMerge) old!!.entryStartIndex else pageStart
@@ -677,7 +691,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 else child
                 childHistory[child.id] = ChildHistory(childScope(), merged.entryStartIndex, merged.entryStartIndex + merged.entries.size, merged.entries)
                 merged
-            }))
+            }, agentError = NativeAgentError.decode(result)))
         lastChildSnapshot = System.currentTimeMillis()
         approvalNotifications.update(state)
         loadAuxiliaryState(id)

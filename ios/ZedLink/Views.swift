@@ -222,11 +222,19 @@ struct ConversationView: View {
             SessionIssueBanner()
             if let snapshot = session.snapshot, snapshot.threadID == threadID {
                 conversation(snapshot)
+                if let error = snapshot.agentError {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(error.title, systemImage: "exclamationmark.triangle").font(.caption.bold())
+                        ScrollView { Text(error.message).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 100)
+                        if error.retrying { Text("Desktop Zed is retrying this request.").font(.caption) }
+                    }.foregroundStyle(ZLTheme.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ZLTheme.surface).accessibilityIdentifier("native-agent-error")
+                }
                 if !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
                 if !session.elicitations.isEmpty { elicitationStack }
                 if session.editReview != nil || !session.queuedMessages.isEmpty { nativeControls }
             } else {
-                ContentUnavailableView("Loading native thread", systemImage: "bubble.left")
+                ContentUnavailableView(session.state == .live && !session.threads.contains(where: { $0.id == threadID }) ? "Session is not exposed" : "Loading native thread", systemImage: "bubble.left", description: Text("Keep this conversation exposed with /remote-control in desktop Zed. Its contents will reload when it becomes available."))
                     .frame(maxHeight: .infinity)
             }
         }
@@ -234,9 +242,10 @@ struct ConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
         .toolbar(.hidden, for: .navigationBar)
-        .task(id: threadID) {
+        .task(id: [threadID, session.profile?.id.uuidString ?? "", session.targetID ?? "", session.instanceID ?? "", session.epoch ?? "", String(session.state == .live), String(session.threads.contains(where: { $0.id == threadID }))]) {
+            guard session.state == .live, session.threads.contains(where: { $0.id == threadID }) else { return }
             lastKnownTitle = session.threads.first { $0.id == threadID }?.title ?? "Agent thread"
-            await session.select(threadID)
+            if session.selectedThreadID != threadID || session.snapshot == nil { await session.select(threadID) }
             if let snapshot = session.snapshot, snapshot.threadID == threadID, !snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lastKnownTitle = snapshot.title }
         }
         .onChange(of: session.snapshot?.title) { _, title in
@@ -387,7 +396,13 @@ struct ConversationView: View {
                         .overlay(alignment: .top) { Hairline() }
                 }
             }
-            .onChange(of: snapshot.lastSequence) { _, _ in
+            .task(id: [snapshot.instanceID, snapshot.epoch, snapshot.threadID]) {
+                // Explicit initial placement after restored transcript layout, without animation.
+                followsConversation = true
+                await Task.yield()
+                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+            }
+            .onChange(of: snapshot.entries) { _, _ in
                 if followsConversation {
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                 }

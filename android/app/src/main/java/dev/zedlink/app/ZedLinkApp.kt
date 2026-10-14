@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,7 +54,7 @@ private enum class Tab { Sessions, Connections, Settings }
 @Composable
 fun ZedLinkApp(model: ZedLinkViewModel) {
     val state = model.state
-    var tab by remember { mutableStateOf(Tab.Sessions) }
+    var tab by rememberSaveable { mutableStateOf(Tab.Sessions) }
     LaunchedEffect(model.pairingImportRevision) { if (model.pairingImportRevision > 0) tab = Tab.Connections }
     ZedLinkTheme(state.appearance) {
         Surface(modifier = Modifier.fillMaxSize(), color = Black) {
@@ -289,6 +290,17 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
         if (state.issue.isNotBlank()) Notice(state.issue)
         if (snapshot == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Ink) }
         else Messages(snapshot, model, Modifier.weight(1f))
+        snapshot?.agentError?.let { error ->
+            Column(Modifier.fillMaxWidth().background(Surface).padding(12.dp)) {
+                Text(error.title, color = Warning, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                SelectionContainer {
+                    Column(Modifier.heightIn(max = 100.dp).verticalScroll(rememberScrollState())) {
+                        Text(error.message, color = Warning, fontSize = 12.sp)
+                    }
+                }
+                if (error.retrying) Text("Desktop Zed is retrying this request.", color = Muted, fontSize = 12.sp)
+            }
+        }
         if (showCommands) CommandList(state.commands, {
             model.prepareSubagentTask(); showCommands = false
         }, { showClipboard = true; showCommands = false }, { model.refresh(); showCommands = false }) { model.insertCommand(it); chosenSlashDraft = model.state.draft; showCommands = false }

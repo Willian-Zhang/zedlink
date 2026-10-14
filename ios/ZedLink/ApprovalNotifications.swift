@@ -1,6 +1,7 @@
 import Foundation
 import UserNotifications
 import Combine
+import CryptoKit
 
 /// Local delivery while the client receives native snapshots. APNs is not configured.
 @MainActor final class ApprovalNotifications: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
@@ -98,7 +99,7 @@ import Combine
         currentIDs = []; scope = ""
     }
 
-    func update(gateway: String, target: String, instance: String, epoch: String, thread: String, approvals: [NativeApproval], allowActions: Bool) {
+    func update(gateway: String, target: String, instance: String, epoch: String, thread: String, approvals: [NativeApproval], allowActions: Bool, agentError: NativeAgentError? = nil) {
         guard enabled else { clear(); return }
         let nextScope = [gateway, target, instance, epoch, thread].joined(separator: ":")
         if nextScope != scope { clear(); scope = nextScope }
@@ -128,6 +129,25 @@ import Combine
                 Task { @MainActor in
                     self.lastError = message
                     self.currentIDs.remove(id)
+                }
+            }
+        }
+        if let error = agentError, !error.retrying {
+            let digest = SHA256.hash(data: Data([error.kind, error.title, error.message].joined(separator: "\n").utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            let id = "zedlink:\(nextScope):error:\(digest)"
+            nextIDs.insert(id)
+            if !currentIDs.contains(id) {
+                let content = UNMutableNotificationContent()
+                content.title = "ZedLink · Agent request failed"
+                content.body = "Open the session to review the error reported by desktop Zed."
+                content.sound = .default; content.categoryIdentifier = "ZEDLINK_REVIEW"
+                content.userInfo = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
+                    "thread": thread, "type": "agent_error", "created": String(Date().timeIntervalSince1970)]
+                center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
+                    guard let error else { return }
+                    let message = error.localizedDescription
+                    Task { @MainActor in self.lastError = message; self.currentIDs.remove(id) }
                 }
             }
         }

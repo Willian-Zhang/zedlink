@@ -99,6 +99,20 @@ data class NativeSubagent(val id: String, val title: String, val status: String,
 data class NativeProjectFile(val id: String, val kind: String, val size: Int?)
 data class NativeChange(val id: String, val status: String, val staging: String)
 
+data class NativeAgentError(val kind: String, val title: String, val message: String, val retrying: Boolean) {
+    companion object {
+        fun decode(snapshot: org.json.JSONObject): NativeAgentError? {
+            val error = snapshot.optJSONObject("agent_error")
+            if (error != null && error.opt("title") is String && error.opt("message") is String) {
+                return NativeAgentError(error.optString("kind", "agent_error"), error.getString("title"),
+                    error.getString("message"), error.optBoolean("retrying"))
+            }
+            return if (snapshot.optBoolean("had_error")) NativeAgentError("agent_error", "Agent request failed",
+                "The last native Zed Agent turn failed. Open desktop Zed for additional details.", false) else null
+        }
+    }
+}
+
 data class ThreadSnapshot(
     val threadId: String,
     val title: String,
@@ -117,6 +131,7 @@ data class ThreadSnapshot(
     val approvals: List<NativeApproval>,
     val rewindPoints: List<NativeRewindPoint>,
     val subagents: List<NativeSubagent>,
+    val agentError: NativeAgentError? = null,
 ) { val isBusy: Boolean get() = status == "Generating" || currentTurnId != null }
 
 enum class EntryKind { USER, ASSISTANT, TOOL, PLAN, APPROVAL, CONTEXT, OTHER }

@@ -42,4 +42,19 @@ import XCTest
         while let response = queue.claim() { XCTAssertEqual(response.action, "review"); count += 1 }
         XCTAssertEqual(count, 16)
     }
+    func testFailureAlertsAreReviewOnlyAndSurviveRelaunch() throws {
+        let suite = "notification-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let queue = NotificationResponseQueue(defaults: defaults, now: { 1000 })
+        let data = ["gateway": "gateway", "target": "target", "instance": "instance", "epoch": "epoch",
+                    "thread": "thread", "type": "agent_error", "created": "1000"]
+        queue.enqueue(id: "failure", data: data, action: "approve")
+        let restored = NotificationResponseQueue(defaults: defaults, now: { 1001 })
+        let response = try XCTUnwrap(restored.claim())
+        XCTAssertEqual(response.action, "review")
+        XCTAssertEqual(response.data["thread"], "thread")
+        XCTAssertNil(restored.claim())
+    }
+
 }
