@@ -40,6 +40,22 @@
     "use_new_terminal": true
   },
   {
+    "label": "ZedLink: Check Tailscale connection",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "tailscale-check"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
+    "label": "ZedLink: Guided Tailscale repair",
+    "command": "python3",
+    "args": ["tools/zedlink_manager.py", "tailscale-repair"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "shell": { "program": "/bin/sh" },
+    "use_new_terminal": true
+  },
+  {
     "label": "ZedLink: Enable automatic certificate renewal",
     "command": "python3",
     "args": ["tools/zedlink_manager.py", "install-renewal"],

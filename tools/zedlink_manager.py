@@ -9,6 +9,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
+import ssl
+import hashlib
+import webbrowser
 import subprocess
 import sys
 import tempfile
@@ -344,7 +348,169 @@ def tailscale_preflight() -> tuple[str, str]:
     return address, hostname
 
 
-def certificate_health(cert_path: Path, key_path: Path, hostname: str) -> tuple[bool, str]:
+def tailscale_dns_preferences() -> tuple[bool | None, bool | None]:
+    magic = accepted = None
+    for command, field in ((["tailscale", "status", "--json"], "magic"),
+                           (["tailscale", "debug", "prefs"], "local")):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=True)
+            values = json.loads(result.stdout)
+            value = values.get("CurrentTailnet", {}).get("MagicDNSEnabled") if field == "magic" else values.get("CorpDNS")
+            if isinstance(value, bool):
+                if field == "magic": magic = value
+                else: accepted = value
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+            pass
+    return magic, accepted
+
+
+def tailscale_route(data: dict, hostname: str) -> dict | None:
+    enabled = [route for route in data["routes"] if route["enabled"] and route["kind"] == "direct_tls"]
+    primary = next((route for route in enabled if route["id"] == data["primary_route_id"]), None)
+    matches = [route for route in enabled if urlsplit(route["url"]).hostname == hostname]
+    if primary in matches: return primary
+    return next(iter(matches), None)
+
+
+def tailscale_connection_checks(data: dict | None) -> dict:
+    rows = []
+    def report(key: str, status: str, detail: str) -> None:
+        rows.append({"check": key, "status": status, "detail": detail})
+    try:
+        address, hostname = tailscale_preflight()
+    except ValueError as error:
+        report("tailscale", "fail", str(error))
+        return {"checks": rows, "host_ready": False, "phone_verified": False}
+    report("tailscale", "pass", "Connected to Tailscale")
+    magic, accepted = tailscale_dns_preferences()
+    report("magicdns", "pass" if magic is True else "fail" if magic is False else "unknown",
+           "Enabled" if magic is True else "Enable MagicDNS in the Tailscale DNS administration page" if magic is False else "Tailnet setting could not be inspected; open Tailscale DNS settings")
+    report("local_dns", "pass" if accepted is True else "warn" if accepted is False else "unknown",
+           "Accepting Tailscale DNS" if accepted is True else "Local DNS acceptance is disabled" if accepted is False else "Local DNS preference unavailable")
+    try:
+        resolved = {item[4][0] for item in socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)}
+        report("dns", "pass" if address in resolved else "fail",
+               "Hostname resolves to this Tailscale address" if address in resolved else "Hostname does not resolve to this Tailscale address")
+    except OSError:
+        report("dns", "fail", "Hostname lookup failed on this workstation")
+    route = tailscale_route(data, hostname) if data else None
+    if route is None:
+        report("route", "fail", "No enabled connection matches this computer's Tailscale hostname; configure a Tailscale connection first")
+        return {"checks": rows, "host_ready": False, "phone_verified": False}
+    report("route", "pass", "Configured hostname matches this Tailscale computer")
+    host = urlsplit(route["url"]).hostname
+    port = urlsplit(route["url"]).port or 443
+    bind_host, bind_port = split_bind(route["bind"])
+    report("bind", "pass" if str(bind_host) == address and bind_port == port else "fail",
+           "Listener uses the current private Tailscale address and client port" if str(bind_host) == address and bind_port == port else "Listener address/port differs from this Tailscale connection")
+    healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname, require_trust=True)
+    report("certificate_files", "pass" if healthy else "fail", detail)
+    try:
+        with socket.create_connection((host, port), timeout=5): pass
+        report("tcp", "pass", "Gateway port is reachable from this workstation")
+    except OSError:
+        report("tcp", "fail", "Gateway port is unreachable from this workstation")
+    try:
+        with socket.create_connection((host, port), timeout=5) as raw:
+            with ssl.create_default_context().wrap_socket(raw, server_hostname=host) as secure:
+                served = secure.getpeercert(binary_form=True)
+        report("served_tls", "pass", "Served certificate is trusted and matches the hostname")
+        configured = subprocess.check_output(["openssl", "x509", "-in", route["cert"], "-outform", "DER"], timeout=5, stderr=subprocess.DEVNULL)
+        same = hashlib.sha256(served).digest() == hashlib.sha256(configured).digest()
+        report("loaded_certificate", "pass" if same else "fail",
+               "Gateway is serving the configured certificate" if same else "Gateway still serves a different certificate; reload TLS or activate the configured route")
+    except (OSError, subprocess.SubprocessError):
+        report("served_tls", "fail", "Gateway TLS could not be verified; check trust, hostname and the active certificate")
+    try:
+        result = subprocess.run(["curl", "--silent", "--show-error", "--fail", "--noproxy", "*",
+                                 "--connect-timeout", "5", "--max-time", "8", route["url"] + "/v1/gateway"],
+                                check=True, capture_output=True, text=True, timeout=10)
+        discovered = json.loads(result.stdout)
+        actual = discovered["gateway_id"]
+        if discovered.get("version") != 1 or not isinstance(actual, str): raise ValueError("invalid identity")
+        uuid.UUID(actual)
+        report("https", "pass", "HTTPS discovery returned a valid ZedLink gateway response")
+        try:
+            expected = admin(Path(data["state_dir"]), "devices")["gateway_id"]
+            report("identity", "pass" if actual == expected else "fail",
+                   "Gateway identity matches local paired-device state" if actual == expected else "Gateway identity differs; no pairing or credential sent")
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+            report("identity", "unknown", "Local gateway identity could not be verified")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        report("https", "fail", "HTTPS discovery failed; no pairing request was sent")
+    try:
+        timer = subprocess.run(["systemctl", "--user", "is-enabled", "--quiet", RENEWAL_TIMER], timeout=5, capture_output=True).returncode == 0
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", RENEWAL_TIMER], timeout=5, capture_output=True).returncode == 0
+        report("renewal", "pass" if timer and active else "warn",
+               "Automatic renewal enabled and timer active" if timer and active else "Renewal timer enabled but inactive" if timer else "Automatic renewal not enabled")
+    except (OSError, subprocess.SubprocessError): report("renewal", "unknown", "Renewal timer unavailable")
+    required = {"tailscale", "magicdns", "dns", "route", "bind", "certificate_files", "tcp", "served_tls", "loaded_certificate", "https", "identity"}
+    passed = {row["check"] for row in rows if row["status"] == "pass"}
+    return {"checks": rows, "host_ready": required <= passed and not any(row["status"] == "fail" and row["check"] in required for row in rows), "phone_verified": False}
+
+
+def print_tailscale_checks(result: dict) -> None:
+    for row in result["checks"]: print(f"{row['status'].upper():7} {row['check']}: {row['detail']}")
+    print("Host checks passed." if result["host_ready"] else "Host connection still needs attention.")
+    print("Phone check pending: open the same HTTPS /v1/gateway URL on the phone, then Test HTTPS and pair. A host check cannot verify a phone's VPN route.")
+
+
+def repair_tailscale_connection(data: dict | None) -> None:
+    print_tailscale_checks(tailscale_connection_checks(data))
+    address, hostname = tailscale_preflight()
+    magic, accepted = tailscale_dns_preferences()
+    if magic is not True:
+        print(f"An administrator must enable MagicDNS and HTTPS at {TAILSCALE_DNS_ADMIN_URL}.")
+        if input("Open that administration page? [y/N]: ").strip().lower() == "y":
+            if not webbrowser.open(TAILSCALE_DNS_ADMIN_URL): print("Could not open the browser; use the printed URL.")
+        input("Press Enter after the administrator finishes, or Ctrl-C to stop: ")
+        magic, accepted = tailscale_dns_preferences()
+        if magic is False: raise ValueError("MagicDNS is still disabled; repair stopped")
+    if accepted is not True and input("Enable local Tailscale DNS acceptance? [y/N]: ").strip().lower() == "y":
+        try:
+            subprocess.run(["tailscale", "set", "--accept-dns=true"], check=True, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError("Could not enable local DNS acceptance. Check Tailscale operator permissions; no other VPN preferences were changed") from error
+    route = tailscale_route(data, hostname) if data else None
+    if route is None: raise ValueError("Configure an enabled connection using this computer's Tailscale hostname before repair")
+    _, port = split_bind(route["bind"])
+    port = urlsplit(route["url"]).port or port
+    directory = config_path().parent / "tls"
+    cert, key = directory / f"{hostname}.crt", directory / f"{hostname}.key"
+    updated = json.loads(json.dumps(data))
+    repaired = next(item for item in updated["routes"] if item["id"] == route["id"])
+    repaired.update(provider="tailscale", bind=f"{address}:{port}", url=f"https://{hostname}:{port}", cert=str(cert), key=str(key))
+    print(f"Repair plan for {route['label']}: private listener {repaired['bind']}, HTTPS {repaired['url']}")
+    print(f"Certificate: {cert}\nPrivate key path: {key}")
+    print("A trusted certificate will be requested if needed. Its hostname is published in Certificate Transparency logs. Gateway connections may briefly disconnect; native Zed agents remain running. Saved device authorization is preserved.")
+    if input("Type REPAIR to apply this plan: ").strip() != "REPAIR":
+        print("Repair cancelled; certificate and route configuration unchanged."); return
+    ensure_tailscale_certificate(cert, key, hostname)
+    updated = validate(updated)
+    save_config(updated)
+    sync_zed_settings(updated)
+    changed = any(repaired[field] != route[field] for field in ("bind", "url", "cert", "key"))
+    try:
+        if changed: raise ValueError("Listener configuration changed")
+        if admin(Path(updated["state_dir"]), "reload-tls").get("reloaded") is not True: raise ValueError("Reload rejected")
+        print("Running gateway reloaded the validated certificate.")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        restart_gateway_detached()
+        print("Gateway activation requested; checking readiness below.")
+    if input("Enable automatic certificate renewal? [Y/n]: ").strip().lower() != "n":
+        try: install_certificate_renewal(updated)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            print(f"Renewal could not be enabled: {error}. Run install-renewal after resolving the prerequisite.")
+    result = tailscale_connection_checks(updated)
+    for attempt in range(4):
+        if result["host_ready"]: break
+        print(f"Rechecking gateway readiness ({attempt + 1}/4)...", flush=True)
+        time.sleep(0.5)
+        result = tailscale_connection_checks(updated)
+    print_tailscale_checks(result)
+
+
+def certificate_health(cert_path: Path, key_path: Path, hostname: str, *, require_trust: bool = False) -> tuple[bool, str]:
     """Validate a PEM pair without printing private key material."""
     if not cert_path.is_file() or not key_path.is_file():
         return False, "certificate or private key is missing"
@@ -370,6 +536,17 @@ def certificate_health(cert_path: Path, key_path: Path, hostname: str) -> tuple[
         return False, "OpenSSL is required to validate the TLS certificate"
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as error:
         return False, f"certificate validation failed: {error}"
+    if require_trust:
+        try:
+            # The PEM can contain intermediates. Keep roots in the system trust store.
+            verified = subprocess.run(
+                ["openssl", "verify", "-purpose", "sslserver", "-verify_hostname", hostname,
+                 "-untrusted", str(cert_path), str(cert_path)],
+                capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False, "certificate chain verification could not be completed"
+        if verified.returncode != 0:
+            return False, "certificate chain is not trusted by this host; replace self-signed or incomplete certificates with a trusted Tailscale certificate"
     remaining = expires - datetime.now(timezone.utc)
     if remaining.total_seconds() <= 0:
         return False, f"certificate expired {expires.date().isoformat()}"
@@ -695,7 +872,7 @@ def explain_tailscale_certificate_error(detail: str) -> str:
 def ensure_tailscale_certificate(
         cert_path: Path, key_path: Path, hostname: str, *, renew: bool = False,
         confirm: bool = True) -> None:
-    healthy, detail = certificate_health(cert_path, key_path, hostname)
+    healthy, detail = certificate_health(cert_path, key_path, hostname, require_trust=True)
     if healthy and not renew:
         print(f"Tailscale TLS certificate: {detail}")
         return
@@ -733,7 +910,7 @@ def ensure_tailscale_certificate(
             raise ValueError("Tailscale certificate request timed out; check tailscaled connectivity") from error
         os.chmod(staged_cert, 0o600)
         os.chmod(staged_key, 0o600)
-        staged_ok, staged_detail = certificate_health(staged_cert, staged_key, hostname)
+        staged_ok, staged_detail = certificate_health(staged_cert, staged_key, hostname, require_trust=True)
         if not staged_ok:
             raise ValueError(f"Tailscale returned an unusable certificate: {staged_detail}")
         staged_cert.replace(cert_path)
@@ -752,7 +929,7 @@ def setup_tailscale_certificate() -> None:
     tls_directory = config_path().parent / "tls"
     cert_path = tls_directory / f"{hostname}.crt"
     key_path = tls_directory / f"{hostname}.key"
-    healthy, detail = certificate_health(cert_path, key_path, hostname)
+    healthy, detail = certificate_health(cert_path, key_path, hostname, require_trust=True)
     if healthy:
         print(f"PASS  HTTPS certificate: {detail}")
         renew = input("Renew it now anyway? [y/N]: ").strip().lower() in ("y", "yes")
@@ -781,7 +958,7 @@ def renew_tailscale_certificates(data: dict, *, force: bool = False) -> int:
         hostname = urlsplit(route["url"]).hostname or ""
         cert_path = Path(route["cert"])
         key_path = Path(route["key"])
-        healthy, detail = certificate_health(cert_path, key_path, hostname)
+        healthy, detail = certificate_health(cert_path, key_path, hostname, require_trust=True)
         if healthy and not force and not certificate_needs_renewal(cert_path):
             print(f"PASS  {route['label']}: {detail}; renewal is not needed")
         else:
@@ -847,7 +1024,7 @@ def install_certificate_renewal(data: dict) -> None:
         raise ValueError("configure and enable a Tailscale connection before enabling renewal")
     for route in tailscale_routes:
         hostname = urlsplit(route["url"]).hostname or ""
-        healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname)
+        healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname, require_trust=True)
         if not healthy:
             raise ValueError(f"set up the {route['label']} certificate first: {detail}")
     service_path, timer_path = renewal_unit_paths()
@@ -897,7 +1074,7 @@ def certificate_renewal_status(data: dict) -> None:
     for route in data["routes"]:
         if route["enabled"] and route["provider"] == "tailscale":
             hostname = urlsplit(route["url"]).hostname or ""
-            healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname)
+            healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname, require_trust=True)
             state = "PASS" if healthy else "FAIL"
             due = "renewal due" if certificate_needs_renewal(Path(route["cert"])) else "renewal not due"
             print(f"{state}  {route['label']}: {detail}; {due}")
@@ -1539,7 +1716,7 @@ def diagnose(data: dict) -> None:
         certificate = Path(route["cert"])
         key = Path(route["key"])
         hostname = urlsplit(route["url"]).hostname or ""
-        route_ok, route_detail = certificate_health(certificate, key, hostname)
+        route_ok, route_detail = certificate_health(certificate, key, hostname, require_trust=route["provider"] == "tailscale")
         report(route_ok, f"TLS route {route['label']}", route_detail)
 
     socket_path = state / "probe/zedlink.sock"
@@ -1664,6 +1841,7 @@ def gateway_status(data: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("quick-setup", "configure", "tailscale-setup",
+                                           "tailscale-check", "tailscale-check-json", "tailscale-repair",
                                            "install-renewal", "renewal-status",
                                            "renew-certificates", "remove-renewal",
                                            "manage-routes", "manage-targets",
@@ -1685,6 +1863,16 @@ def main() -> None:
             return
         if args.action == "tailscale-setup":
             setup_tailscale_certificate()
+            return
+        if args.action in ("tailscale-check", "tailscale-check-json", "tailscale-repair"):
+            data = validate(read_config()) if config_path().exists() else None
+            if args.action == "tailscale-repair": repair_tailscale_connection(data)
+            else:
+                result = tailscale_connection_checks(data)
+                if args.action == "tailscale-check-json": print(json.dumps(result))
+                else:
+                    print_tailscale_checks(result)
+                    if not result["host_ready"]: sys.exit(1)
             return
         if args.action == "quick-setup":
             if not args.project_root:

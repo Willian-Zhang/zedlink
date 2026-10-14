@@ -8,6 +8,10 @@ import socket
 import subprocess
 import tempfile
 import time
+import ssl
+import urllib.request
+import uuid
+from unittest.mock import patch
 
 from test_gateway_transport import BINARY, ProbeFixture
 import zedlink_manager as manager
@@ -102,6 +106,23 @@ def main() -> None:
                 time.sleep(0.05)
             else:
                 raise RuntimeError("multi-route gateway did not become ready")
+            context = ssl.create_default_context(cafile=str(cert))
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+            def https_post(path: str, payload: dict, token: str | None = None) -> dict:
+                request = urllib.request.Request(f"https://localhost:{first}{path}",
+                    data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+                if token: request.add_header("Authorization", "Bearer " + token)
+                with opener.open(request, timeout=5) as response:
+                    return json.load(response)
+            code = json.loads(subprocess.check_output(
+                [str(BINARY), "admin", str(state / "gateway"), "pair-short-code"], text=True))["code"]
+            paired = https_post("/v1/pair", {"code": code, "device_name": "Disposable readiness test"})
+            del code
+            def verify_paired_access() -> None:
+                response = https_post("/v1/rpc", {"version": 1, "request_id": str(uuid.uuid4()),
+                    "method": "instance.list", "params": {}}, paired["token"])
+                assert "result" in response and "error" not in response, "paired access lost"
+            verify_paired_access()
             second_identity = request_identity(cert, second)
             assert first_identity == second_identity
             first_info = json.loads(subprocess.check_output(
@@ -110,6 +131,24 @@ def main() -> None:
                 text=True, timeout=5))
             assert first_info["route_origins"] == sorted([
                 f"https://localhost:{first}", f"https://localhost:{second}"])
+            with patch.object(manager, "tailscale_preflight", return_value=("127.0.0.1", "localhost")), \
+                 patch.object(manager, "tailscale_dns_preferences", return_value=(True, True)), \
+                 patch.dict(os.environ, {"SSL_CERT_FILE": str(cert), "CURL_CA_BUNDLE": str(cert)}):
+                checked = manager.tailscale_connection_checks(configured)
+                assert checked["host_ready"], checked
+                assert checked["phone_verified"] is False
+                assert next(row for row in checked["checks"] if row["check"] == "identity")["status"] == "pass"
+                replacement = root / "replacement"
+                replacement.mkdir()
+                replacement_cert, replacement_key = generate_certificate(replacement)
+                trust_bundle = root / "test-trust-bundle.pem"
+                trust_bundle.write_text(cert.read_text() + replacement_cert.read_text())
+                changed = json.loads(json.dumps(configured))
+                changed["routes"][0].update(cert=str(replacement_cert), key=str(replacement_key))
+                with patch.dict(os.environ, {"SSL_CERT_FILE": str(trust_bundle), "CURL_CA_BUNDLE": str(trust_bundle)}):
+                    stale = manager.tailscale_connection_checks(changed)
+                    assert stale["host_ready"] is False
+                    assert next(row for row in stale["checks"] if row["check"] == "loaded_certificate")["status"] == "fail"
             duplicate = subprocess.run(
                 [str(BINARY), "serve-targets", str(listener_file), str(target_file),
                  str(state / "gateway")], capture_output=True, text=True, timeout=5)
@@ -124,6 +163,11 @@ def main() -> None:
                 text=True, timeout=5)
             assert json.loads(reloaded) == {
                 "reloaded": True, "listeners": ["primary", "loopback-two"]}
+            verify_paired_access()
+            retained = json.loads(subprocess.check_output(
+                [str(BINARY), "admin", str(state / "gateway"), "devices"], text=True))
+            assert retained["gateway_id"] == first_identity
+            assert any(device["id"] == paired["device_id"] for device in retained["devices"])
             stopped = subprocess.check_output(
                 [str(BINARY), "admin", str(state / "gateway"), "shutdown"],
                 text=True, timeout=5)
@@ -152,7 +196,7 @@ def main() -> None:
         else:
             raise AssertionError("public frontend origin accepted a non-loopback bind")
 
-    print("PASS: migration, two listeners, live TLS reload, multi-target manifest, duplicate guard, graceful stop, and safe frontend templates")
+    print("PASS: route migration, HTTPS readiness/fingerprint, paired access after TLS reload, multi-target manifest, duplicate guard and graceful stop")
 
 
 if __name__ == "__main__":

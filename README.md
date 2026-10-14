@@ -93,6 +93,8 @@ Then:
 3. Start the gateway and choose **Pair a device**. Use either the browser QR page or the terminal QR option.
 4. Open the trusted HTTPS address on your device, pair, and select the session.
 
+For connection problems, use **Check Tailscale Connection** and **Guided Tailscale Repair** in ZedLink settings. The guided flow checks DNS, certificate trust, the active gateway certificate, and renewal before a separate phone-side HTTPS check. See the [connection repair guide](wiki/Connections-and-Networking.md#guided-tailscale-connection-checks-and-repair).
+
 Follow the [installation guide](wiki/Installation-and-Setup.md) and [pairing guide](wiki/Running-and-Pairing.md) for the full walkthrough. Alternative VPNs and HTTPS routes are covered in [connections and networking](wiki/Connections-and-Networking.md).
 
 ## Security & status

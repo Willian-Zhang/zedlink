@@ -105,6 +105,8 @@ def zedlink_tasks() -> list:
     for label, action in (
         ("Configure", "configure"),
         ("Set up / renew Tailscale HTTPS", "tailscale-setup"),
+        ("Check Tailscale connection", "tailscale-check"),
+        ("Guided Tailscale repair", "tailscale-repair"),
         ("Enable automatic certificate renewal", "install-renewal"),
         ("Certificate renewal status", "renewal-status"),
         ("Check certificate renewal now", "renew-certificates"),

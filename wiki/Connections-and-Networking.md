@@ -118,3 +118,41 @@ Cloudflare and the VPS terminate the client-facing TLS session and can see appli
 ## Multiple Zed targets
 
 A gateway can load a private target manifest containing up to 16 named probe sockets. The default setup creates one target. Run **ZedLink: Manage Zed targets** to add or remove another isolated patched Zed instance, then restart the gateway. Each target must use its own private probe directory and patched Zed profile. Target labels and availability are visible to paired devices; local socket paths are never returned.
+
+
+### Self-signed certificate failures
+
+A hostname match and unexpired certificate are insufficient for native clients. If `curl https://<gateway-host>:<port>/v1/gateway` reports error 60 / self-signed certificate, replace the certificate served by the gateway with a browser-trusted certificate. A desktop browser exception does not establish phone trust.
+
+For Tailscale, enable MagicDNS and HTTPS certificates in the tailnet administration settings, then run `python3 tools/zedlink_manager.py tailscale-setup` from the repository root. On older versions, choose Yes if asked whether to renew an apparently healthy certificate. Configure the gateway's Tailscale route to use the generated certificate/key paths printed by setup and Save & Activate. Generating files alone does not change a listener that still points to older files. Retest `/v1/gateway` without `-k` on the host and phone, then pair using a fresh code. Run `python3 tools/zedlink_manager.py install-renewal` after the enabled Tailscale route is correctly configured.
+
+Tailscale certificate setup and renewal now verify the chain against the host system trust store, including bundled intermediates. This detects untrusted self-signed certificates and rejects untrusted staged replacements. Generic route certificate structural validation is preserved; phone HTTPS verification remains required.
+
+
+## Guided Tailscale connection checks and repair
+
+From the repository root:
+
+```sh
+python3 tools/zedlink_manager.py tailscale-check
+python3 tools/zedlink_manager.py tailscale-repair
+```
+
+Patched Zed exposes the same actions under **Settings → ZedLink → Tailscale HTTPS → Check Tailscale Connection / Guided Tailscale Repair**. Both run in a local Zed terminal, so the report remains readable and repair prompts can be answered. The new settings buttons require rebuilding patched Zed; the CLI commands work immediately after pulling ZedLink. Global tasks installed by setup also include these actions.
+
+Read-only checks distinguish Tailscale connection, authoritative MagicDNS flag when available, local DNS acceptance, hostname resolution, matching configured route and current private bind/port, certificate-file trust, TCP reachability, served-certificate trust and hostname, served-versus-configured certificate fingerprint, HTTPS protocol response, local gateway identity, and renewal timer enablement. Unknown settings stay Unknown. `tailscale-check-json` returns the same structured report with `host_ready` and `phone_verified: false`. Normal `tailscale-check` exits nonzero if required host checks fail.
+
+Repair opens the Tailscale DNS administration page when needed and waits for the administrator. It can enable local DNS acceptance only after an explicit prompt; that changes this workstation's DNS preference, not tailnet-wide MagicDNS. Tailnet settings are handled through the admin console: ZedLink does not request/store Tailscale administrator tokens or modify tailnet-wide nameservers.
+
+The workflow selects only an enabled direct-TLS route whose hostname already matches the connected Tailscale computer. It never replaces another host or chooses a public endpoint. It displays the proposed private bind, HTTPS origin and certificate paths, and requires typing **REPAIR** before certificate/route changes. Trusted certificates are staged and verified, then the existing route is updated without changing state directory, device authorization, project or model configuration. TLS reload is used when listener configuration is unchanged; changed paths/address require gateway activation, which briefly disconnects clients while native agents continue. Renewal installation is offered, and host readiness is rechecked afterward.
+
+### End-to-end acceptance on the affected Parrot host and S23
+
+1. Pull ZedLink and run `tailscale-check`. The self-signed certificate must appear as a failed trust check, not Healthy.
+2. Run `tailscale-repair`, complete the tailnet administrator steps if needed, and review/confirm the plan. Resolve Tailscale certificate operator permissions if issuance is denied.
+3. Run `tailscale-check` again. Required host checks must pass, including **loaded_certificate** and **identity**. Existing paired devices must remain authorized.
+4. On the S23, with Tailscale connected and ZedLink/browser included in its tunnel, open the exact HTTPS `/v1/gateway` URL. It must return JSON without certificate exceptions.
+5. Generate a fresh one-use pairing QR, scan in Android, **Test HTTPS endpoint**, then explicitly **Pair and save**. Relaunch the app and confirm the saved connection loads an explicitly exposed disposable session.
+6. Verify streaming, permission deny/approve, disconnect/reconnect, and exposure recovery on that disposable session. Do not use a production transcript or change model settings to test networking.
+
+Host-side checks and fixture tests do not prove the S23 route or physical pairing. Android/iOS compilation, signing and physical tests require their own existing toolchains/devices; no hosted Actions build is automatically dispatched.

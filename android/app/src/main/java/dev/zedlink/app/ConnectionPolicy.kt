@@ -3,11 +3,25 @@ package dev.zedlink.app
 import java.net.URI
 import java.util.UUID
 
+/** Safe request metadata only; never includes the URL, body, token or one-use code. */
+class GatewayTimeoutException(val operation: String, val phase: String, val resultMayBeUnknown: Boolean) :
+    java.net.SocketTimeoutException("Gateway timed out")
+
 /** No credentials or pairing code are retained by these diagnostics. */
 fun connectionFailure(error: Throwable): String = when (error) {
+    is GatewayTimeoutException -> {
+        val stage = if (error.phase == "connect") "while connecting" else if (error.phase == "send") "while sending the request" else "while waiting for the response"
+        when (error.operation) {
+            "discovery" -> "HTTPS gateway check timed out $stage. No pairing request was sent. Open the same HTTPS address in Chrome or Termux and check the VPN route and gateway port."
+            "pairing" -> if (error.resultMayBeUnknown)
+                "Pairing timed out $stage after submission began. The result may be unknown; check paired devices on the host before creating a fresh pairing code. Do not retry automatically."
+                else "Pairing connection timed out $stage. No pairing request was sent. Check the private route and gateway service."
+            else -> "Gateway request timed out $stage. Check the private route and gateway service. Check any pending operation before retrying."
+        }
+    }
     is javax.net.ssl.SSLException -> "HTTPS identity could not be verified. Check the hostname and certificate."
     is java.net.UnknownHostException -> "Hostname lookup failed. Check the saved address and VPN DNS route."
-    is java.net.SocketTimeoutException -> "Gateway timed out. Check the private route and gateway service. A pending pairing result may be unknown; do not retry automatically."
+    is java.net.SocketTimeoutException -> "Gateway connection timed out. Check the private route, HTTPS address and gateway port."
     is java.net.ConnectException -> "Gateway cannot be reached. Check the private route and gateway service."
     else -> error.message ?: "Connection failed."
 }

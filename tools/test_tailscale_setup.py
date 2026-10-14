@@ -62,6 +62,23 @@ def main() -> None:
             health_cert, health_key, "wrong.example.ts.net")
         assert not wrong_host and "validation failed" in detail
 
+        untrusted, detail = manager.certificate_health(
+            health_cert, health_key, "workstation.example.ts.net", require_trust=True)
+        assert not untrusted and "not trusted" in detail
+        # An explicitly installed test CA verifies; trust is not silently bypassed.
+        with patch.dict(manager.os.environ, {"SSL_CERT_FILE": str(health_cert)}):
+            trusted, detail = manager.certificate_health(
+                health_cert, health_key, "workstation.example.ts.net", require_trust=True)
+            assert trusted, detail
+
+        # Read-only readiness never mistakes a DNSName for an enabled MagicDNS flag.
+        with patch.object(manager, "tailscale_preflight", return_value=(fixture_address, "workstation.example.ts.net")), \
+             patch.object(manager, "tailscale_dns_preferences", return_value=(False, False)), \
+             patch.object(manager.socket, "getaddrinfo", return_value=[(2, 1, 6, "", (fixture_address, 0))]):
+            checks = manager.tailscale_connection_checks(None)
+            assert checks["host_ready"] is False and checks["phone_verified"] is False
+            assert next(row for row in checks["checks"] if row["check"] == "magicdns")["status"] == "fail"
+
         config = root / "config" / "config.json"
         cert = root / "tls" / "workstation.example.ts.net.crt"
         key = root / "tls" / "workstation.example.ts.net.key"
@@ -111,6 +128,63 @@ def main() -> None:
         renew.assert_called_once_with(
             cert, key, "workstation.example.ts.net", renew=True, confirm=False)
         reload_tls.assert_called_once_with(root / "state", "reload-tls")
+
+        # Cancellation cannot issue certificates, change routes, reload or restart.
+        with patch.object(manager, "tailscale_connection_checks", return_value={"checks": [], "host_ready": False}), \
+             patch.object(manager, "tailscale_preflight", return_value=(fixture_address, "workstation.example.ts.net")), \
+             patch.object(manager, "tailscale_dns_preferences", return_value=(True, True)), \
+             patch.object(manager, "config_path", return_value=config), \
+             patch("builtins.input", return_value="cancel"), \
+             patch.object(manager, "ensure_tailscale_certificate") as issue_cert, \
+             patch.object(manager, "save_config") as save, \
+             patch.object(manager, "restart_gateway_detached") as restart:
+            manager.repair_tailscale_connection(data)
+            issue_cert.assert_not_called(); save.assert_not_called(); restart.assert_not_called()
+
+        def install_fixture_certificate(destination_cert: Path, destination_key: Path, hostname: str) -> None:
+            destination_cert.parent.mkdir(parents=True)
+            destination_cert.write_bytes(health_cert.read_bytes())
+            destination_key.write_bytes(health_key.read_bytes())
+            destination_key.chmod(0o600)
+
+        with patch.object(manager, "tailscale_connection_checks", return_value={"checks": [], "host_ready": False}), \
+             patch.object(manager, "tailscale_preflight", return_value=(fixture_address, "workstation.example.ts.net")), \
+             patch.object(manager, "tailscale_dns_preferences", return_value=(True, False)), \
+             patch.object(manager, "config_path", return_value=config), \
+             patch("builtins.input", side_effect=["n", "cancel"]), \
+             patch.object(manager.subprocess, "run") as command:
+            manager.repair_tailscale_connection(data)
+            command.assert_not_called()
+
+        with patch.object(manager, "tailscale_connection_checks", return_value={"checks": [], "host_ready": False}), \
+             patch.object(manager, "tailscale_preflight", return_value=(fixture_address, "other.example.ts.net")), \
+             patch.object(manager, "tailscale_dns_preferences", return_value=(True, True)), \
+             patch.object(manager, "ensure_tailscale_certificate") as issue_cert, \
+             patch.object(manager, "save_config") as save:
+            try:
+                manager.repair_tailscale_connection(data)
+                raise AssertionError("repair selected a different host")
+            except ValueError as error:
+                assert "this computer's Tailscale hostname" in str(error)
+            issue_cert.assert_not_called(); save.assert_not_called()
+
+        # Only the selected matching route changes; approval/state/model identities are preserved.
+        with patch.object(manager, "tailscale_connection_checks", return_value={"checks": [], "host_ready": True}), \
+             patch.object(manager, "tailscale_preflight", return_value=(fixture_address, "workstation.example.ts.net")), \
+             patch.object(manager, "tailscale_dns_preferences", return_value=(True, True)), \
+             patch.object(manager, "config_path", return_value=config), \
+             patch("builtins.input", side_effect=["REPAIR", "n"]), \
+             patch.object(manager, "ensure_tailscale_certificate", side_effect=install_fixture_certificate) as issue_cert, \
+             patch.object(manager, "save_config") as save, \
+             patch.object(manager, "sync_zed_settings") as sync, \
+             patch.object(manager, "restart_gateway_detached") as restart:
+            manager.repair_tailscale_connection(data)
+            repaired = save.call_args.args[0]
+            assert repaired["state_dir"] == data["state_dir"]
+            assert repaired["project_root"] == data["project_root"]
+            assert repaired["routes"][0]["id"] == data["routes"][0]["id"]
+            assert data["routes"][0]["cert"] == str(cert)
+            issue_cert.assert_called_once(); sync.assert_called_once(); restart.assert_called_once()
 
         unit_directory = root / "systemd-user"
         with patch.object(manager, "systemd_user_directory", return_value=unit_directory), \

@@ -49,6 +49,22 @@ class ConnectionPolicyTest {
     @Test fun networkFailuresDoNotClaimTheVpnIsDisabledOrZedIsDown() {
         assertTrue(connectionFailure(java.net.UnknownHostException()).contains("Hostname lookup"))
         assertTrue(connectionFailure(javax.net.ssl.SSLException("fixture")).contains("identity"))
-        assertTrue(connectionFailure(java.net.SocketTimeoutException()).contains("unknown"))
+        assertFalse(connectionFailure(java.net.SocketTimeoutException()).contains("pairing result"))
     }
+    @Test fun discoveryTimeoutNeverClaimsPairingWasSubmitted() {
+        for (phase in listOf("connect", "response")) {
+            val message = connectionFailure(GatewayTimeoutException("discovery", phase, false))
+            assertTrue(message.contains("HTTPS gateway check"))
+            assertTrue(message.contains("No pairing request was sent"))
+            assertFalse(message.contains("unknown"))
+        }
+    }
+    @Test fun pairingTimeoutDistinguishesConnectFailureFromUnknownSubmission() {
+        assertTrue(connectionFailure(GatewayTimeoutException("pairing", "connect", false)).contains("No pairing request was sent"))
+        val submitted = connectionFailure(GatewayTimeoutException("pairing", "response", true))
+        assertTrue(submitted.contains("unknown"))
+        assertTrue(submitted.contains("Do not retry automatically"))
+        assertFalse(submitted.contains("No pairing request was sent"))
+    }
+
 }

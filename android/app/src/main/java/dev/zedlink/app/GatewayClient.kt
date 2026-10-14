@@ -85,12 +85,21 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
                 val credential = token ?: throw GatewayException("Pair this device first.")
                 setRequestProperty("Authorization", "Bearer $credential")
             }
-            if (body != null) {
-                doOutput = true
-                outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            }
+            doOutput = body != null
         }
+        var phase = "connect"
+        var submissionStarted = false
         try {
+            // Keep connect/write inside the cleanup boundary, including timeouts.
+            connection.connect()
+            if (body != null) {
+                phase = "send"
+                connection.outputStream.use {
+                    submissionStarted = true
+                    it.write(body.toString().toByteArray(Charsets.UTF_8))
+                }
+            }
+            phase = "response"
             val status = connection.responseCode
             if (status in 300..399) throw GatewayException("Gateway redirects are not allowed.")
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
@@ -109,6 +118,9 @@ class GatewayClient(private val profile: ConnectionProfile, private val token: S
                 .getOrElse { throw GatewayException("Gateway returned an invalid response.") }
             if (status !in 200..299) throw GatewayException(apiMessage(objectValue.optString("error", "HTTP $status")))
             objectValue
+        } catch (error: java.net.SocketTimeoutException) {
+            val operation = when (path) { "/v1/gateway" -> "discovery"; "/v1/pair" -> "pairing"; else -> "request" }
+            throw GatewayTimeoutException(operation, phase, submissionStarted).apply { initCause(error) }
         } finally { connection.disconnect() }
     }
 
