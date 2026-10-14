@@ -57,4 +57,16 @@ class MobileLayoutTest {
         compose.runOnIdle { issue.value = "Connection interrupted. Reconnect to continue." }
         compose.onNodeWithText(issue.value).assertIsDisplayed()
     }
+
+    @Test fun terminalKeysRespectInputAvailabilityAndEmitControlBytes() {
+        val available = mutableStateOf(false)
+        val sent = mutableListOf<String>()
+        compose.setContent { ZedLinkTheme("light") { Surface { TerminalKeyStrip(available.value) { sent += it } } } }
+        compose.onNodeWithText("Ctrl C").assertIsNotEnabled()
+        compose.onNodeWithText("Tab").assertIsNotEnabled()
+        compose.runOnIdle { assertTrue(sent.isEmpty()); available.value = true }
+        compose.onNodeWithText("Ctrl C").assertIsEnabled().performClick()
+        compose.onNodeWithText("Tab").performClick()
+        compose.runOnIdle { assertEquals(listOf("\u0003", "\t"), sent) }
+    }
 }

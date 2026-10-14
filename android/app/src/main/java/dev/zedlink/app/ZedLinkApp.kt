@@ -350,148 +350,118 @@ private fun ConversationScreen(state: AppState, model: ZedLinkViewModel) {
 
 @Composable
 private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
-    var terminalInput by remember { mutableStateOf("") }
-    var terminalMenu by remember { mutableStateOf(false) }
+    var page by rememberSaveable(state.selectedThreadId) { mutableStateOf("Terminal") }
     var fullFiles by remember { mutableStateOf(false) }
     if (fullFiles) ProjectFileBrowser(state, model) { fullFiles = false }
-    var fullTerminal by remember { mutableStateOf(false) }
-    if (fullTerminal) TerminalScreen(state, model) { fullTerminal = false }
-    LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
-        while (true) {
-            delay(1500)
-            state.terminalSnapshot?.terminal?.let { model.loadTerminal(it, refresh = true) }
-        }
-    }
-    AlertDialog(onDismissRequest = close, title = { Text("Project context") },
-        text = { Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
-            if (state.previewTitle == "Working tree diff" && state.previewContent.isNotEmpty()) {
-                Text(state.previewTitle, fontWeight = FontWeight.SemiBold)
-                SelectionContainer { Text(state.previewContent, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
-            }
-            Text("PROJECT FILES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
-            TextButton(onClick = { fullFiles = true }) { Icon(Icons.Default.FolderOpen, null); Text("Browse files and folders") }
-            Text("GIT CHANGES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
-            TextButton(onClick = model::loadDiff) { Text("LOAD FULL DIFF") }
-            state.changes.forEach { change -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("${change.id}\n${change.status} · ${change.staging}", modifier = Modifier.weight(1f), fontSize = 12.sp)
-                TextButton(onClick = { model.mutateChange(change) }) { Text(if (change.staging == "staged") "UNSTAGE" else "STAGE") }
-            } }
-            if ("task.catalog" in state.capabilities) {
-                Text("RUN CONFIGURED TASK", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
-                if (state.configuredTasks.isEmpty()) {
-                    Text("No configured Zed tasks are available for this project.", color = Muted, fontSize = 12.sp)
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Surface(color = Black, modifier = Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Workspace", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    IconButton(onClick = close) { Icon(Icons.Default.Close, "Close workspace") }
                 }
-                state.configuredTasks.forEach { task ->
-                    TextButton(onClick = { model.runConfiguredTask(task) }, enabled = "task.run" in state.capabilities,
-                        modifier = Modifier.fillMaxWidth()) {
-                        Row(Modifier.fillMaxWidth()) {
-                            Text(task.label, modifier = Modifier.weight(1f), maxLines = 1)
-                            Text(task.source.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    listOf("Files", "Changes", "Terminal", "Tasks", "Debug").forEach { label ->
+                        val selected = page == label
+                        val underline = Ink
+                        TextButton(onClick = { page = label }, shape = RectangleShape,
+                            modifier = Modifier.heightIn(min = 44.dp).drawBehind {
+                                if (selected) drawRect(underline, topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
+                                    size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()))
+                            }) { Text(label, color = if (selected) Ink else Muted, fontSize = 12.sp) }
+                    }
+                }
+                Rule()
+                if (page != "Terminal" && state.issue.isNotBlank()) Notice(state.issue)
+                if (page == "Terminal") {
+                    Box(Modifier.weight(1f)) { TerminalScreen(state, model, close, embedded = true) }
+                } else Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                    when (page) {
+                        "Files" -> {
+                            Text("PROJECT FILES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+                            TextButton(onClick = { fullFiles = true }) { Icon(Icons.Default.FolderOpen, null); Text("Browse files and folders") }
                         }
-                    }
-                }
-            }
-            Text("ZED TERMINALS", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
-            if ("terminal.list" !in state.capabilities) {
-                Text("Enable View Project Terminals in ZedLink settings. Changes apply without restarting Zed.", color = Muted, fontSize = 12.sp)
-            } else if (state.terminals.isEmpty()) {
-                Text("No terminal is open for this project in Zed.", color = Muted, fontSize = 12.sp)
-            }
-            if (state.terminals.isNotEmpty()) {
-                Box {
-                    OutlinedButton(onClick = { terminalMenu = true }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape) {
-                        Icon(Icons.Default.Code, null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(state.terminalSnapshot?.terminal?.title ?: "Choose terminal", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(if ("terminal.input" in state.capabilities) "INTERACTIVE" else "READ ONLY", color = if ("terminal.input" in state.capabilities) Green else Warning, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                    }
-                    DropdownMenu(expanded = terminalMenu, onDismissRequest = { terminalMenu = false }) {
-                        state.terminals.forEach { terminal -> DropdownMenuItem(text = {
-                            Column { Text(terminal.title, maxLines = 1); Text((terminal.taskState ?: terminal.workingDirectory ?: "terminal").uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace) }
-                        }, onClick = { terminalMenu = false; model.loadTerminal(terminal) }) }
-                    }
-                }
-            }
-            state.terminalSnapshot?.let { snapshot ->
-                TextButton(onClick = { fullTerminal = true }) { Icon(Icons.Default.Fullscreen, null); Text("Open full-screen terminal") }
-                Column(Modifier.fillMaxWidth().border(1.dp, Line).background(Black)) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).background(Surface).padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(7.dp).background(Green))
-                        Spacer(Modifier.width(8.dp))
-                        Text(snapshot.terminal.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        if (snapshot.terminal.taskState == "running" && "task.stop" in state.capabilities) {
-                            TextButton(onClick = model::stopTerminalTask) { Text("STOP", color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
-                        }
-                    }
-                    val verticalTerminalScroll = rememberScrollState()
-                    val horizontalTerminalScroll = rememberScrollState()
-                    SelectionContainer {
-                        Text(terminalText(snapshot), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                            modifier = Modifier.fillMaxWidth().height(280.dp).verticalScroll(verticalTerminalScroll).padding(13.dp))
-                    }
-                }
-                if ("terminal.input" in state.capabilities) {
-                    Row(Modifier.fillMaxWidth().border(1.dp, Line).background(Surface).padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("›", color = Green, fontFamily = FontFamily.Monospace, fontSize = 17.sp)
-                        Spacer(Modifier.width(8.dp))
-                        BasicTextField(value = terminalInput, onValueChange = { terminalInput = it }, singleLine = true,
-                            textStyle = TextStyle(color = Ink, fontFamily = FontFamily.Monospace, fontSize = 13.sp), cursorBrush = SolidColor(Green), modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = { if (terminalInput.isNotBlank()) { model.sendTerminalInput(terminalInput); terminalInput = "" } }))
-                        IconButton(onClick = { model.sendTerminalInput(terminalInput); terminalInput = "" }, enabled = terminalInput.isNotBlank()) { Icon(Icons.Default.ArrowUpward, "Send terminal input") }
-                    }
-                } else {
-                    Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Lock, null, tint = Muted, modifier = Modifier.size(15.dp)); Spacer(Modifier.width(7.dp))
-                        Text("Read only · Enable Send Terminal Input in ZedLink settings to type here.", color = Muted, fontSize = 11.sp)
-                    }
-                }
-            }
-            Text("DEBUGGER", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
-            if ("debugger.catalog" !in state.capabilities) {
-                Text("Enable Start Configured Debuggers in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
-            } else if (state.debuggerCatalog.isEmpty()) {
-                Text("No configured Zed debuggers are available for this project.", color = Muted, fontSize = 12.sp)
-            }
-            state.debuggerCatalog.forEach { scenario ->
-                TextButton(onClick = { model.launchDebugger(scenario) }, enabled = "debugger.launch" in state.capabilities,
-                    modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.fillMaxWidth()) {
-                        Text(scenario.label, modifier = Modifier.weight(1f), maxLines = 1)
-                        Text(scenario.adapter.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-            if ("debugger.snapshot" !in state.capabilities) {
-                Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
-            } else if (state.debuggerSessions.isEmpty()) {
-                Text("No debugger session is running in this Zed project.", color = Muted, fontSize = 12.sp)
-            }
-            state.debuggerSessions.forEach { debugger ->
-                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(debugger.label, fontWeight = FontWeight.SemiBold)
-                            Text(debugger.adapter, color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                        }
-                        if (!debugger.terminated) {
-                            if (debugger.canRestart) {
-                                TextButton(onClick = { model.controlDebugger(debugger, "restart") }, enabled = "debugger.control" in state.capabilities) { Text("RESTART") }
+                        "Changes" -> {
+                            if (state.previewTitle == "Working tree diff" && state.previewContent.isNotEmpty()) {
+                                Text(state.previewTitle, fontWeight = FontWeight.SemiBold)
+                                SelectionContainer { Text(state.previewContent, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
                             }
-                            TextButton(onClick = { model.controlDebugger(debugger, "stop") }, enabled = "debugger.control" in state.capabilities) { Text("STOP", color = MaterialTheme.colorScheme.error) }
+                            Text("GIT CHANGES", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+                            TextButton(onClick = model::loadDiff) { Text("LOAD FULL DIFF") }
+                            state.changes.forEach { change -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("${change.id}\n${change.status} · ${change.staging}", modifier = Modifier.weight(1f), fontSize = 12.sp)
+                                TextButton(onClick = { model.mutateChange(change) }) { Text(if (change.staging == "staged") "UNSTAGE" else "STAGE") }
+                            } }
                         }
-                    }
-                    debugger.threads.forEach { thread ->
-                        Column(Modifier.fillMaxWidth().padding(start = 12.dp, top = 6.dp)) {
-                            Text("${thread.name} · ${thread.status.uppercase()}", fontSize = 12.sp)
-                            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                                if (thread.status == "running") {
-                                    TextButton(onClick = { model.controlDebugger(debugger, "pause", thread) }, enabled = "debugger.control" in state.capabilities) { Text("PAUSE") }
-                                } else if (thread.status == "stopped") {
-                                    listOf("continue" to "CONTINUE", "step_over" to "OVER", "step_in" to "INTO", "step_out" to "OUT").forEach { (action, label) ->
-                                        TextButton(onClick = { model.controlDebugger(debugger, action, thread) }, enabled = "debugger.control" in state.capabilities) { Text(label) }
+                        "Tasks" -> {
+                            if ("task.catalog" in state.capabilities) {
+                                Text("RUN CONFIGURED TASK", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+                                if (state.configuredTasks.isEmpty()) {
+                                    Text("No configured Zed tasks are available for this project.", color = Muted, fontSize = 12.sp)
+                                }
+                                state.configuredTasks.forEach { task ->
+                                    TextButton(onClick = { model.runConfiguredTask(task) }, enabled = "task.run" in state.capabilities,
+                                        modifier = Modifier.fillMaxWidth()) {
+                                        Row(Modifier.fillMaxWidth()) {
+                                            Text(task.label, modifier = Modifier.weight(1f), maxLines = 1)
+                                            Text(task.source.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                                        }
                                     }
-                                    if (debugger.canStepBack) {
-                                        TextButton(onClick = { model.controlDebugger(debugger, "step_back", thread) }, enabled = "debugger.control" in state.capabilities) { Text("BACK") }
+                                }
+                            }
+                            if ("task.catalog" !in state.capabilities) Text("Enable Start Configured Tasks in desktop ZedLink settings.", color = Muted)
+                        }
+                        "Debug" -> {
+                            Text("DEBUGGER", style = monoLabel(), modifier = Modifier.padding(top = 12.dp))
+                            if ("debugger.catalog" !in state.capabilities) {
+                                Text("Enable Start Configured Debuggers in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
+                            } else if (state.debuggerCatalog.isEmpty()) {
+                                Text("No configured Zed debuggers are available for this project.", color = Muted, fontSize = 12.sp)
+                            }
+                            state.debuggerCatalog.forEach { scenario ->
+                                TextButton(onClick = { model.launchDebugger(scenario) }, enabled = "debugger.launch" in state.capabilities,
+                                    modifier = Modifier.fillMaxWidth()) {
+                                    Row(Modifier.fillMaxWidth()) {
+                                        Text(scenario.label, modifier = Modifier.weight(1f), maxLines = 1)
+                                        Text(scenario.adapter.uppercase(), color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                            }
+                            if ("debugger.snapshot" !in state.capabilities) {
+                                Text("Enable View Debugger Sessions in desktop ZedLink settings and restart patched Zed.", color = Muted, fontSize = 12.sp)
+                            } else if (state.debuggerSessions.isEmpty()) {
+                                Text("No debugger session is running in this Zed project.", color = Muted, fontSize = 12.sp)
+                            }
+                            state.debuggerSessions.forEach { debugger ->
+                                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(debugger.label, fontWeight = FontWeight.SemiBold)
+                                            Text(debugger.adapter, color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                                        }
+                                        if (!debugger.terminated) {
+                                            if (debugger.canRestart) {
+                                                TextButton(onClick = { model.controlDebugger(debugger, "restart") }, enabled = "debugger.control" in state.capabilities) { Text("RESTART") }
+                                            }
+                                            TextButton(onClick = { model.controlDebugger(debugger, "stop") }, enabled = "debugger.control" in state.capabilities) { Text("STOP", color = MaterialTheme.colorScheme.error) }
+                                        }
+                                    }
+                                    debugger.threads.forEach { thread ->
+                                        Column(Modifier.fillMaxWidth().padding(start = 12.dp, top = 6.dp)) {
+                                            Text("${thread.name} · ${thread.status.uppercase()}", fontSize = 12.sp)
+                                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                                if (thread.status == "running") {
+                                                    TextButton(onClick = { model.controlDebugger(debugger, "pause", thread) }, enabled = "debugger.control" in state.capabilities) { Text("PAUSE") }
+                                                } else if (thread.status == "stopped") {
+                                                    listOf("continue" to "CONTINUE", "step_over" to "OVER", "step_in" to "INTO", "step_out" to "OUT").forEach { (action, label) ->
+                                                        TextButton(onClick = { model.controlDebugger(debugger, action, thread) }, enabled = "debugger.control" in state.capabilities) { Text(label) }
+                                                    }
+                                                    if (debugger.canStepBack) {
+                                                        TextButton(onClick = { model.controlDebugger(debugger, "step_back", thread) }, enabled = "debugger.control" in state.capabilities) { Text("BACK") }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -499,7 +469,8 @@ private fun ProjectContextDialog(state: AppState, model: ZedLinkViewModel, close
                     }
                 }
             }
-        } }, confirmButton = { TextButton(onClick = close) { Text("DONE") } }, containerColor = Surface)
+        }
+    }
 }
 
 @Composable
@@ -825,7 +796,7 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
 
 
 @Composable
-private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
+private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -> Unit, embedded: Boolean = false) {
     var input by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var tools by remember { mutableStateOf(false) }
@@ -839,68 +810,104 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel, close: () -
     val terminalScroll = rememberScrollState()
     val horizontalScroll = rememberScrollState()
     val latestState by rememberUpdatedState(state)
+    val canType = state.live && state.terminalSnapshot != null && "terminal.input" in state.capabilities
+    var followOutput by remember(state.terminalSnapshot?.terminal?.id) { mutableStateOf(true) }
     val draftKey = "draft.${state.profile?.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}.${state.terminalSnapshot?.terminal?.id}"
     var loadedDraftKey by remember { mutableStateOf("") }
     LaunchedEffect(draftKey) { input = preferences.getString(draftKey, "").orEmpty(); loadedDraftKey = draftKey }
     LaunchedEffect(input, loadedDraftKey) { if (loadedDraftKey == draftKey && state.terminalSnapshot != null) preferences.edit().putString(draftKey, input).apply() }
-    LaunchedEffect(state.terminalSnapshot?.content) {
-        if (terminalScroll.value >= terminalScroll.maxValue - 40) {
+    LaunchedEffect(terminalScroll) {
+        snapshotFlow { terminalScroll.isScrollInProgress to (terminalScroll.value >= terminalScroll.maxValue - 40) }
+            .collect { (scrolling, nearBottom) -> if (scrolling) followOutput = nearBottom }
+    }
+    LaunchedEffect(state.terminalSnapshot?.content, followOutput) {
+        if (followOutput) {
             withFrameNanos { }
             terminalScroll.scrollTo(terminalScroll.maxValue)
         }
     }
-    LaunchedEffect(state.terminalSnapshot?.terminal?.id) {
-        while (true) { latestState.terminalSnapshot?.terminal?.let { model.loadTerminal(it, refresh = true) }; delay(1000) }
+    LaunchedEffect(state.terminals, state.live) {
+        if (state.live && state.terminalSnapshot == null) state.terminals.firstOrNull()?.let { model.loadTerminal(it) }
     }
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    LaunchedEffect(state.terminalSnapshot?.terminal?.id, state.live) {
+        while (true) {
+            if (latestState.live) latestState.terminalSnapshot?.terminal?.let { model.loadTerminal(it, refresh = true).join() }
+            delay(1000)
+        }
+    }
+    fun submitTerminal() {
+        if (!canType) return
+        model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false)
+        input = ""
+    }
+    val content: @Composable () -> Unit = {
         Surface(color = Black, modifier = Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+            Column(Modifier.fillMaxSize().then(if (embedded) Modifier else Modifier.systemBarsPadding()).imePadding()) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = close) { Icon(Icons.Default.ArrowBack, "Back to workspace") }
+                    if (!embedded) IconButton(onClick = close) { Icon(Icons.Default.ArrowBack, "Back to workspace") }
                     Box(Modifier.weight(1f)) {
-                        TextButton(onClick = { menu = true }) { Text(state.terminalSnapshot?.terminal?.title ?: "Terminal", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        TextButton(onClick = { menu = true }, enabled = state.live && state.terminals.isNotEmpty()) { Text(state.terminalSnapshot?.terminal?.title ?: "Choose terminal", maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                             state.terminals.forEach { terminal -> DropdownMenuItem(text = { Text(terminal.title, maxLines = 1) }, onClick = { menu = false; model.loadTerminal(terminal) }) }
                         }
                     }
+                    Text(if (!state.live) "Offline" else if ("terminal.input" in state.capabilities) "Interactive" else "Read only",
+                        color = if (canType) Green else Muted, fontSize = 10.sp)
                     if (state.terminalSnapshot?.terminal?.taskState == "running" && "task.stop" in state.capabilities) {
-                        IconButton(onClick = model::stopTerminalTask) { Icon(Icons.Default.Stop, "Stop task", tint = MaterialTheme.colorScheme.error) }
+                        IconButton(onClick = model::stopTerminalTask, enabled = state.live) { Icon(Icons.Default.Stop, "Stop task", tint = MaterialTheme.colorScheme.error) }
                     }
                     Box {
                         IconButton(onClick = { tools = true }) { Icon(Icons.Default.MoreVert, "Terminal tools") }
                         DropdownMenu(expanded = tools, onDismissRequest = { tools = false }) {
+                            DropdownMenuItem(text = { Text("Refresh terminals") }, onClick = { model.loadProjectContext(); tools = false }, enabled = state.live)
                             DropdownMenuItem(text = { Text(if (wrapOutput) "Keep original columns" else "Wrap output") }, onClick = { wrapOutput = !wrapOutput; preferences.edit().putBoolean("wrap", wrapOutput).apply(); tools = false })
                             DropdownMenuItem(text = { Text("Remote clipboard") }, onClick = { clipboard = true; tools = false })
                             DropdownMenuItem(text = { Text("Recover session") }, onClick = { model.refresh(); tools = false })
                         }
                     }
-                    IconButton(onClick = { scrollScope.launch { terminalScroll.scrollTo(terminalScroll.maxValue) } }) { Icon(Icons.Default.ArrowDownward, "Latest output") }
+                    if (!followOutput) IconButton(onClick = { followOutput = true; scrollScope.launch { terminalScroll.scrollTo(terminalScroll.maxValue) } }) { Icon(Icons.Default.ArrowDownward, "Latest output") }
                 }
+                Rule()
+                if (state.issue.isNotBlank()) Notice(state.issue)
                 SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
-                    Text(terminalText(state.terminalSnapshot), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                    Text(if (state.terminalSnapshot != null) terminalText(state.terminalSnapshot) else AnnotatedString(
+                        if ("terminal.list" !in state.capabilities) "Enable View Project Terminals in desktop ZedLink settings."
+                        else if (!state.live) "Reconnect to view live terminal output."
+                        else if (state.terminals.isEmpty()) "Open a terminal in this Zed workspace."
+                        else "Loading terminal…"), color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
                         modifier = Modifier.fillMaxSize().verticalScroll(terminalScroll).then(if (wrapOutput) Modifier else Modifier.horizontalScroll(horizontalScroll)).padding(10.dp))
                 }
                 if ("terminal.input" in state.capabilities) {
-                    Row(Modifier.fillMaxWidth().background(Surface).horizontalScroll(rememberScrollState()).padding(5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                        listOf("Esc" to "\u001b", "Tab" to "\t", "Ctrl C" to "\u0003", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, bytes) ->
-                            TextButton(onClick = {
-                                if (input.isNotEmpty()) { model.sendTerminalInput(input, appendReturn = false); input = "" }
-                                model.sendTerminalInput(bytes, appendReturn = false)
-                            }, modifier = Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) { Text(label, fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
-                        }
+                    TerminalKeyStrip(canType) { bytes ->
+                        if (input.isNotEmpty()) { model.sendTerminalInput(input, appendReturn = false); input = "" }
+                        model.sendTerminalInput(bytes, appendReturn = false)
                     }
                     Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("›", color = Green); Spacer(Modifier.width(8.dp))
-                        BasicTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f), singleLine = true,
+                        BasicTextField(value = input, onValueChange = { input = it }, enabled = canType, modifier = Modifier.weight(1f).heightIn(min = 44.dp).padding(vertical = 10.dp), singleLine = true,
                             textStyle = TextStyle(color = Ink, fontSize = 16.sp, fontFamily = FontFamily.Monospace), cursorBrush = SolidColor(Green),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
-                            keyboardActions = KeyboardActions(onSend = { model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false); input = "" }),
-                            decorationBox = { field -> if (input.isEmpty()) Text("Command or reply", color = Muted, fontSize = 16.sp); field() })
+                            keyboardActions = KeyboardActions(onSend = { submitTerminal() }),
+                            decorationBox = { field -> Box { if (input.isEmpty()) Text("Command or reply", color = Muted, fontSize = 16.sp); field() } })
                         VoiceDraftButton(input, draftKey) { input = it }
-                        IconButton(onClick = { model.sendTerminalInput(if (input.isEmpty()) "\r" else input + "\n", appendReturn = false); input = "" }) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
+                        IconButton(onClick = { submitTerminal() }, enabled = canType) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
                         IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
                     }
                 } else { Text("Enable Send Terminal Input in desktop ZedLink settings.", color = Muted, modifier = Modifier.padding(12.dp)) }
+            }
+        }
+    }
+    if (embedded) content() else Dialog(onDismissRequest = close,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { content() }
+}
+
+@Composable internal fun TerminalKeyStrip(enabled: Boolean, onKey: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().background(Surface).horizontalScroll(rememberScrollState()).padding(5.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        listOf("Esc" to "\u001b", "Tab" to "\t", "Ctrl C" to "\u0003", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, bytes) ->
+            TextButton(onClick = { onKey(bytes) }, enabled = enabled, shape = RectangleShape,
+                modifier = Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) {
+                Text(label, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             }
         }
     }
