@@ -183,3 +183,12 @@ Use a task-specific shell when a task does not need interactive shell setup:
 ```
 
 You can also update the shell wrapper so it does not run when `ZED_TERM=true` or `TERM_PROGRAM=zed`. Test the task once from Zed's desktop task picker; ZedLink uses the same native scheduling path and preserves the resulting terminal output and status.
+
+
+## Local model rejects input while compaction is enabled
+
+The model's advertised context window can differ from an input cap enforced by the serving path. An error such as `Input too long (~65580 tokens, max 65536)` is not evidence that the model is offline. Check the effective native model metadata and the server's actual rejection before changing providers.
+
+Zed's negative compaction threshold means tokens remaining; positive thresholds mean tokens used. For a 131,072-token advertised window and 8,192 output reserve, `-24576` triggers near 98,305 used tokens. An absolute `24576` triggers much earlier and leaves headroom for this serving path. The inspected fork disables automatic compaction below an 80,000-token input capacity, so simply lowering the model window to 65,536 would disable it.
+
+Earlier compaction prevents future buildup but cannot repair an already oversized summary request. The local compaction fix (fork commit `957b9a9cc5`, not yet pushed) uses a small summary-only system instruction instead of repeating the full coding system prompt/project metadata. Conversation history stays in the summary request, and normal coding instructions/project metadata are rebuilt on subsequent ordinary turns. A rebuilt patched Zed is required for this source change. Existing oversized history can still require further recovery if the conversation data alone exceeds the server limit.
