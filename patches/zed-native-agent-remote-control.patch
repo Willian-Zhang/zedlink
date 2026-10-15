@@ -510,10 +510,10 @@ index 605817d05b..0009eeb571 100644
      supports_embedded_context: bool,
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..8dbf86908a
+index 0000000000..e0053ee532
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,4743 @@
+@@ -0,0 +1,4751 @@
 +use std::{
 +    cell::{Cell, RefCell},
 +    collections::{HashMap, HashSet, VecDeque},
@@ -5162,6 +5162,14 @@ index 0000000000..8dbf86908a
 +fn loaded_terminal_views(project_root: &Path, cx: &App) -> Vec<Entity<TerminalView>> {
 +    let mut terminals = Vec::new();
 +    for workspace in loaded_project_workspaces(project_root, cx) {
++        let center_panes = workspace.read(cx).panes().to_vec();
++        for pane in center_panes {
++            for item in pane.read(cx).items() {
++                if let Some(view) = item.downcast::<TerminalView>() {
++                    terminals.push(view);
++                }
++            }
++        }
 +        let Some(panel) = workspace.read(cx).panel::<TerminalPanel>(cx) else {
 +            continue;
 +        };
