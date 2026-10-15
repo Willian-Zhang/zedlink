@@ -82,6 +82,18 @@ Android and macOS workflows are manual-only. Do not dispatch hosted builds, add 
 
 Screenshots and demo recordings must use synthetic content from isolated fixtures. Record their generation details under `assets/screenshots/README.md` or `assets/recordings/README.md`. Review every frame for hostnames, IP addresses, usernames, paths, project data, pairing codes, tokens, and notifications before publishing.
 
+## Publish the GitHub Wiki
+
+GitHub stores the Wiki in a separate `zedlink.wiki.git` repository. The tracked `wiki/` directory is the reviewable source; it does not populate the Wiki tab automatically.
+
+After the repository owner creates the first Wiki page once in GitHub's web editor, export the reviewed sources into an empty directory:
+
+```sh
+python3 tools/export_github_wiki.py /path/to/empty/wiki-export
+```
+
+The exporter renames `README.md` to `Home.md`, rewrites links back to the main repository, and copies the sanitized documentation screenshots. Clone `https://github.com/tjnull/zedlink.wiki.git`, copy the exported contents into that clone, review the diff, commit, and push. Keep the tracked source and published Wiki synchronized in the same documentation change.
+
 ## Public release check
 
 Before publishing:
