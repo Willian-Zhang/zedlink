@@ -4,6 +4,7 @@ import contextlib
 import io
 import os
 import re
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -55,12 +56,14 @@ def main():
     # Exercise the actual CLI branch, using a disposable state path and mocked admin.
     with tempfile.TemporaryDirectory(prefix='zedlink-qr-test-') as state_dir:
         with patch.object(pair_phone, 'open_pairing_terminal', return_value=True), \
-             patch.object(pair_phone, 'admin') as requests, \
+             patch.object(pair_phone, 'admin', return_value={'gateway_id': TEST_ID}) as requests, \
              patch.object(pair_phone, 'open_pairing_window') as browser, \
              contextlib.redirect_stdout(io.StringIO()), \
              patch('sys.argv', ['pair_phone.py', 'https://demo.example.test', state_dir, '--mode', 'terminal']):
             pair_phone.main()
-        requests.assert_not_called()  # Only the terminal child creates the challenge.
+        requests.assert_called_once_with(
+            Path(pair_phone.__file__).resolve().parent.parent / 'gateway/target/debug/zedlink-gateway',
+            Path(state_dir), 'devices')
         browser.assert_not_called()
         replies = [{'gateway_id': TEST_ID},
                    {'code': '1234567890', 'pairing_id': TEST_ID,
@@ -103,6 +106,27 @@ def main():
          patch.object(pair_phone.webbrowser, 'open', return_value=False) as launch:
         assert not pair_phone.open_pairing_window(page)
         launch.assert_called_once_with(page.as_uri(), new=1)
+
+    unavailable = subprocess.CalledProcessError(
+        1, ['zedlink-gateway', 'admin'], stderr='Error: No such file or directory (os error 2)')
+    with patch.object(pair_phone.subprocess, 'run', side_effect=unavailable):
+        try:
+            pair_phone.admin(Path('/tmp/zedlink-gateway'), Path('/tmp/zedlink-state'), 'devices')
+        except SystemExit as error:
+            message = str(error)
+            assert 'gateway is not running or its local admin socket is unavailable' in message
+            assert 'ZedLink: Start gateway' in message
+            assert 'No such file or directory' in message
+        else:
+            raise AssertionError('offline gateway admin did not stop pairing cleanly')
+
+    with patch.object(pair_phone.subprocess, 'run', return_value=SimpleNamespace(stdout='not json')):
+        try:
+            pair_phone.admin(Path('/tmp/zedlink-gateway'), Path('/tmp/zedlink-state'), 'devices')
+        except SystemExit as error:
+            assert 'invalid local admin response' in str(error)
+        else:
+            raise AssertionError('invalid gateway admin JSON was accepted')
     tasks = {task['label']: task for task in zed_task_installer.zedlink_tasks()}
     assert tasks['ZedLink: Pair a device']['reveal'] == 'never'
     assert tasks['ZedLink: Pair a device']['hide'] == 'on_success'

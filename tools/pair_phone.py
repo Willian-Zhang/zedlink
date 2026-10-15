@@ -20,11 +20,42 @@ PAIR_TTL_SECONDS = 300
 
 
 def admin(binary: pathlib.Path, state_dir: pathlib.Path, method: str) -> dict:
-    result = subprocess.run(
-        [str(binary), "admin", str(state_dir), method], check=True,
-        capture_output=True, text=True,
-    )
-    return json.loads(result.stdout)
+    try:
+        result = subprocess.run(
+            [str(binary), "admin", str(state_dir), method], check=True,
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError as error:
+        raise SystemExit(
+            "ZedLink gateway executable is unavailable. Run "
+            "'ZedLink: Install / build', then retry pairing."
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise SystemExit(
+            "ZedLink gateway did not answer its local admin socket within five seconds. "
+            "Run 'ZedLink: Restart gateway', then retry pairing."
+        ) from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "").strip().splitlines()
+        suffix = f" Gateway detail: {detail[-1]}" if detail else ""
+        raise SystemExit(
+            "ZedLink gateway is not running or its local admin socket is unavailable. "
+            "Run 'ZedLink: Start gateway' (or 'ZedLink: Restart gateway'), then retry pairing."
+            + suffix
+        ) from error
+    try:
+        response = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            "ZedLink gateway returned an invalid local admin response. "
+            "Run 'ZedLink: Restart gateway', then retry pairing."
+        ) from error
+    if not isinstance(response, dict):
+        raise SystemExit(
+            "ZedLink gateway returned an invalid local admin response. "
+            "Run 'ZedLink: Restart gateway', then retry pairing."
+        )
+    return response
 
 
 def qr_cells(value: str) -> list[list[bool]]:
@@ -253,12 +284,24 @@ def main() -> None:
         parser.error("build the gateway first with cargo build --manifest-path gateway/Cargo.toml")
     state_dir = args.state_dir.resolve(strict=True)
     mode = choose_mode(args.mode)
+    identity_response = admin(binary, state_dir, "devices")
+    identity = identity_response.get("gateway_id")
+    if not isinstance(identity, str):
+        raise SystemExit(
+            "ZedLink gateway did not return its identity. "
+            "Run 'ZedLink: Restart gateway', then retry pairing."
+        )
+    try:
+        uuid.UUID(identity)
+    except ValueError as error:
+        raise SystemExit(
+            "ZedLink gateway returned an invalid identity. "
+            "Run 'ZedLink: Restart gateway', then retry pairing."
+        ) from error
     if mode == "terminal" and not args.in_terminal_window and not args.no_open:
         if open_pairing_terminal(args.url, state_dir, args.manual_code):
             print("Opened ZedLink pairing in a dedicated terminal window.")
             return
-    identity = admin(binary, state_dir, "devices")["gateway_id"]
-    uuid.UUID(identity)
     challenge = admin(binary, state_dir, "pair-short-code")
     code, pairing_id, watch_token, expires_seconds = validate_challenge(challenge)
     base = f"https://{parsed.netloc}/"
