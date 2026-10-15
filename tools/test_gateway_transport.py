@@ -43,6 +43,7 @@ class ProbeFixture:
     def __init__(self, path):
         self.path = path
         self.seen_sends = {}
+        self.removed_requests = set()
         self.created_requests = {}
         self.accepted = 0
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
@@ -495,7 +496,15 @@ class ProbeFixture:
                         result = {"outcome": "unknown"}
                 elif method == "request.status":
                     key = params["original_request_id"]
-                    result = {"known": key in self.seen_sends, "outcome": "unknown"}
+                    result = {"known": key in self.seen_sends,
+                              "outcome": "removed" if key in self.removed_requests else "queued" if key in self.seen_sends else "unknown"}
+                elif method == "thread.queue.remove":
+                    key = params["original_request_id"]
+                    if key in self.seen_sends and params.get("thread_id") == "fixture-thread" and params.get("queue_entry_id") == 17:
+                        self.removed_requests.add(key)
+                        result = {"outcome": "removed"}
+                    else:
+                        result = {"outcome": "unknown"}
                 elif method == "thread.cancel":
                     if (params.get("instance_id"), params.get("epoch")) != ("fixture-instance", "fixture-epoch"):
                         error = {"code": "INSTANCE_UNAVAILABLE"}
@@ -540,7 +549,7 @@ class ProbeFixture:
                               "project": "fixture-project",
                               "capabilities": ["thread.list", "thread.create", "thread.create.options", "thread.rename", "thread.unexpose", "thread.snapshot", "thread.history", "thread.events",
                                                "thread.commands", "thread.settings", "thread.settings.update",
-                                               "thread.elicitations", "elicitation.respond", "thread.queue", "thread.queue.clear",
+                                               "thread.elicitations", "elicitation.respond", "thread.queue", "thread.queue.remove", "thread.queue.clear",
                                                "thread.edit_review", "thread.edit_review.respond",
                                                "thread.send", "thread.attachments", "thread.cancel",
                                                "thread.subagents", "subagent.cancel",
@@ -887,6 +896,17 @@ def main():
             assert status == 200 and other_device_terminal["result"]["terminal"]["terminal_id"] != created_terminal["result"]["terminal"]["terminal_id"]
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token2)
             assert status == 200 and not response["result"]["known"]
+            remove = {"version": 1, "request_id": "remove-first", "method": "thread.queue.remove",
+                      "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                 "thread_id": "fixture-thread", "original_request_id": "stable-send", "queue_entry_id": 17}}
+            status, response = http(base, context, "/v1/rpc", "POST", remove, token2)
+            assert status == 200 and response["result"]["outcome"] == "unknown"
+            status, response = http(base, context, "/v1/rpc", "POST", lookup, token1)
+            assert status == 200 and response["result"]["outcome"] == "queued"
+            status, response = http(base, context, "/v1/rpc", "POST", remove, token1)
+            assert status == 200 and response["result"]["outcome"] == "removed"
+            status, response = http(base, context, "/v1/rpc", "POST", lookup, token1)
+            assert status == 200 and response["result"]["outcome"] == "removed"
             status, _ = http(base, context, "/v1/rpc", "POST", sent, token2)
             assert status == 200 and probe.accepted == 2
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token2)

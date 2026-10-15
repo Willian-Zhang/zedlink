@@ -1,0 +1,11 @@
+{
+  "name": "paseo-zedlink",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rolldown server/connection.ts --platform node --format esm --file server/connection.mjs",
+    "preflight": "node tools/preflight.mjs",
+    "test": "node --test server/*.test.mjs"
+  },
+  "devDependencies": { "rolldown": "1.0.0-rc.13" }
+}

@@ -1,0 +1,5 @@
+{
+  "id": "zedlink",
+  "description": "Attach Paseo to an exposed native ZedLink thread",
+  "requirements": { "paseo": ">=0.10.3" }
+}

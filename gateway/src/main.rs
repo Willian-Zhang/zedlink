@@ -1532,6 +1532,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "thread.elicitations"
             | "elicitation.respond"
             | "thread.queue"
+            | "thread.queue.remove"
             | "thread.queue.clear"
             | "thread.edit_review"
             | "thread.edit_review.respond"
@@ -1621,7 +1622,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
             | "changes.unstage"
     ) {
         request["request_id"] = json!(format!("{device_id}:{original_request_id}"));
-    } else if method == "request.status" {
+    } else if matches!(method.as_str(), "request.status" | "thread.queue.remove") {
         let Some(original_send_id) = request["params"]["original_request_id"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 80)

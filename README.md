@@ -27,6 +27,7 @@ https://github.com/user-attachments/assets/eb599434-e283-4828-a300-e5e77d1c93f4
 | Browser / installed web app | Most complete path. Connect over trusted HTTPS; no native app build required. |
 | iOS | SwiftUI source with local Agent alerts and Apple Watch notification mirroring. Requires a macOS/Xcode build and signing; device validation is ongoing. |
 | Android | Compose source and development APK builds. Terminal keyboard visibility and speech recording have unresolved device reports; the latest layout fix still needs verification. |
+| Paseo | Experimental provider plugin attaches to an exposed native Zed thread. An iPhone prompt, one-time Allow/Deny, native tool display, and active-turn Stop after reopening passed on an isolated native fixture over Tailscale. Scoped queued Stop passed through Paseo CLI to the same native runtime. See [plugin setup](plugins/paseo-zedlink/README.md). |
 
 Native apps connect to the same gateway. Updating the gateway or website does **not** update an installed app: build and install a new native package. See [mobile setup and known issues](wiki/Mobile-Apps.md).
 

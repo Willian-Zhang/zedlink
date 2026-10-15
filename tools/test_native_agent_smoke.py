@@ -225,6 +225,35 @@ def main():
                 assert sentinel.exists() == (decision == 'approve_once'), 'Native decision was not respected'
             assert sentinel.read_text() == 'approved'
             print('PASS: isolated native Zed stream/replay, cancellation and deny/allow tool authorization')
+
+            running_id = str(uuid.uuid4())
+            queued_id = str(uuid.uuid4())
+            queued_marker = 'ZEDLINK_QUEUED_REMOVE_' + uuid.uuid4().hex
+            rpc(socket_path, 'thread.send', {**identity, 'text': 'ZEDLINK_FIXTURE_BROWSER_STOP'}, running_id)
+            until(lambda: (snapshot if snapshot['status'] == 'Generating' else None)
+                  if (snapshot := rpc(socket_path, 'thread.snapshot', identity)) else None)
+            queued = rpc(socket_path, 'thread.send', {**identity, 'text': queued_marker}, queued_id)
+            assert queued['outcome'] == 'queued' and isinstance(queued['queue_entry_id'], int)
+            removal = {**identity, 'original_request_id': queued_id, 'queue_entry_id': queued['queue_entry_id']}
+            try:
+                rpc(socket_path, 'thread.queue.remove', {**removal, 'queue_entry_id': queued['queue_entry_id'] + 1})
+            except RuntimeError as error:
+                assert 'REQUEST_CONFLICT' in str(error)
+            else:
+                raise AssertionError('A mismatched queue entry was removable')
+            assert rpc(socket_path, 'thread.queue.remove', removal)['outcome'] == 'removed'
+            assert rpc(socket_path, 'thread.queue.remove', removal)['outcome'] == 'removed'
+            status = rpc(socket_path, 'request.status', {**base, 'original_request_id': queued_id})
+            assert status['outcome'] == 'removed' and status['queue_entry_id'] == queued['queue_entry_id']
+            running = rpc(socket_path, 'thread.snapshot', identity)
+            if running['status'] == 'Generating':
+                rpc(socket_path, 'thread.cancel', {**identity, 'turn_id': running['current_turn_id']})
+            until(lambda: rpc(socket_path, 'thread.snapshot', identity)['status'] == 'Idle')
+            snapshot = rpc(socket_path, 'thread.snapshot', identity)
+            assert not any(queued_marker in entry for entry in snapshot['entries_markdown'])
+            assert len(snapshot['entries_meta']) == len(snapshot['entries_markdown'])
+            assert any(row.get('kind') == 'tool' for row in snapshot['entries_meta'])
+            print('PASS: native exact queued removal, idempotent receipt, active-turn isolation, and structured transcript metadata')
     finally:
         if process:
             process.terminate()
