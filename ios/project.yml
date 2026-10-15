@@ -19,9 +19,13 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.zedlink.app
+        MARKETING_VERSION: 1.0.8
+        CURRENT_PROJECT_VERSION: 9
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: ZedLink
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Dictate a draft message or terminal input. Nothing is sent until you choose Send.
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Convert your voice into editable draft text using on-device recognition.
