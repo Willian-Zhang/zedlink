@@ -54,17 +54,17 @@ A copy-ready starting point is available in [Draft Zed upstream proposal](Zed-Up
 6. If Zed chooses a public extension API rather than a core feature, build the smallest compliant extension against that released API and test it in stock Zed.
 7. Publish that extension through a one-extension pull request to `zed-industries/extensions` using an HTTPS public submodule and matching manifest/catalog versions.
 
-The Zed fork currently contains seven separated commits after the pinned revision. They cover cancellation correctness, the local bridge, failure state, project and Git context, image capability errors, bounded search, and native settings.
+The maintained fork contains the native integration commits. Review its current branch and the checked-in patch at the revision being published; do not assume an older commit count describes the current fork.
 
 ## Public repository checklist
 
 Before changing the ZedLink repository from private to public:
 
 - [x] Select and commit an accepted open-source license: Apache License 2.0.
-- [x] Review and sanitize the complete Git history for credentials, certificates, pairing links, device tokens, private hostnames, IP addresses, personal paths, and author email metadata.
-- [x] Run `python3 tools/check_public_release.py`.
+- [ ] Re-review the complete Git history for the exact public revision and sanitize it for credentials, certificates, pairing links, device tokens, private hostnames, IP addresses, personal paths, and author email metadata.
+- [ ] Run `python3 tools/check_public_release.py` on the exact public revision.
 - [ ] Run `bash tools/check_linux.sh` and the authenticated browser transport fixture.
-- [x] Confirm the pinned fork branch and patch contain the same native changes.
+- [ ] Confirm the current fork branch and patch contain the same native changes.
 - [x] Keep `zed-source/`, build outputs, certificates, local state, and internal validation documents ignored.
 - [x] Add a private security reporting policy before accepting outside users.
 - [x] Confirm screenshots contain no private projects, hostnames, addresses, prompts, or credentials.
@@ -80,3 +80,11 @@ The release checker examines the current working tree. A separate history review
 - [Publishing Extensions](https://zed.dev/docs/extensions/publishing/overview)
 - [Publishing Prerequisites](https://zed.dev/docs/extensions/publishing/prerequisites)
 - [Publishing Guide](https://zed.dev/docs/extensions/publishing/publishing-guide)
+
+## Documentation and development-preview status
+
+Publishing the source repository does not make the native apps release ready. The README and [mobile guide](Native-Mobile-Apps.md) distinguish source implementation, existing integration evidence and pending phone tests. Android keyboard visibility and speech recording remain unresolved reports; the latest layout change is on the emulator test branch awaiting validation.
+
+Before publishing, confirm which branch is being made public, review any test-branch changes intended for main, and keep the unresolved issues visible. The public checker covers selected working-tree patterns only; it does not establish complete history hygiene, screenshot privacy, successful compilation or security of every deployment.
+
+Community testers and supporters are acknowledged in [Credits](Credits.md), including **Ringmast4r** and **diablo_rain**.

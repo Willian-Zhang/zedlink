@@ -7,7 +7,7 @@
 Continue an exposed Zed conversation from your phone, tablet, or browser.<br>
 The agent, configured model, tools, and project stay in desktop Zed.
 
-[Get started](wiki/Installation-and-Setup.md) · [Documentation](wiki/README.md) · [Security](wiki/Security.md) · [Contribute](CONTRIBUTING.md)
+[Get started](wiki/Installation-and-Setup.md) · [Documentation](wiki/README.md) · [Mobile apps](wiki/Native-Mobile-Apps.md) · [Security](wiki/Security.md) · [Contribute](CONTRIBUTING.md)
 
 **Browser / PWA** · **Linux host** · **iOS & Android source** · **Apache 2.0**
 
@@ -19,6 +19,16 @@ https://github.com/user-attachments/assets/eb599434-e283-4828-a300-e5e77d1c93f4
 
 > [!IMPORTANT]
 > ZedLink is development software and currently requires the [maintained Zed fork](https://github.com/tjnull/zed/tree/zedlink/native-agent-remote-control). It does not work as a Marketplace extension in stock Zed. The browser/PWA and Linux host are the most complete path; native mobile distribution and broader device validation are still in progress.
+
+## Choose your client
+
+| Client | Current status |
+| --- | --- |
+| Browser / installed web app | Most complete path. Connect over trusted HTTPS; no native app build required. |
+| iOS | SwiftUI source for a native companion. Requires a macOS/Xcode build and signing; device validation is ongoing. |
+| Android | Compose source and development APK builds. Terminal keyboard visibility and speech recording have unresolved device reports; the latest layout fix still needs verification. |
+
+Native apps connect to the same gateway. Updating the gateway or website does **not** update an installed app: build and install a new native package. See [mobile setup and known issues](wiki/Native-Mobile-Apps.md).
 
 ## How it works
 
@@ -119,6 +129,12 @@ python3 tools/check_public_release.py
 ```
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md), [development and testing](wiki/Development-and-Testing.md), and the [Zed upstream proposal](wiki/Zed-Upstream-Proposal.md). The bridge is based on pinned upstream revision `c66312b200d113694fca08c1d468669028a09a0e`; see the proposal for the extension API gaps and core contribution path.
+
+## Credits
+
+Thank you to **Ringmast4r** and **diablo_rain** for helping test ZedLink and supporting the project. Their feedback helps identify device issues and improve the experience.
+
+ZedLink builds on Zed and its contributors' work. See [credits](wiki/Credits.md) for acknowledgements and the separate licensing boundary.
 
 ## License
 

@@ -192,3 +192,20 @@ The model's advertised context window can differ from an input cap enforced by t
 Zed's negative compaction threshold means tokens remaining; positive thresholds mean tokens used. For a 131,072-token advertised window and 8,192 output reserve, `-24576` triggers near 98,305 used tokens. An absolute `24576` triggers much earlier and leaves headroom for this serving path. The inspected fork disables automatic compaction below an 80,000-token input capacity, so simply lowering the model window to 65,536 would disable it.
 
 Earlier compaction prevents future buildup but cannot repair an already oversized summary request. The experimental summary-only prompt was reverted because it changed compaction behavior for all models. The older global 2,048-token summary output cap was also removed. Native compaction in `crates/agent/src/thread.rs` now matches the pinned upstream revision; ZedLink does not override its prompt or output budget. Resolve the serving-side limit/KV-cache issue before attempting to compact oversized existing history. Personal early-compaction settings remain client configuration, not a global runtime patch.
+
+## Android terminal input is hidden by the keyboard
+
+If output remains visible but the command field and special-key row disappear when the keyboard opens, that is a layout defect. Check the exact installed version/build and interface revision under **Settings → Help & about**. A fresh browser reload cannot update an APK.
+
+The latest source correction is version 0.2.8 (10) on `test/android-terminal-emulator`: Workspace uses the main activity window instead of a full-screen dialog, with the Command draft above the output and tabs hidden while its keyboard is open. It still needs compilation and emulator/device verification. Until verified, use the mobile browser as an alternate client and report whether the browser has the same problem. See [mobile build status](Native-Mobile-Apps.md#files-and-terminal).
+
+## Android dictation cannot record audio
+
+First identify whether the error appears in ZedLink or the phone's speech popup. The reported popup failure persisted after granting ZedLink microphone permission; permission alone is not a demonstrated fix.
+
+1. Check Android's microphone-access control and whether another app is recording.
+2. Check microphone permission for ZedLink and the configured speech provider.
+3. In a build with the updated dictation controls, explicitly choose **Use on-device recognition instead** or **Use in-app recognition instead**. The latter may use an online provider; read the confirmation before capture.
+4. Test the same provider through another ordinary text field. Report the exact error, device, OS and app build if recording still fails.
+
+The in-app path may share the same provider as the popup, so it is not a guaranteed workaround. Dictation should only fill an editable draft; it must not send a prompt or execute a command automatically. Physical microphone capture cannot be established by a headless emulator layout test.

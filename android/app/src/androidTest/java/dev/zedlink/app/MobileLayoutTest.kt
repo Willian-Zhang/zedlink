@@ -56,8 +56,10 @@ class MobileLayoutTest {
                 }
                 ZedLinkTheme("dark") { ProjectContextScreen(fixture, model) {} }
             }
-            compose.onNodeWithContentDescription("Type in terminal").performClick()
             val field = compose.onNode(hasSetTextAction())
+            field.assertIsDisplayed()
+            compose.onNodeWithText("Command draft").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Type in terminal").performClick()
             field.assertIsFocused().performTextInput("printf visible-draft")
             field.assertTextContains("printf visible-draft").assertIsDisplayed()
             compose.waitUntil(timeoutMillis = 5000) {

@@ -5,6 +5,7 @@ import io
 import os
 import re
 import tempfile
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,12 +14,16 @@ import pair_phone
 import zed_task_installer
 
 
+# Deterministic synthetic identity, never read from a gateway or user profile.
+TEST_ID = str(uuid.UUID(int=1, version=4))
+
+
 def main():
     with patch('builtins.input', side_effect=AssertionError('Default must not prompt in a terminal')):
         assert pair_phone.choose_mode(None) == 'terminal'
         assert pair_phone.choose_mode('terminal') == 'terminal'
-    link = ('https://demo.example.ts.net:44679/#v=1&gateway='
-            '11111111-2222-4333-8444-555555555555&pair=1234567890')
+    link = ('https://demo.example.ts.net:44679/#v=1&gateway=' +
+            TEST_ID + '&pair=1234567890')
     cells = pair_phone.qr_cells(link)
     width = len(cells)
     height = (width + 1) // 2
@@ -57,8 +62,8 @@ def main():
             pair_phone.main()
         requests.assert_not_called()  # Only the terminal child creates the challenge.
         browser.assert_not_called()
-        replies = [{'gateway_id': '11111111-2222-4333-8444-555555555555'},
-                   {'code': '1234567890', 'pairing_id': '11111111-2222-4333-8444-555555555555',
+        replies = [{'gateway_id': TEST_ID},
+                   {'code': '1234567890', 'pairing_id': TEST_ID,
                     'watch_token': 'a' * 64, 'expires_seconds': 300}]
         for size, fits in [(os.terminal_size((100, 60)), True), (os.terminal_size((40, 20)), False)]:
             capture = io.StringIO()

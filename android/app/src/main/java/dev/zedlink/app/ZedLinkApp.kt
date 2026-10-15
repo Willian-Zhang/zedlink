@@ -360,6 +360,7 @@ internal fun ProjectContextScreen(state: AppState, model: ZedLinkViewModel, clos
     var page by rememberSaveable(state.selectedThreadId) { mutableStateOf("Terminal") }
     var fullFiles by remember { mutableStateOf(false) }
     var terminalOnly by rememberSaveable { mutableStateOf(false) }
+    val keyboardVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
     if (fullFiles) ProjectFileBrowser(state, model) { fullFiles = false }
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
@@ -377,7 +378,7 @@ internal fun ProjectContextScreen(state: AppState, model: ZedLinkViewModel, clos
                     }
                     IconButton(onClick = ::closeWorkspace) { Icon(Icons.Default.Close, "Close workspace") }
                 }
-                if (!terminalOnly) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                if (!terminalOnly && !(page == "Terminal" && keyboardVisible)) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
                     listOf("Files", "Changes", "Terminal", "Tasks", "Debug").forEach { label ->
                         val selected = page == label
                         val underline = Ink
@@ -922,6 +923,32 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel) {
                     Text(state.terminalDelivery, color = Warning, fontSize = 12.sp, modifier = Modifier.padding(10.dp))
                 }
                 if (state.issue.isNotBlank() && !state.terminalInputPending && !state.terminalInputUncertain) Notice(state.issue)
+                // Keep the editable draft before the output viewport. It must stay visible
+                // while typing, independently of the remote terminal's echoed output.
+                if ("terminal.input" in state.capabilities) {
+                    Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = input, onValueChange = ::updateTerminalDraft, enabled = canType,
+                            modifier = Modifier.weight(1f).focusRequester(inputFocus),
+                            label = { Text("Command draft") }, placeholder = { Text("Type a command or reply") },
+                            minLines = 1, maxLines = 3,
+                            textStyle = TextStyle(color = Ink, fontSize = 16.sp, fontFamily = FontFamily.Monospace),
+                            shape = RectangleShape,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
+                            keyboardActions = KeyboardActions(onSend = { sendTerminal("\r") }))
+                        IconButton(onClick = { sendTerminal("\r") }, enabled = canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) {
+                            Icon(Icons.Default.KeyboardReturn, "Send or press Enter")
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().background(Surface), verticalAlignment = Alignment.CenterVertically) {
+                        VoiceDraftButton(input, draftKey) { updateTerminalDraft(it) }
+                        Box(Modifier.weight(1f)) {
+                            TerminalKeyStrip(canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) { bytes -> sendTerminal(bytes) }
+                        }
+                        IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
+                    }
+                } else { Text("Enable Send Terminal Input in desktop ZedLink settings.", color = Muted, modifier = Modifier.padding(12.dp)) }
+                Rule()
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     TerminalOutput(if (state.terminalSnapshot != null) terminalText(state.terminalSnapshot) else AnnotatedString(
                         if ("terminal.list" !in state.capabilities) "Enable View Project Terminals in desktop ZedLink settings."
@@ -929,20 +956,6 @@ private fun TerminalScreen(state: AppState, model: ZedLinkViewModel) {
                         else if (state.terminals.isEmpty()) "Open a terminal in this Zed workspace."
                         else "Loading terminal…"), terminalScroll, horizontalScroll, wrapOutput, canType, fontSize = terminalFontSize) { showTerminalKeyboard() }
                 }
-                if ("terminal.input" in state.capabilities) {
-                    TerminalKeyStrip(canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) { bytes -> sendTerminal(bytes) }
-                    Row(Modifier.fillMaxWidth().background(Surface).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("›", color = Green); Spacer(Modifier.width(8.dp))
-                        BasicTextField(value = input, onValueChange = { updateTerminalDraft(it) }, enabled = canType, modifier = Modifier.weight(1f).focusRequester(inputFocus).heightIn(min = 44.dp).padding(vertical = 10.dp), singleLine = true,
-                            textStyle = TextStyle(color = Ink, fontSize = 16.sp, fontFamily = FontFamily.Monospace), cursorBrush = SolidColor(Green),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
-                            keyboardActions = KeyboardActions(onSend = { sendTerminal("\r") }),
-                            decorationBox = { field -> Box { if (input.isEmpty()) Text("Command or reply", color = Muted, fontSize = 16.sp); field() } })
-                        VoiceDraftButton(input, draftKey) { updateTerminalDraft(it) }
-                        IconButton(onClick = { sendTerminal("\r") }, enabled = canType && !terminalSending && !state.terminalInputPending && !state.terminalInputUncertain) { Icon(Icons.Default.KeyboardReturn, "Send or press Enter") }
-                        IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }) { Icon(Icons.Default.KeyboardHide, "Hide keyboard") }
-                    }
-                } else { Text("Enable Send Terminal Input in desktop ZedLink settings.", color = Muted, modifier = Modifier.padding(12.dp)) }
             }
         }
     }

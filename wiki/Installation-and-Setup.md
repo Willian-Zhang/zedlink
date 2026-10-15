@@ -69,9 +69,9 @@ You should see tasks such as:
 
 If no ZedLink tasks appear, make sure the ZedLink repository is the folder currently open in Zed.
 
-### Fast setup for this workstation
+### Set up another project after installation
 
-The global tasks are already installed on this workstation. To configure whichever project is open in Zed:
+After the guided installer has installed the global ZedLink tasks, configure another project open in patched Zed:
 
 1. Open that project in Zed.
 2. Press `Ctrl+Shift+P` and select **task: spawn**.

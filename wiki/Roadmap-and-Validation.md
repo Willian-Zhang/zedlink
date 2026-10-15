@@ -2,6 +2,21 @@
 
 [← Wiki home](README.md)
 
+## Current client status
+
+Browser, iOS and Android share the gateway/protocol, but a shared protocol does not establish device parity. Browser fixtures, native bridge tests and physical phone tests verify different layers.
+
+| Area | Evidence / remaining work |
+| --- | --- |
+| Browser / Linux host | Existing authenticated browser fixtures and isolated native Zed tests; physical iPhone Safari same-thread round trip recorded |
+| Files and terminal bridge | Isolated native tests cover scoped folder/text reads, unsafe/binary rejection, permission revocation, terminal Enter, special keys and replay |
+| Android terminal UI | User-reported keyboard overlap persists; activity-window correction on the test branch needs fresh compilation and emulator/device validation |
+| Android speech | Phone speech popup reported capture failure with permission granted; in-app alternative implemented but no physical microphone success established |
+| Native mobile background notifications | APNs/FCM are not configured; local alerts depend on receiving snapshots |
+| Mobile release readiness | Signing, fresh build identification and physical-device gates remain pending |
+
+The prepared Android emulator run did not start because hosted Actions were unavailable. No successful build, test or screenshot can be attributed to that attempt. See [Native mobile apps](Native-Mobile-Apps.md) for exact branch/build information.
+
 ## Native Agent parity roadmap
 
 ZedLink intentionally exposes a smaller remote surface than desktop Zed. The following native features remain candidates for carefully scoped bridge methods and browser controls.
@@ -13,7 +28,7 @@ ZedLink intentionally exposes a smaller remote surface than desktop Zed. The fol
 | Edit, regenerate, rewind, and checkpoints | Image-error rewind exists; general history controls do not | Expose native checkpoint IDs and guarded restore actions |
 | Thread history and management | Indexed history is paged; sessions can be created, renamed, and removed from remote exposure without closing native Zed | Add archive, delete, broader pagination, and project/worktree selection |
 | External ACP agents | Existing root ACP threads can be controlled, and configured ACP agents can be selected when creating a session in the allowed project | Complete a real Codex/Claude Code creation and prompt round trip |
-| Rich tool interaction | Thinking, tools, terminal output, exact native permission/action choices, and child agents render inline | Add structured ACP elicitation forms, Agent edit-review Keep/Reject controls, interactive terminal input, and richer tool result views |
+| Rich tool interaction | Thinking, tools, terminal output, exact native permission/action choices, and child agents render inline | Verify source-implemented elicitation/edit-review/terminal controls on devices and expand richer tool result coverage |
 | Diff review | Files, search, unified diffs, stage, and unstage are available | Add native hunk accept/reject and checkpoint-aware review |
 | Context accounting | `/compact` uses the native command path | Show token usage, context limits, compaction state, and supported settings |
 | MCP and tool configuration | Existing Zed MCP servers and tools execute in the native runtime | Add read-only status and safe per-thread configuration where Zed exposes it |
