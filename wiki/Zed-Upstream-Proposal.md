@@ -1,6 +1,6 @@
 # Draft Zed Upstream Proposal
 
-[← Publishing and upstream readiness](Publishing-and-Upstream.md)
+[← Development and testing](Development.md)
 
 Use this as a starting point for a Zed GitHub Discussion. Review every statement and replace the maintainer notes before posting. The implementation was developed with AI assistance and must be disclosed and understood by the human contributor under Zed's contribution policy.
 

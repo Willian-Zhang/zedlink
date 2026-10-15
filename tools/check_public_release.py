@@ -13,10 +13,30 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_PARTS = {".git", ".agents", ".aws", ".codex", "docs", "target", "zed-source", "__pycache__"}
+SKIP_PARTS = {
+    ".git",
+    ".agents",
+    ".aws",
+    ".codex",
+    ".gradle",
+    ".kotlin",
+    "DerivedData",
+    "build",
+    "docs",
+    "target",
+    "zed-source",
+    "__pycache__",
+}
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".pyc", ".lock"}
 PATTERNS = {
     "private key": re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"),
+    "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b"),
+    "OpenAI API key": re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+    "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    "Slack token": re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    "JSON Web Token": re.compile(
+        r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+    ),
     "local user path": re.compile(r"/home/(?!you(?:/|\b))[A-Za-z0-9._-]+(?:/|\b)"),
     "private tailnet hostname": re.compile(
         r"\b(?!computer\.example-tailnet\.ts\.net\b)[a-z0-9-]+\.tail[0-9a-z.-]*\.ts\.net\b",
@@ -56,7 +76,7 @@ def main() -> int:
                 line = content.count("\n", 0, match.start()) + 1
                 failures.append(f"{relative}:{line}: {label}")
 
-    for required in ("README.md", "AGENTS.md", "wiki/Publishing-and-Upstream.md"):
+    for required in ("README.md", "AGENTS.md", "wiki/Development.md", "wiki/Security.md"):
         if not (ROOT / required).is_file():
             failures.append(f"{required}: required public documentation is missing")
 

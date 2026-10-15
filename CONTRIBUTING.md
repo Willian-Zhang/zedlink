@@ -4,7 +4,7 @@ Thank you for helping improve ZedLink. The project is currently development soft
 
 ## Before opening a change
 
-1. Read [AGENTS.md](AGENTS.md), the [architecture and development guide](wiki/Development-and-Testing.md), and the [publishing status](wiki/Publishing-and-Upstream.md).
+1. Read [AGENTS.md](AGENTS.md), the [development guide](wiki/Development.md), and the [current validation status](wiki/Project-Status.md).
 2. Open an issue for protocol changes, new remote powers, or changes to the trust boundary before implementation.
 3. Keep model credentials and Agent execution inside Zed.
 4. Use disposable projects and isolated Zed profiles for native integration tests.

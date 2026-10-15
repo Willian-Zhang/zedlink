@@ -7,7 +7,7 @@
 Continue an exposed Zed conversation from your phone, tablet, or browser.<br>
 The agent, configured model, tools, and project stay in desktop Zed.
 
-[Get started](wiki/Installation-and-Setup.md) · [Documentation](wiki/README.md) · [Mobile apps](wiki/Native-Mobile-Apps.md) · [Security](wiki/Security.md) · [Contribute](CONTRIBUTING.md)
+[Get started](wiki/Installation.md) · [Documentation](wiki/README.md) · [Mobile apps](wiki/Mobile-Apps.md) · [Security](wiki/Security.md) · [Contribute](CONTRIBUTING.md)
 
 **Browser / PWA** · **Linux host** · **iOS & Android source** · **Apache 2.0**
 
@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/eb599434-e283-4828-a300-e5e77d1c93f4
 | iOS | SwiftUI source with local Agent alerts and Apple Watch notification mirroring. Requires a macOS/Xcode build and signing; device validation is ongoing. |
 | Android | Compose source and development APK builds. Terminal keyboard visibility and speech recording have unresolved device reports; the latest layout fix still needs verification. |
 
-Native apps connect to the same gateway. Updating the gateway or website does **not** update an installed app: build and install a new native package. See [mobile setup and known issues](wiki/Native-Mobile-Apps.md).
+Native apps connect to the same gateway. Updating the gateway or website does **not** update an installed app: build and install a new native package. See [mobile setup and known issues](wiki/Mobile-Apps.md).
 
 ## How it works
 
@@ -60,7 +60,7 @@ Zed must remain open. Disconnecting your phone does not stop the agent. ZedLink 
 | Connections | Save gateway profiles, switch configured Zed targets, pair devices, and revoke access |
 | Mobile input | Editable voice drafts, explicit text clipboard transfers, wrapped terminal output, and saved drafts |
 
-Availability follows the selected agent and permissions advertised by the bridge. See [validation and remaining gaps](wiki/Roadmap-and-Validation.md) for limits, including native client parity and approval coverage.
+Availability follows the selected agent and permissions advertised by the bridge. See [validation and remaining gaps](wiki/Project-Status.md) for limits, including native client parity and approval coverage.
 
 ## A closer look
 
@@ -86,7 +86,7 @@ Use ZedLink Settings to configure connections, check connectivity, manage gatewa
 
 ## Get started
 
-**You need:** a Linux host, Rust/Cargo, Git, Python 3, [Zed build dependencies](wiki/Installation-and-Setup.md#before-you-begin), and a trusted HTTPS route reachable from your device. Tailscale is the recommended first setup. The first patched Zed build can take a while.
+**You need:** a Linux host, Rust/Cargo, Git, Python 3, [Zed build dependencies](wiki/Installation.md#requirements), and a trusted HTTPS route reachable from your device. Tailscale is the recommended first setup. The first patched Zed build can take a while.
 
 ```sh
 git clone https://github.com/tjnull/zedlink.git
@@ -103,9 +103,9 @@ Then:
 3. Start the gateway and choose **Pair a device**. Use either the browser QR page or the terminal QR option.
 4. Open the trusted HTTPS address on your device, pair, and select the session.
 
-For connection problems, use **Check Tailscale Connection** and **Guided Tailscale Repair** in ZedLink settings. The guided flow checks DNS, certificate trust, the active gateway certificate, and renewal before a separate phone-side HTTPS check. See the [connection repair guide](wiki/Connections-and-Networking.md#guided-tailscale-connection-checks-and-repair).
+For connection problems, use **Check Tailscale Connection** and **Guided Tailscale Repair** in ZedLink settings. The guided flow checks DNS, certificate trust, the active gateway certificate, and renewal before a separate phone-side HTTPS check. See the [troubleshooting guide](wiki/Troubleshooting.md#phone-can-ping-but-https-times-out).
 
-Follow the [installation guide](wiki/Installation-and-Setup.md) and [pairing guide](wiki/Running-and-Pairing.md) for the full walkthrough. Alternative VPNs and HTTPS routes are covered in [connections and networking](wiki/Connections-and-Networking.md).
+Follow the [installation guide](wiki/Installation.md), [configuration guide](wiki/Configuration.md), and [pairing guide](wiki/Pairing-and-First-Run.md) for the full walkthrough.
 
 ## Security & status
 
@@ -114,7 +114,7 @@ Follow the [installation guide](wiki/Installation-and-Setup.md) and [pairing gui
 - Terminal, debugger, and desktop clipboard access require their respective permissions.
 - Zed remains authoritative for execution and approvals. Remote clients do not blanket-approve tools.
 
-The Linux/browser path has local gateway fixtures and real patched-Zed tests; a physical iPhone Safari same-thread round trip over Tailscale has also been recorded. These results do not establish every feature on every client. Signed app releases, background notifications requiring push credentials, and broader physical-device testing remain pending. See [validation](wiki/Roadmap-and-Validation.md) and the [public-release checklist](wiki/Publishing-and-Upstream.md).
+The Linux/browser path has local gateway fixtures and real patched-Zed tests; a physical iPhone Safari same-thread round trip over Tailscale has also been recorded. These results do not establish every feature on every client. Signed app releases, background notifications requiring push credentials, and broader physical-device testing remain pending. See [project status](wiki/Project-Status.md) and the [public-release checklist](wiki/Development.md#public-release-check).
 
 Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
@@ -128,7 +128,7 @@ python3 tools/test_gateway_transport.py
 python3 tools/check_public_release.py
 ```
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md), [development and testing](wiki/Development-and-Testing.md), and the [Zed upstream proposal](wiki/Zed-Upstream-Proposal.md). The bridge is based on pinned upstream revision `c66312b200d113694fca08c1d468669028a09a0e`; see the proposal for the extension API gaps and core contribution path.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), [development and testing](wiki/Development.md), and the [Zed upstream proposal](wiki/Zed-Upstream-Proposal.md). The bridge is based on pinned upstream revision `c66312b200d113694fca08c1d468669028a09a0e`; see the proposal for the extension API gaps and core contribution path.
 
 ## Credits
 

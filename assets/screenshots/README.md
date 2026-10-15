@@ -15,7 +15,7 @@ cargo build --manifest-path gateway/Cargo.toml --offline
 python3 tools/capture_readme_screenshots.py
 ```
 
-Dependencies match the [browser test setup](../../wiki/Development-and-Testing.md): Firefox, geckodriver, Selenium, Python websockets, and OpenSSL.
+Dependencies match the [browser test setup](../../wiki/Development.md): Firefox, geckodriver, Selenium, Python websockets, and OpenSSL.
 
 ## Native Settings capture
 

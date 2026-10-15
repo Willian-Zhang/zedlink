@@ -2,210 +2,117 @@
 
 [← Wiki home](README.md)
 
-## Troubleshooting
-
-### “Setup: not configured”
-
-Run:
-
-```text
-Ctrl+Shift+P → task: spawn → ZedLink: Configure
-```
-
-### ZedLink tasks do not appear
-
-For the first run, open the ZedLink repository itself so Zed loads [the project tasks](../.zed/tasks.json). Then run **ZedLink: Guided setup** to install global tasks.
-
-From a terminal, reinstall only the global tasks with:
-
-```sh
-bash tools/setup_zed_ide.sh --yes --skip-build --skip-config
-```
-
-### `/remote-control` does not appear
-
-You are probably in ordinary Zed. The official installer does not contain the source patch.
-
-1. Run **ZedLink: Status** and confirm `Patched Zed bridge: online (separate dev-channel instance)`.
-2. Find the separate **Zed Dev** window for the configured project.
-3. Open its Agent panel with `Ctrl+Shift+P`, search for **agent: toggle focus**, and run it.
-4. Click the Agent composer, type `/remote-control`, and select **Remote Control**.
-
-If Status says the bridge is offline, run **ZedLink: Start patched Zed** again. The launcher sets a separate `dev` release channel so it cannot forward the request back to ordinary Zed's `stable` instance socket.
-
-### The gateway will not start
-
-Run **ZedLink: Status** first. The patched bridge must be online before the gateway starts. If another old gateway already owns the configured port, stop that old ZedLink task or process and run **ZedLink: Start gateway** again. A ready result says `Gateway admin: online`.
-
-### Patched Zed shows the wrong model
-
-ZedLink uses the profile loaded by that Zed window. It does not act as a model.
-
-1. Stop the patched window.
-2. Run **ZedLink: Configure**.
-3. Check **Existing Zed user data directory**.
-4. Start patched Zed again.
-5. Confirm the model selector before exposing a thread.
-
-If you removed the official Zed installation, your settings normally remain in
-`~/.config/zed/settings.json` and the patched dev-channel build continues to read
-that file. Run these checks before re-entering any model configuration:
+Start with the read-only checks:
 
 ```sh
 python3 tools/zedlink_manager.py status
-zed --help
+python3 tools/zedlink_manager.py diagnose
+python3 tools/zedlink_manager.py check-routes
 ```
 
-`ZedLink: Set up this project` installs a guarded `~/.local/bin/zed` command for
-the patched build. With it, `zed` opens the configured ZedLink project, `zed .`
-opens the current directory, and `zed path/to/file` opens a file. The installer
-refuses to overwrite an unrelated command or symbolic link. Refresh it with
-`python3 tools/zedlink_manager.py install-cli`; remove only the managed command
-with `python3 tools/zedlink_manager.py remove-cli`.
+Record the failing layer: patched Zed, native bridge, gateway, private route, TLS, pairing, selected target, exposed thread, or client UI.
 
-The model selector proves which model Zed selected, while **Idle** only means no
-turn is running. A reachable `/v1/models` endpoint can still stall during text
-generation. When a turn remains on Generating, inspect Zed's error panel and the
-model server itself before changing the saved model ID or credential.
+## Setup is not configured
 
-### “image input requires a supported vision checkpoint”
-
-This message comes from the model server used by native Zed. It means the current Agent request contains an image, but the selected checkpoint/server does not support image input. ZedLink does not select a different model and cannot make a text-only checkpoint understand images.
-
-An image already stored earlier in the conversation is sent again as part of that thread's history. In that case, later text-only prompts such as “Please resume this” repeat the error even though the new prompt has no attachment.
-
-For a text-only local model:
-
-1. Wait for the native thread to become Idle.
-2. In ZedLink, select **Rewind before image** in the inline error.
-3. Read the removal count and confirm. This removes the first image message and every later conversation item from the same native Zed thread; it cannot be undone from ZedLink.
-4. Send a text-only description of what you want to continue.
-
-If the recovery button is unavailable, restart the updated patched **Zed Dev**, expose the thread again with `/remote-control`, or create a fresh text-only native Agent thread. ZedLink blocks a newly selected image when Zed explicitly reports that the current model does not support images. Some custom providers can report incomplete capability metadata, so the model server remains authoritative.
-
-To use images, select a genuinely vision-capable checkpoint in Zed and configure its model server for image input according to that server's documentation. A `--vision` flag cannot add vision capability to a text-only checkpoint.
-
-### Which Zed should I open?
-
-Remote control requires the patched **Zed Dev** build. Keep the ordinary installed Zed for normal work if desired, but `/remote-control` exists only in the patched window.
-
-The reliable launch path is:
-
-1. Open your Linux application menu.
-2. Search for **ZedLink — Patched Zed** and open it.
-3. Confirm the window title or application identity says **Zed Dev**.
-4. Run **ZedLink: Status**. It must say `Patched Zed bridge: online (separate dev-channel instance)`.
-5. In that same window's Agent composer, type `/remote-control`. Seeing that command and its exposure toast is the final confirmation.
-
-The application launcher is installed at `~/.local/share/applications/dev.zed.Zed-Dev.desktop`. It uses Zed's real dev-channel application ID, which keeps the patched window distinct from official Zed in the dock and application switcher. Run `python3 tools/zedlink_manager.py remove-launcher` if you want to remove it.
-
-The menu launcher detaches Zed from the desktop activation process and records startup output privately at `~/.local/state/zedlink/patched-zed-launcher.log`. If the window does not appear, inspect that file and run **ZedLink: Status**. Re-running **ZedLink: Install patched Zed launcher** safely refreshes the entry after moving or updating this repository.
-
-On this workstation the patched executable and managed command are:
-
-```text
-Patched:   /home/you/Documents/projects/zedlink/zed-source/target/debug/zed
-Command:   /home/you/.local/bin/zed
-```
-
-After ZedLink installs the managed command, both `zed` and **ZedLink — Patched
-Zed** start the patched dev-channel build. If an official Zed installer later
-replaces `~/.local/bin/zed`, run `python3 tools/zedlink_manager.py install-cli`;
-the ownership check will explain the conflict instead of silently replacing it.
-
-### The browser says Zed is unavailable
-
-Check, in order:
-
-1. Patched Zed is still open.
-2. The desired thread was exposed with `/remote-control`.
-3. **ZedLink: Status** reports the native socket online.
-4. The gateway terminal is still running.
-
-The Sessions screen keeps **+ New** visible while Zed is unavailable, but disables it until the patched bridge reconnects. After starting patched Zed, refresh Sessions; the control enables when `thread.create` is advertised.
-
-### Safari says server not found
-
-1. Connect Tailscale on the iPhone.
-2. Enable **Use Tailscale DNS settings**.
-3. Confirm the phone is on the same tailnet.
-4. Reopen the exact configured HTTPS hostname and port.
-
-### Safari displays a certificate warning
-
-Do not continue through the warning. Confirm:
-
-- the URL hostname matches the certificate,
-- the certificate is current,
-- the gateway is using the matching certificate and key,
-- the phone's date and time are correct.
-
-### A browser asks to pair again
-
-Use a normal browser window rather than private or incognito mode. Pairing is scoped to the exact HTTPS origin, including its hostname and port. Changing either creates a different browser origin. Browser policies that clear site data on exit also remove the saved credential.
-
-Open **Connections → Saved addresses** and return to the hostname previously used by that browser. iOS and Android native clients can instead edit or scan the new address and choose **Save new address and reconnect**; they verify that it reports the same Gateway ID before retrieving the existing Keychain or encrypted credential. If the Gateway ID changed, check that the workstation is still using the original ZedLink private state directory.
-
-### The conversation stops updating on a phone
-
-Refresh once to load the latest web build, then reopen the thread. Open **Connections** to identify the failing layer. **Gateway unavailable** points to the phone route, TLS service, or gateway process. **Zed unavailable** means the gateway is reachable but its private native socket is not. **Live updates: Reconnecting** or **Timed out · polling** means HTTPS reconciliation continues while the WebSocket reconnects with bounded backoff. ZedLink reconnects when Safari or Chrome returns to the foreground. If it remains offline, confirm Tailscale is connected and run **ZedLink: Status** on the workstation.
-
-### ZedLink says Idle while the local model is offline
-
-Idle describes the native thread's execution state. The model is contacted only when Zed runs a turn, so ZedLink does not invent a background model-health result. After a native request fails, the browser shows **Request failed** with Zed's native error and preserves it while the thread is idle. Restore the configured model endpoint, then send or retry through Zed's normal Agent path. A later native retry is shown as **Retrying** with its attempt and delay.
-
-### A message may have been sent during a disconnect
-
-ZedLink does not automatically submit a second copy. Recovery controls appear only when delivery is uncertain. **Try again safely** reuses the same request ID so the gateway can deduplicate it.
-
-
-## Remove the global Zed tasks
-
-This removes only task labels beginning with `ZedLink:` and preserves unrelated tasks:
+Run **ZedLink: Configure** or:
 
 ```sh
-cd /home/you/Documents/projects/zedlink
-bash tools/setup_zed_ide.sh --remove-global-tasks
+bash tools/setup_zed_ide.sh
 ```
 
-## A configured task opens a terminal but its command never runs
+If Zed tasks are absent, open the repository as the current worktree and rerun guided setup to install global tasks.
 
-ZedLink asks Zed to run the selected named task through Zed's normal task system. Shell startup customizations can intercept that command. One example is a `.bashrc` rule that replaces every interactive Zed shell with `exec script ...`; the terminal opens and may look active, but the task command never reaches the replacement shell.
+## `/remote-control` is missing
 
-Use a task-specific shell when a task does not need interactive shell setup:
+You are using official Zed, an outdated patched build, or a profile that did not load the integration.
 
-```json
-{
-  "label": "Build project",
-  "command": "make",
-  "shell": { "program": "/bin/sh" }
-}
-```
+1. Save active work and close the incorrect window.
+2. launch **ZedLink — Patched Zed**;
+3. verify the intended project and Agent conversation; and
+4. rebuild with **ZedLink: Install / build** if the command is still absent.
 
-You can also update the shell wrapper so it does not run when `ZED_TERM=true` or `TERM_PROGRAM=zed`. Test the task once from Zed's desktop task picker; ZedLink uses the same native scheduling path and preserves the resulting terminal output and status.
+## Patched Zed shows the wrong model
 
+Stop before sending. ZedLink does not choose the model. Check the selected Zed profile/user-data path and the model selection in desktop Zed. Repair does not change provider keys or model settings.
 
-## Local model rejects input while compaction is enabled
+## Gateway will not start
 
-The model's advertised context window can differ from an input cap enforced by the serving path. An error such as `Input too long (~65580 tokens, max 65536)` is not evidence that the model is offline. Check the effective native model metadata and the server's actual rejection before changing providers.
+Run **ZedLink: Diagnose setup** and check:
 
-Zed's negative compaction threshold means tokens remaining; positive thresholds mean tokens used. For a 131,072-token advertised window and 8,192 output reserve, `-24576` triggers near 98,305 used tokens. An absolute `24576` triggers much earlier and leaves headroom for this serving path. The inspected fork disables automatic compaction below an 80,000-token input capacity, so simply lowering the model window to 65,536 would disable it.
+- the configured private address exists on the host;
+- the port is free;
+- certificate and key paths exist outside the repository;
+- hostname coverage and key permissions pass validation;
+- patched Zed's local socket is available; and
+- the selected route has not changed identity.
 
-Earlier compaction prevents future buildup but cannot repair an already oversized summary request. The experimental summary-only prompt was reverted because it changed compaction behavior for all models. The older global 2,048-token summary output cap was also removed. Native compaction in `crates/agent/src/thread.rs` now matches the pinned upstream revision; ZedLink does not override its prompt or output budget. Resolve the serving-side limit/KV-cache issue before attempting to compact oversized existing history. Personal early-compaction settings remain client configuration, not a global runtime patch.
+Use **Restart gateway** after correcting the cause.
 
-## Android terminal input is hidden by the keyboard
+## Phone can ping but HTTPS times out
 
-If output remains visible but the command field and special-key row disappear when the keyboard opens, that is a layout defect. Check the exact installed version/build and interface revision under **Settings → Help & about**. A fresh browser reload cannot update an APK.
+Ping proves only basic IP reachability. On the phone, verify:
 
-The latest source correction is version 0.2.12 (14) on `test/android-terminal-emulator`: Workspace uses the main activity window instead of a full-screen dialog, renders the local command inline after terminal output instead of in a Command draft box, and hides tabs while its keyboard is open. The updated bridge also resizes the native PTY to the phone grid before later commands run. It still needs compilation and emulator/device verification. Until verified, use the mobile browser as an alternate client and report whether the browser has the same problem. See [mobile build status](Native-Mobile-Apps.md#files-and-terminal).
+1. the VPN is connected to the expected network;
+2. MagicDNS resolves the saved hostname;
+3. the gateway port is reachable;
+4. the browser opens the exact `https://host:port/` origin; and
+5. there is no certificate warning.
 
-## Android dictation cannot record audio
+For Tailscale, run **Check Tailscale Connection** and **Guided Tailscale Repair**. Confirm MagicDNS and HTTPS Certificates are enabled for the tailnet.
 
-First identify whether the error appears in ZedLink or the phone's speech popup. The reported popup failure persisted after granting ZedLink microphone permission; permission alone is not a demonstrated fix.
+## Certificate warning or self-signed certificate
 
-1. Check Android's microphone-access control and whether another app is recording.
-2. Check microphone permission for ZedLink and the configured speech provider.
-3. In a build with the updated dictation controls, explicitly choose **Use on-device recognition instead** or **Use in-app recognition instead**. The latter may use an online provider; read the confirmation before capture.
-4. Test the same provider through another ordinary text field. Report the exact error, device, OS and app build if recording still fails.
+Do not bypass the warning. Replace the certificate with one trusted by the device, or explicitly install and trust the intended private CA according to platform policy. Confirm the certificate hostname matches the saved origin and that the gateway is serving the expected certificate.
 
-The in-app path may share the same provider as the popup, so it is not a guaranteed workaround. Dictation should only fill an editable draft; it must not send a prompt or execute a command automatically. Physical microphone capture cannot be established by a headless emulator layout test.
+## Pair and save is disabled
+
+Complete the endpoint test and identity verification first. A timeout or certificate failure prevents pairing. Generate a fresh one-time challenge after fixing connectivity; do not repeatedly submit an uncertain pairing request.
+
+## QR scan returns to Sessions
+
+Use **Paste pairing link** and preserve the connection draft long enough to read the error. Record app version/build/interface revision, camera permission, Android version, and whether manual paste succeeds. Never attach the live QR or code to an issue.
+
+## Browser asks to pair again
+
+Check whether the HTTPS origin changed, private browsing is active, site data was cleared, or the device was revoked. Pairing is scoped to the exact origin and browser storage.
+
+## Zed or a session is unavailable
+
+Confirm patched Zed remains open, the target selected in the client is online, and the intended conversation is still exposed. Restarting Zed ends the old instance epoch and requires exposure again. ZedLink does not fail over to another target.
+
+## Conversation is stale or opens at the wrong position
+
+Use **Latest**, keep the client foregrounded, and check connection status. Reopen the session after the gateway and native bridge are online. If reconnection occurred during a send, reconcile the request state before retrying.
+
+## Context length or compaction fails
+
+ZedLink invokes Zed's native `/compact` path. A server that advertises a larger context than it actually accepts must be corrected on the inference server. Align the advertised and enforced maximum, then start a short disposable conversation to verify it. ZedLink should display native compaction state but cannot enlarge the model server's limit.
+
+## Image input is rejected
+
+Check desktop attachment permission, size/count limits, file type, and whether the selected model supports image input. Remove the image or switch models in desktop Zed. ZedLink never reroutes a failed image prompt to another model.
+
+## Terminal input is missing or layout is hard to read
+
+1. Check the installed native app version/build/interface revision.
+2. Confirm **View Project Terminals** and **Send Terminal Input** are enabled.
+3. Select the correct terminal and use the keyboard button.
+4. Use **List files one per line** for directory output.
+5. Toggle wrap/original columns or text size.
+6. Compare the phone browser and native app, then report which path fails.
+
+An installed APK does not change when the gateway is rebuilt. Rebuild and reinstall the app for native UI fixes.
+
+## Android dictation says it cannot record
+
+Check ZedLink microphone permission, Android's global microphone switch, the speech provider's permission and enabled status, language support, and whether another app is using the microphone. Try both the device speech popup and the in-app recognition option. This physical-device report remains under investigation; include redacted diagnostics and exact app metadata.
+
+## Native notifications do not arrive in the background
+
+Foreground local alerts depend on live snapshots. APNs and FCM background push are not configured. Apple Watch can mirror an eligible iPhone notification only when iOS delivers it and the phone/watch state allows mirroring.
+
+## Repair and reporting
+
+Use **ZedLink: Repair setup** only after diagnostics. It restores managed integration files and settings without changing the model configuration.
+
+When filing an issue, include commands run, redacted output, revisions, client metadata, device/OS, and the smallest reproduction. Remove all credentials, pairing material, private deployment identities, personal paths, project names, and transcript content.
