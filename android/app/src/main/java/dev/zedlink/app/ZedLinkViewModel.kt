@@ -1,6 +1,7 @@
 package dev.zedlink.app
 
 import android.app.Application
+import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -58,6 +59,7 @@ data class AppState(
     val terminals: List<NativeTerminal> = emptyList(),
     val terminalSnapshot: NativeTerminalSnapshot? = null,
     val terminalInputPending: Boolean = false,
+    val creatingTerminal: Boolean = false,
     val terminalInputUncertain: Boolean = false,
     val terminalDelivery: String = "",
     val terminalAcceptedDraft: String? = null,
@@ -83,10 +85,12 @@ data class AppState(
     val previewError: String = "",
     val contextPaths: Set<String> = emptySet(),
     val contextScope: List<String?> = emptyList(),
+    val attachments: List<PromptImageAttachment> = emptyList(),
+    val supportsImages: Boolean? = null,
 )
 
 internal fun AppState.clearProjectAccess() = copy(
-    contextPaths = emptySet(), contextScope = emptyList(),
+    contextPaths = emptySet(), contextScope = emptyList(), attachments = emptyList(), supportsImages = null,
     projectFiles = emptyList(), projectFilesLoading = false, projectFilesError = "", projectFilesTruncated = false,
     projectFolderEntries = null, projectFolderPath = "", projectFolderLoading = false, projectFolderError = "", projectFolderTruncated = false,
     previewTitle = "", previewContent = "", previewLoading = false, previewReadable = false, previewError = "", previewTruncated = false,
@@ -151,6 +155,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     private var pendingText: String? = null
     private var pendingScope: List<String?>? = null
     private var pendingContextPaths: Set<String> = emptySet()
+    private var pendingAttachments: List<PromptImageAttachment> = emptyList()
     private var pendingLocalConfirmed = false
     private var localConfirmationScope: List<String?>? = null
     private var localConfirmationText = ""
@@ -446,6 +451,23 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         draftStorageKey(state.profile?.gatewayId, state.targetId, state.selectedThreadId)?.let { preferences.edit().putString(it, value).apply() }
     }
 
+    fun reportIssue(message: String) { state = state.copy(issue = message) }
+
+    fun addImage(data: ByteArray) {
+        if ("thread.attachments" !in state.capabilities || state.supportsImages == false) {
+            reportIssue("This thread or model does not support image attachments.")
+            return
+        }
+        if (data.size > 1024 * 1024 || state.attachments.size + state.contextPaths.size >= 8) {
+            reportIssue("Use at most eight attachments, each image up to 1 MiB.")
+            return
+        }
+        state = state.copy(attachments = state.attachments + PromptImageAttachment(
+            name = "image-${state.attachments.size + 1}.jpg", mimeType = "image/jpeg", data = data))
+    }
+
+    fun removeImage(id: String) { state = state.copy(attachments = state.attachments.filterNot { it.id == id }) }
+
     fun insertCommand(command: NativeCommand) = setDraft("/${command.name}${if (command.requiresArgument) " " else ""}")
 
     fun prepareSubagentTask() = setDraft("Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ")
@@ -471,14 +493,14 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(delivery = "Delivery unknown: retry the original request before sending another message.")
             return@launch
         }
-        if (text.isEmpty() || state.sending || !state.live) return@launch
+        if ((text.isEmpty() && state.attachments.isEmpty() && state.contextPaths.isEmpty()) || state.sending || !state.live) return@launch
         val command = state.commands.firstOrNull { "/${it.name}" == text && it.execution == "local" }
         if (command != null && !localConfirmed) {
             localConfirmationText = text
             localConfirmationScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
             state = state.copy(localConfirmation = command); return@launch
         }
-        if (command != null && state.contextPaths.isNotEmpty()) { state = state.copy(issue = "Run local commands without attachments."); return@launch }
+        if (command != null && (state.contextPaths.isNotEmpty() || state.attachments.isNotEmpty())) { state = state.copy(issue = "Run local commands without attachments."); return@launch }
         if (state.contextPaths.isNotEmpty() && scopedAttachments(state.contextPaths, state.contextScope, projectAccessScope(state)).isEmpty()) {
             state = state.copy(contextPaths = emptySet(), contextScope = emptyList(), issue = "Attached files belong to another session. Select files again before sending.")
             return@launch
@@ -487,20 +509,33 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(contextPaths = emptySet(), contextScope = emptyList(), issue = "Prompt attachments are unavailable in this Zed session. Your message was not sent; send it without attachments or enable them in desktop Zed.")
             return@launch
         }
+        if (state.attachments.isNotEmpty() && ("thread.attachments" !in state.capabilities || state.supportsImages == false)) {
+            state = state.copy(issue = "The selected model does not support images. Remove the image or select a supported model.")
+            return@launch
+        }
         pendingLocalConfirmed = localConfirmed
         val requestId = UUID.randomUUID().toString()
         pendingId = requestId; pendingText = text
         pendingScope = listOf(state.profile?.gatewayId, state.targetId, instance, epoch, threadId)
         pendingContextPaths = state.contextPaths.toSet()
+        pendingAttachments = state.attachments.toList()
         state = state.copy(sending = true, delivery = "Sending to native Zed…")
         try {
             val result = activeClient.rpc("thread.send", JSONObject()
                 .put("instance_id", instance).put("epoch", epoch).put("thread_id", threadId).put("text", text)
-                .apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, requestId)
+                .apply {
+                    if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList()))
+                    if (pendingAttachments.isNotEmpty()) put("uploads", JSONArray(pendingAttachments.map { image -> JSONObject()
+                        .put("name", image.name).put("mime_type", image.mimeType)
+                        .put("data", Base64.encodeToString(image.data, Base64.NO_WRAP)) }))
+                    if (pendingLocalConfirmed) put("local_confirmed", true)
+                }, requestId)
             if (!current() || pendingId != requestId) return@launch
             pendingId = null; pendingText = null
             if (state.draft == submittedDraft) setDraft("")
+            val sentImageIds = pendingAttachments.map { it.id }.toSet()
             state = state.copy(sending = false, contextPaths = if (state.contextPaths == pendingContextPaths) emptySet() else state.contextPaths,
+                attachments = state.attachments.filterNot { it.id in sentImageIds },
                 delivery = if (result.optString("outcome") == "queued")
                 "Queued in desktop Zed." else "Received by desktop Zed. Watching native progress.")
             if (result.optString("outcome") == "local_completed" || result.optString("outcome") == "desktop_review_required") {
@@ -534,11 +569,18 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         state = state.copy(sending = true)
         try {
             activeClient.rpc("thread.send", JSONObject().put("instance_id", instance).put("epoch", epoch)
-                .put("thread_id", threadId).put("text", text).apply { if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList())); if (pendingLocalConfirmed) put("local_confirmed", true) }, id)
+                .put("thread_id", threadId).put("text", text).apply {
+                    if (pendingContextPaths.isNotEmpty()) put("context_paths", JSONArray(pendingContextPaths.toList()))
+                    if (pendingAttachments.isNotEmpty()) put("uploads", JSONArray(pendingAttachments.map { image -> JSONObject()
+                        .put("name", image.name).put("mime_type", image.mimeType)
+                        .put("data", Base64.encodeToString(image.data, Base64.NO_WRAP)) }))
+                    if (pendingLocalConfirmed) put("local_confirmed", true)
+                }, id)
             if (!current()) return@launch
             pendingId = null; pendingText = null
             if (state.draft == retryDraft && retryDraft.trim() == text) setDraft("")
-            state = state.copy(sending = false, delivery = "Request reached desktop Zed.")
+            val sentImageIds = pendingAttachments.map { it.id }.toSet()
+            state = state.copy(sending = false, attachments = state.attachments.filterNot { it.id in sentImageIds }, delivery = "Request reached desktop Zed.")
             loadSnapshot(threadId)
         } catch (error: Exception) { if (current()) state = state.copy(sending = false, issue = error.message.orEmpty()) }
     }
@@ -778,6 +820,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         var queued = emptyList<NativeQueueEntry>()
         var review: NativeEditReview? = null
         var settings: NativeThreadSettings? = null
+        var supportsImages = state.supportsImages
         if ("thread.elicitations" in state.capabilities) {
             val result = activeClient.rpc("thread.elicitations", JSONObject(base.toString()))
             if (!current()) return
@@ -824,6 +867,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             if (!current()) return
             val selected = result.optJSONObject("model")
             val usage = result.optJSONObject("context_usage")
+            supportsImages = if (result.isNull("supports_images")) null else result.optBoolean("supports_images")
             settings = NativeThreadSettings(selected?.optString("id"), selected?.optString("provider_id"),
                 result.optJSONArray("models").objects().mapNotNull { row ->
                     val modelId = row.optString("id"); val providerId = row.optString("provider_id")
@@ -833,7 +877,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     val profileId = row.optString("id"); if (profileId.isBlank()) null else NativeAgentProfile(profileId, row.optString("name", profileId))
                 }, if (result.isNull("thinking_enabled")) null else result.optBoolean("thinking_enabled"), result.optBoolean("thinking_supported"), result.optBoolean("thinking_can_disable"))
         }
-        if (current()) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review, threadSettings = settings)
+        if (current()) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review,
+            threadSettings = settings, supportsImages = supportsImages)
     }
 
     fun respondElicitation(item: NativeElicitation, action: String, content: JSONObject = JSONObject()) = viewModelScope.launch {
@@ -1013,6 +1058,41 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
     }
     private fun terminalRecoveryKey() = "terminal.${state.profile?.gatewayId}.${state.targetId}.${state.instanceId}.${state.epoch}"
     private var requestedTerminalId: String? = null
+    private var requestedTerminalSize: Triple<String, Int, Int>? = null
+    fun createTerminal() = viewModelScope.launch {
+        val transport = client ?: return@launch
+        val thread = state.selectedThreadId ?: return@launch
+        if (!state.live || state.creatingTerminal || "terminal.create" !in state.capabilities) return@launch
+        val scope = projectAccessScope(state)
+        val receiptKey = "terminal-create.${scope.joinToString(".")}"
+        val requestId = preferences.getString(receiptKey, null) ?: UUID.randomUUID().toString()
+        state = state.copy(creatingTerminal = true)
+        try {
+            val saved = withContext(Dispatchers.IO) { preferences.edit().putString(receiptKey, requestId).commit() }
+            if (!saved) throw GatewayException("Cannot save terminal creation receipt. Nothing was sent.")
+            val params = JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch).put("thread_id", thread)
+            repeat(10) {
+                if (scope != projectAccessScope(state) || transport !== client || !state.live || "terminal.create" !in state.capabilities) return@launch
+                val result = transport.rpc("terminal.create", params, requestId)
+                if (scope != projectAccessScope(state) || transport !== client) return@launch
+                if (result.optString("outcome") == "ready") {
+                    val terminal = result.optJSONObject("terminal")?.let(::decodeTerminal)
+                        ?: throw GatewayException("Invalid terminal creation response. Check desktop Zed.")
+                    state = state.copy(terminals = state.terminals.filterNot { it.id == terminal.id } + terminal)
+                    loadTerminal(terminal).join()
+                    preferences.edit().remove(receiptKey).apply()
+                    return@launch
+                }
+                if (result.optString("outcome") != "pending") throw GatewayException("Terminal creation result is unknown. Check desktop Zed.")
+                delay(500)
+            }
+            state = state.copy(issue = "Terminal is still starting. Tap New terminal again to check the same request.")
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            if (scope == projectAccessScope(state)) state = state.copy(issue = "${error.message.orEmpty()} New terminal will check the same request; it will not create a duplicate.")
+        } finally { state = state.copy(creatingTerminal = false) }
+    }
+
     fun loadTerminal(terminal: NativeTerminal, refresh: Boolean = false): Job = viewModelScope.launch {
         if (refresh && requestedTerminalId != terminal.id) return@launch
         if (!refresh) {
@@ -1059,8 +1139,12 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                         if (terminalDraftKey(state) == draftKey) state = state.copy(terminalDelivery = "Input not sent. Reconnect or check device storage.", issue = "Input not sent. Your draft is retained.")
                         return@withLock false
                     }
-                    val accepted = transport.rpc("terminal.input", JSONObject().put("instance_id", instance).put("epoch", epoch)
-                        .put("terminal_id", terminal.id).put("input", if (appendReturn) "$input\r" else input), UUID.randomUUID().toString())
+                    val params = JSONObject().put("instance_id", instance).put("epoch", epoch)
+                        .put("terminal_id", terminal.id).put("input", if (appendReturn) "$input\r" else input)
+                    requestedTerminalSize?.takeIf { it.first == terminal.id }?.let { size ->
+                        params.put("columns", size.second).put("rows", size.third)
+                    }
+                    val accepted = transport.rpc("terminal.input", params, UUID.randomUUID().toString())
                     if (accepted.optString("outcome") != "accepted") throw GatewayException("Zed did not confirm terminal input.")
                     val savedDraft = terminalPreferences.getString(draftKey, "")
                     terminalPreferences.edit().remove("delivery.$draftKey").apply {
@@ -1098,6 +1182,28 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
         terminalPreferences.edit().remove("delivery.${terminalDraftKey(state)}").apply()
         state = state.copy(terminalInputUncertain = false, terminalDelivery = "Previous input reviewed. Nothing was resent.",
             issue = if (state.issue.startsWith("Terminal delivery unknown.")) "" else state.issue)
+    }
+    fun resizeTerminal(columns: Int, rows: Int) = viewModelScope.launch {
+        val terminal = state.terminalSnapshot?.terminal ?: return@launch
+        val transport = client ?: return@launch
+        val safeColumns = columns.coerceIn(24, 120)
+        val safeRows = rows.coerceIn(8, 80)
+        val requested = Triple(terminal.id, safeColumns, safeRows)
+        if (!state.live || "terminal.resize" !in state.capabilities || requestedTerminalSize == requested) return@launch
+        requestedTerminalSize = requested
+        val scope = listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, terminal.id)
+        try {
+            transport.rpc("terminal.resize", JSONObject().put("instance_id", state.instanceId).put("epoch", state.epoch)
+                .put("terminal_id", terminal.id).put("columns", safeColumns).put("rows", safeRows), UUID.randomUUID().toString())
+            if (transport === client && scope == listOf(state.profile?.gatewayId, state.targetId, state.instanceId, state.epoch, state.terminalSnapshot?.terminal?.id)) {
+                delay(100)
+                loadTerminal(terminal, refresh = true)
+            }
+        } catch (error: Exception) {
+            if ((error as? GatewayException)?.code == "UNSUPPORTED_CAPABILITY") {
+                state = state.copy(capabilities = state.capabilities - "terminal.resize")
+            } else if (transport === client) state = state.copy(issue = "Could not fit the terminal to this screen: ${error.message.orEmpty()}")
+        }
     }
     fun stopTerminalTask() = viewModelScope.launch {
         val terminal = state.terminalSnapshot?.terminal ?: return@launch

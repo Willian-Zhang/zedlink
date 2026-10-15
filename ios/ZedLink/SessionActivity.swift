@@ -3,18 +3,19 @@ import Combine
 
 enum SessionActivity: String, CaseIterable {
     case approval = "Approval needed", input = "Input needed", failed = "Request failed"
-    case retrying = "Retrying", generating = "Generating", ready = "Ready", unknown = "Unknown"
+    case retrying = "Retrying", compacting = "Compacting context", generating = "Working", ready = "Ready", unknown = "Unknown"
     init(_ thread: NativeThread) {
-        if (thread.approvalCount ?? 0) > 0 { self = .approval }
+        if (thread.approvalCount ?? 0) > 0 || thread.activity.isWaitingForApproval { self = .approval }
         else if (thread.inputCount ?? 0) > 0 { self = .input }
         else if thread.retrying { self = .retrying }
+        else if thread.activity.isCompacting { self = .compacting }
         else if thread.status == "Idle" && thread.failed { self = .failed }
-        else if thread.status == "Generating" { self = .generating }
+        else if thread.activity.isWorking || thread.status == "Generating" { self = .generating }
         else if thread.status == "Idle" { self = .ready }
         else { self = .unknown }
     }
     var attention: Bool { [.approval, .input, .failed].contains(self) }
-    var running: Bool { [.generating, .retrying].contains(self) }
+    var running: Bool { [.compacting, .generating, .retrying].contains(self) }
     var group: String { attention ? "Needs attention" : running ? "Running" : "Ready & other" }
 }
 
@@ -39,7 +40,7 @@ enum SessionActivity: String, CaseIterable {
         for thread in threads {
             let key = Self.key(profile: profile, target: target, thread: thread.id)
             if let previous = signatures[key], selected != thread.id,
-               previous.status != thread.status || previous.currentTurnID != thread.currentTurnID || previous.retrying != thread.retrying || previous.failed != thread.failed ||
+               previous.status != thread.status || previous.currentTurnID != thread.currentTurnID || previous.activity != thread.activity || previous.retrying != thread.retrying || previous.failed != thread.failed ||
                 (previous.approvalCount != nil && thread.approvalCount != nil && previous.approvalCount != thread.approvalCount) ||
                 (previous.inputCount != nil && thread.inputCount != nil && previous.inputCount != thread.inputCount) { updated.insert(key) }
             signatures[key] = thread

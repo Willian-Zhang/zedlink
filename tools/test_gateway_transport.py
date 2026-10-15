@@ -56,6 +56,7 @@ class ProbeFixture:
         self.activity_truncated = False
         self.transcript_page_size = None
         self.active_turn_id = None
+        self.activity = {"phase": "idle", "label": "Ready", "detail": None}
         self.agent_error = None
         self.image_recovery = None
         self.retry_status = None
@@ -100,6 +101,7 @@ class ProbeFixture:
         ]
         self.change_operations = {}
         self.terminal_inputs = {}
+        self.terminal_creations = {}
         self.clipboard = "remote fixture 🧪"
         self.clipboard_writes = []
         self.task_stops = {}
@@ -138,6 +140,7 @@ class ProbeFixture:
                                 "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"},
                                 "status": "Generating" if self.active_turn_id is not None else "Idle",
                                 "current_turn_id": self.active_turn_id,
+                                "activity": self.activity,
                                 "had_error": self.agent_error is not None,
                                 "agent_error": self.agent_error,
                                 "retry_status": self.retry_status}] if self.exposed_primary else [])
@@ -197,6 +200,7 @@ class ProbeFixture:
                                         else "Synthetic test thread"),
                               "status": "Generating" if self.active_turn_id is not None else "Idle",
                               "current_turn_id": self.active_turn_id, "truncated": self.truncated,
+                              "activity": self.activity,
                               "had_error": self.agent_error is not None,
                               "agent_error": self.agent_error, "retry_status": self.retry_status,
                               "image_recovery": self.image_recovery,
@@ -229,7 +233,8 @@ class ProbeFixture:
                 elif method == "thread.events":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "thread_id": params["thread_id"],
-                              "events": [{"sequence": self.sequence, "kind": "entry.added"}]
+                              "events": [{"sequence": self.sequence, "kind": "entry.added",
+                                          "activity": self.activity}]
                               if params["after_sequence"] < self.sequence else [],
                               "last_sequence": self.sequence}
                 elif method == "thread.commands":
@@ -288,6 +293,14 @@ class ProbeFixture:
                 elif method == "thread.edit_review.respond":
                     self.edit_review_responses.append(params["action"]); self.edit_review = None
                     result = {"thread_id": params["thread_id"], "outcome": "requested", "action": params["action"]}
+                elif method == "terminal.create":
+                    digest = json.dumps(params, sort_keys=True)
+                    previous = self.terminal_creations.get(request["request_id"])
+                    if previous and previous[0] != digest:
+                        raise ValueError("REQUEST_ID_CONFLICT")
+                    if not previous:
+                        self.terminal_creations[request["request_id"]] = (digest, "fixture-created-" + str(len(self.terminal_creations)))
+                    result = {"outcome": "ready", "terminal": {"terminal_id": self.terminal_creations[request["request_id"]][1], "title": "Disposable shell"}}
                 elif method == "terminal.list":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "terminals": [
                         {"terminal_id": "fixture-terminal", "title": "ZedLink fixture task",
@@ -320,6 +333,9 @@ class ProbeFixture:
                     else:
                         self.terminal_inputs[request["request_id"]] = payload
                         result = {"outcome": "accepted", "duplicate": duplicate}
+                elif method == "terminal.resize":
+                    result = {"outcome": "accepted", "duplicate": False,
+                              "columns": params["columns"], "rows": params["rows"]}
                 elif method == "task.list":
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "tasks": [
                         {"terminal_id": "fixture-terminal", "task_id": "fixture-task",
@@ -532,7 +548,7 @@ class ProbeFixture:
                                                "thread.rewind",
                                                "thread.approvals", "approval.respond", "project.files", "project.directory",
                                                "project.file", "project.search", "changes.snapshot", "changes.diff",
-                                               "terminal.list", "terminal.snapshot", "terminal.input", "clipboard.read", "clipboard.write", "task.list", "task.stop",
+                                               "terminal.list", "terminal.snapshot", "terminal.input", "terminal.create", "terminal.resize", "clipboard.read", "clipboard.write", "task.list", "task.stop",
                                                "task.catalog", "task.run", "debugger.catalog", "debugger.launch", "debugger.snapshot", "debugger.control",
                                                "changes.stage", "changes.unstage", "request.status"]}
                 else:
@@ -765,6 +781,12 @@ def main():
                              "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}}
             status, terminal_listing = http(base, context, "/v1/rpc", "POST", terminal_list, token1)
             assert status == 200 and terminal_listing["result"]["terminals"][0]["terminal_id"] == "fixture-terminal"
+            creation_request = {"version": 1, "request_id": "terminal-create", "method": "terminal.create",
+                                "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch", "thread_id": "fixture-thread"}}
+            status, created_terminal = http(base, context, "/v1/rpc", "POST", creation_request, token1)
+            assert status == 200 and created_terminal["result"]["outcome"] == "ready"
+            status, duplicate_terminal = http(base, context, "/v1/rpc", "POST", creation_request, token1)
+            assert status == 200 and duplicate_terminal["result"] == created_terminal["result"]
             terminal_snapshot = {"version": 1, "request_id": "terminal-snapshot", "method": "terminal.snapshot",
                                  "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                                             "terminal_id": "fixture-terminal"}}
@@ -772,11 +794,17 @@ def main():
             assert status == 200 and "ready" in snapshot_result["result"]["content"]
             terminal_input = {"version": 1, "request_id": "terminal-input", "method": "terminal.input",
                               "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
-                                         "terminal_id": "fixture-terminal", "input": "status\n"}}
+                                         "terminal_id": "fixture-terminal", "input": "status\n",
+                                         "columns": 42, "rows": 24}}
             for duplicate in (False, True):
                 status, input_result = http(base, context, "/v1/rpc", "POST", terminal_input, token1)
                 assert status == 200 and input_result["result"]["duplicate"] is duplicate
             assert len(probe.terminal_inputs) == 1
+            terminal_resize = {"version": 1, "request_id": "terminal-resize", "method": "terminal.resize",
+                               "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                                          "terminal_id": "fixture-terminal", "columns": 42, "rows": 24}}
+            status, resize_result = http(base, context, "/v1/rpc", "POST", terminal_resize, token1)
+            assert status == 200 and resize_result["result"]["columns"] == 42
             task_list = {"version": 1, "request_id": "task-list", "method": "task.list", "params": {}}
             status, task_result = http(base, context, "/v1/rpc", "POST", task_list, token1)
             assert status == 200 and task_result["result"]["tasks"][0]["status"]["state"] == "running"
@@ -855,6 +883,8 @@ def main():
                                    {"code": code2, "device_name": "fixture two"})
             assert status == 200
             token2 = device2["token"]
+            status, other_device_terminal = http(base, context, "/v1/rpc", "POST", creation_request, token2)
+            assert status == 200 and other_device_terminal["result"]["terminal"]["terminal_id"] != created_terminal["result"]["terminal"]["terminal_id"]
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token2)
             assert status == 200 and not response["result"]["known"]
             status, _ = http(base, context, "/v1/rpc", "POST", sent, token2)
@@ -892,12 +922,17 @@ def main():
             assert restarted["gateway_id"] == info["gateway_id"]
             status, response = http(base, context, "/v1/rpc", "POST", sent, token2)
             assert status == 200 and response["request_id"] == "stable-send" and probe.accepted == 2
+            probe.activity = {"phase": "compacting", "label": "Compacting context",
+                              "detail": "Zed is summarizing earlier conversation history"}
+            probe.sequence += 1
             websocket_url = f"wss://localhost:{port}/v1/events?thread_id=fixture-thread"
             with connect(websocket_url, ssl=context,
                          additional_headers={"Authorization": "Bearer " + token2},
                          open_timeout=5, close_timeout=2) as websocket:
                 event = json.loads(websocket.recv(timeout=5))
                 assert event["result"]["thread_id"] == "fixture-thread"
+                activities = [row.get("activity") for row in event["result"]["events"]]
+                assert any(row and row["phase"] == "compacting" for row in activities)
                 assert admin(state, "revoke", device2["device_id"])["revoked"]
                 try:
                     websocket.recv(timeout=3)
@@ -946,7 +981,7 @@ def main():
                     raise
                 assert "Choose a session" not in browser.page_source
                 assert browser.find_element(By.ID, "thread-count").text == "1"
-                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == "2026.10.13.17"
+                assert browser.find_element(By.ID, "ui-build").get_attribute("textContent") == re.search(r'const UI_BUILD = "([^"\n]+)";', (ROOT / "gateway/web/app.js").read_text()).group(1)
                 assert base in browser.find_element(By.ID, "gateway-route-addresses").get_attribute("textContent")
                 selected_target = browser.find_element(By.ID, "target-select").get_attribute("value")
                 if selected_target != "primary":
@@ -1738,7 +1773,7 @@ def main():
                 )
                 terminal_helper = subprocess.run(
                     ["python3", str(ROOT / "tools/pair_phone.py"), base, str(state),
-                     "--mode", "terminal"],
+                     "--mode", "terminal", "--no-open"],
                     capture_output=True, text=True, check=True, timeout=5,
                 )
                 assert "ZedLink private device pairing" in terminal_helper.stdout
@@ -1760,11 +1795,11 @@ def main():
                 os.chmod(manager_config / "config.json", 0o600)
                 manager_pairing = subprocess.run(
                     ["python3", str(ROOT / "tools/zedlink_manager.py"), "pair-primary-terminal"],
-                    env={**os.environ, "XDG_CONFIG_HOME": str(manager_config.parent)},
+                    env={**os.environ, "DISPLAY": "", "XDG_CONFIG_HOME": str(manager_config.parent)},
                     capture_output=True, text=True, check=False, timeout=10,
                 )
                 assert manager_pairing.returncode == 0, manager_pairing.stderr
-                assert "One-time code:" in manager_pairing.stdout and "\x1b[47m" in manager_pairing.stdout
+                assert "One-time code:" in manager_pairing.stdout and "\x1b[0;38;2;0;0;0;48;2;255;255;255m" in manager_pairing.stdout
                 assert "Private pairing page:" not in manager_pairing.stdout
                 helper = subprocess.run(["python3", str(ROOT / "tools/pair_phone.py"), base,
                                          str(state), "--mode", "browser", "--no-open"],

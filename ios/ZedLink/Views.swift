@@ -177,14 +177,17 @@ private struct SessionRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var activity: SessionActivity { SessionActivity(thread) }
     private var tint: Color { activity.attention ? ZLTheme.warning : activity.running ? ZLTheme.focus : ZLTheme.muted }
+    private var activityLabel: String {
+        activity.running && thread.activity.isWorking ? thread.activity.displayText : activity.rawValue
+    }
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: activity.attention ? "exclamationmark.circle" : activity.running ? "waveform" : "bubble.left")
+            Image(systemName: activity.attention ? "exclamationmark.circle" : thread.activity.isCompacting ? "arrow.triangle.2.circlepath" : activity.running ? "waveform" : "bubble.left")
                 .symbolEffect(.variableColor, isActive: live && activity.running && !reduceMotion)
                 .foregroundStyle(tint).frame(width: 20)
             VStack(alignment: .leading, spacing: 5) {
                 Text(thread.title).font(.body.weight(.medium)).foregroundStyle(ZLTheme.ink).lineLimit(2)
-                Text(thread.agentName + " · " + (live ? "" : "Last known: ") + activity.rawValue +
+                Text(thread.agentName + " · " + (live ? "" : "Last known: ") + activityLabel +
                      (activity == .approval ? " (\(thread.approvalCount ?? 0))" : activity == .input ? " (\(thread.inputCount ?? 0))" : ""))
                     .font(.caption).foregroundStyle(tint)
                 if updated { Text("New activity").font(.caption2).foregroundStyle(ZLTheme.focus) }
@@ -215,6 +218,9 @@ struct ConversationView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var proposedTitle = ""
     @State private var rewindPoint: NativeRewindPoint?
+    @State private var composerPhoto: PhotosPickerItem?
+    @State private var imageToReview: UIImage?
+    @State private var editingAttachmentID: UUID?
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -257,12 +263,32 @@ struct ConversationView: View {
             if let id = selectedChildID { SubagentReader(childID: id) }
         }
         .sheet(isPresented: $showingCommands) { CommandPicker() }
+        .sheet(isPresented: Binding(get: { imageToReview != nil }, set: { if !$0 { imageToReview = nil; editingAttachmentID = nil } })) {
+            if let imageToReview {
+                ImageAnnotationView(image: imageToReview, cancel: { self.imageToReview = nil; editingAttachmentID = nil }) { data in
+                    if let editingAttachmentID, let index = session.attachments.firstIndex(where: { $0.id == editingAttachmentID }) {
+                        session.attachments[index] = PromptAttachment(name: session.attachments[index].name, mimeType: "image/jpeg", data: data)
+                    } else { session.addImage(data) }
+                    self.imageToReview = nil; editingAttachmentID = nil
+                }
+            }
+        }
         .sheet(isPresented: $showingModelControls) { SessionModelControls() }
         .confirmationDialog("Run desktop action?", isPresented: Binding(get: { session.localCommandConfirmation != nil }, set: { if !$0 { session.localCommandConfirmation = nil } })) {
             Button("Run /" + (session.localCommandConfirmation?.name ?? "")) { Task { await session.confirmLocalCommand() } }
         } message: { Text(session.localCommandConfirmation?.confirmation ?? "Confirm this desktop action.") }
         .onChange(of: session.localExposureStopped) { _, stopped in if stopped { dismiss() } }
         .sheet(isPresented: $showingContext) { NativeContextSheet() }
+        .task(id: composerPhoto) {
+            guard let composerPhoto else { return }
+            let scope = session.operationScope
+            do {
+                guard let raw = try await composerPhoto.loadTransferable(type: Data.self),
+                      let image = UIImage(data: raw), scope == session.operationScope else { return }
+                imageToReview = image
+            } catch { if scope == session.operationScope { session.reportIssue("Image unavailable: " + error.localizedDescription) } }
+            self.composerPhoto = nil
+        }
         .confirmationDialog("Clear uncertain delivery?", isPresented: $showingClearConfirmation) {
             Button("Clear locally", role: .destructive) { session.clearPending() }
         } message: {
@@ -470,7 +496,10 @@ struct ConversationView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         ForEach(session.attachments) { image in
-                            Button { session.attachments.removeAll { $0.id == image.id } } label: { Label(image.name, systemImage: "xmark.circle") }
+                            Menu {
+                                Button("Annotate") { editingAttachmentID = image.id; imageToReview = UIImage(data: image.data) }
+                                Button("Remove", role: .destructive) { session.attachments.removeAll { $0.id == image.id } }
+                            } label: { Label(image.name, systemImage: "photo") }
                         }
                         ForEach(Array(session.contextPaths).sorted(), id: \.self) { path in
                             Button { session.contextPaths.remove(path) } label: { Label(path, systemImage: "xmark.circle") }
@@ -498,6 +527,12 @@ struct ConversationView: View {
                 .foregroundStyle(.primary)
                 .accessibilityLabel("Zed Agent actions and commands")
 
+                PhotosPicker(selection: $composerPhoto, matching: .images) {
+                    Image(systemName: "photo.badge.plus").font(.title3).frame(width: 44, height: 44)
+                }
+                .disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
+                .accessibilityLabel("Attach or annotate image")
+
                 TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
                     .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
                     .focused($composerFocused)
@@ -508,12 +543,16 @@ struct ConversationView: View {
 
                 VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
                 if session.canCancel {
-                    Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
-                        Image(systemName: "stop.fill").font(.headline).frame(width: 42, height: 42)
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.small).tint(ZLTheme.focus)
+                            .accessibilityLabel(session.liveActivity.displayText)
+                        Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
+                            Image(systemName: "stop.fill").font(.headline).frame(width: 42, height: 42)
+                        }
+                        .foregroundStyle(.white).background(ZLTheme.danger)
+                        .clipShape(Circle())
+                        .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
                     }
-                    .foregroundStyle(.white).background(ZLTheme.danger)
-                    .clipShape(Circle())
-                    .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
                 } else {
                     Button { sendAndDismissKeyboard() } label: {
                         Image(systemName: "arrow.up").font(.headline).frame(width: 42, height: 42)
@@ -533,23 +572,17 @@ struct ConversationView: View {
         .overlay(alignment: .top) { Hairline() }
     }
 
-    private func agentProgress(_ snapshot: ThreadSnapshot) -> some View {
+    private func agentProgress(_ _: ThreadSnapshot) -> some View {
         HStack(spacing: 8) {
-            if session.state == .live { ProgressView().controlSize(.mini).tint(ZLTheme.focus) }
-            else { Image(systemName: "pause.circle").foregroundStyle(ZLTheme.warning) }
-            Text(session.state == .live ? progressDetail(snapshot.status) : "Last known: " + snapshot.status).font(.caption).foregroundStyle(ZLTheme.muted)
+            Image(systemName: session.state != .live ? "pause.circle" : session.liveActivity.isCompacting ? "arrow.triangle.2.circlepath" : "waveform")
+                .foregroundStyle(session.state == .live ? ZLTheme.focus : ZLTheme.warning)
+            Text(session.state == .live ? session.liveActivity.displayText : "Last known: " + session.liveActivity.displayText)
+                .font(.caption).foregroundStyle(ZLTheme.muted)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("agent-working-indicator")
-    }
-
-    private func progressDetail(_ status: String) -> String {
-        if status.localizedCaseInsensitiveContains("generat") { return "Generating in desktop Zed" }
-        if status.localizedCaseInsensitiveContains("tool") || status.localizedCaseInsensitiveContains("run") { return "Running native tools" }
-        if status.localizedCaseInsensitiveContains("wait") || status.localizedCaseInsensitiveContains("queue") { return "Waiting in desktop Zed" }
-        return "\(status) in desktop Zed"
     }
 
     private func sendAndDismissKeyboard() {
@@ -751,6 +784,7 @@ private struct IndexedTranscriptEntry: Identifiable {
 }
 
 private struct ActivityPanel: View {
+    @EnvironmentObject private var session: SessionManager
     let snapshot: ThreadSnapshot
     @Binding var expanded: Bool
 
@@ -766,7 +800,7 @@ private struct ActivityPanel: View {
                 HStack(spacing: 8) {
                     Image(systemName: snapshot.isBusy ? "waveform" : "clock.arrow.circlepath")
                         .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.muted)
-                    Text(snapshot.isBusy ? "Zed is working" : "Recent activity").font(.subheadline.weight(.semibold))
+                    Text(snapshot.isBusy ? session.liveActivity.displayText : "Recent activity").font(.subheadline.weight(.semibold))
                     Spacer()
                     Text(snapshot.isBusy ? "LIVE" : "DONE").font(.caption2.monospaced())
                         .foregroundStyle(snapshot.isBusy ? ZLTheme.focus : ZLTheme.muted)
@@ -1011,6 +1045,7 @@ private struct CommandPicker: View {
     @State private var photo: PhotosPickerItem?
     @State private var loadingPhoto = false
     @State private var showingClipboard = false
+    @State private var imageToReview: UIImage?
 
     private var commands: [NativeCommand] {
         guard !search.isEmpty else { return session.commands }
@@ -1025,9 +1060,8 @@ private struct CommandPicker: View {
                     PhotosPicker(selection: $photo, matching: .images) { Label("Attach photo", systemImage: "photo") }
                         .disabled(loadingPhoto || !session.capabilities.contains("thread.attachments") || session.supportsImages == false)
                     Button("Paste image", systemImage: "doc.on.clipboard") {
-                        let scope = session.operationScope
-                        guard let image = UIPasteboard.general.image, let data = promptJPEG(image) else { session.reportIssue("Clipboard does not contain a supported image."); return }
-                        if scope == session.operationScope { session.addImage(data) }; dismiss()
+                        guard let image = UIPasteboard.general.image else { session.reportIssue("Clipboard does not contain a supported image."); return }
+                        imageToReview = image
                     }.disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
                     if loadingPhoto { ProgressView("Preparing image…") }
                 }
@@ -1077,10 +1111,10 @@ private struct CommandPicker: View {
                 do {
                     let raw = try await photo.loadTransferable(type: Data.self)
                     guard !Task.isCancelled, scope == session.operationScope else { return }
-                    guard let raw, let image = UIImage(data: raw), let data = promptJPEG(image) else {
-                        session.reportIssue("This image could not be prepared within the 1 MiB upload limit."); dismiss(); return
+                    guard let raw, let image = UIImage(data: raw) else {
+                        session.reportIssue("This image could not be opened."); return
                     }
-                    session.addImage(data); dismiss()
+                    imageToReview = image
                 } catch { if scope == session.operationScope { session.reportIssue("Image unavailable: " + error.localizedDescription) } }
             }
             .navigationTitle("Agent commands")
@@ -1088,6 +1122,13 @@ private struct CommandPicker: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
         .sheet(isPresented: $showingClipboard) { RemoteClipboardView(destination: "prompt") { session.draft = $0 } }
+        .sheet(isPresented: Binding(get: { imageToReview != nil }, set: { if !$0 { imageToReview = nil } })) {
+            if let imageToReview {
+                ImageAnnotationView(image: imageToReview, cancel: { self.imageToReview = nil }) { data in
+                    session.addImage(data); self.imageToReview = nil; dismiss()
+                }
+            }
+        }
         .presentationDetents([.medium, .large])
     }
 }
@@ -1118,10 +1159,23 @@ private struct NativeTerminalScreen: View {
                 if !embedded { SessionIssueBanner() }
                 HStack {
                     Menu {
-                        ForEach(session.terminals) { terminal in
-                            Button(terminal.title) { keyboardFocused = false; Task { await session.loadTerminal(terminal) } }
+                        ForEach(Array(session.terminals.enumerated()), id: \.element.id) { index, terminal in
+                            Button {
+                                keyboardFocused = false
+                                Task { await session.loadTerminal(terminal) }
+                            } label: {
+                                Label("\(index + 1). \(terminal.title)", systemImage: session.terminalSnapshot?.terminal.id == terminal.id ? "checkmark" : "terminal")
+                            }
                         }
-                    } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }.disabled(sending)
+                    } label: { Text(session.terminalSnapshot?.terminal.title ?? "Choose terminal").lineLimit(1) }.disabled(sending || session.creatingTerminal)
+                    Button {
+                        keyboardFocused = false
+                        Task { await session.createTerminal() }
+                    } label: {
+                        if session.creatingTerminal { ProgressView() }
+                        else { Image(systemName: "plus").frame(width: 44, height: 44) }
+                    }.accessibilityLabel("New terminal")
+                        .disabled(session.creatingTerminal || session.state != .live || !session.capabilities.contains("terminal.create"))
                     Menu {
                         Toggle("Wrap output", isOn: $wrapOutput)
                         if session.capabilities.contains("task.catalog") {
@@ -1142,11 +1196,21 @@ private struct NativeTerminalScreen: View {
                         Button("Stop", role: .destructive) { Task { await session.stopTerminalTask() } }.font(.caption)
                     }
                 }.padding(10)
+                GeometryReader { geometry in
                 ScrollViewReader { reader in
                 ScrollView(wrapOutput ? .vertical : [.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 0) {
                     if session.terminalSnapshot == nil {
-                        ContentUnavailableView("No terminal selected", systemImage: "terminal", description: Text(session.capabilities.contains("terminal.list") ? "Open a terminal in desktop Zed or select one above." : "Enable View Project Terminals in desktop ZedLink settings."))
+                        ContentUnavailableView {
+                            Label("No terminal selected", systemImage: "terminal")
+                        } description: {
+                            Text(session.capabilities.contains("terminal.create") ? "Start a terminal in this Zed workspace." : "Open one in desktop Zed. Remote creation requires an updated bridge and terminal viewing/input permissions.")
+                        } actions: {
+                            if session.capabilities.contains("terminal.create") {
+                                Button(session.creatingTerminal ? "Starting terminal…" : "New terminal") { Task { await session.createTerminal() } }
+                                    .disabled(session.creatingTerminal || session.state != .live)
+                            }
+                        }
                     }
                     terminalText(session.terminalSnapshot)
                         .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
@@ -1158,6 +1222,12 @@ private struct NativeTerminalScreen: View {
                     .simultaneousGesture(DragGesture().onChanged { _ in followOutput = false })
                 .onChange(of: session.terminalSnapshot?.content) { _, _ in if followOutput { reader.scrollTo("terminal-bottom", anchor: .bottom) } }
                 .onChange(of: followOutput) { _, follow in if follow { reader.scrollTo("terminal-bottom", anchor: .bottom) } }
+                }
+                .task(id: "\(session.terminalSnapshot?.terminal.id ?? ""):\(Int(geometry.size.width)):\(Int(geometry.size.height))") {
+                    let columns = min(max(Int((geometry.size.width - 20) / 7.3), 24), 120)
+                    let rows = min(max(Int((geometry.size.height - 20) / 16), 8), 80)
+                    await session.resizeTerminal(columns: columns, rows: rows)
+                }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
                 if session.capabilities.contains("terminal.input") {
                     ScrollView(.horizontal, showsIndicators: false) {

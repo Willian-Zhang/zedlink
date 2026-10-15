@@ -10,7 +10,7 @@ Light mode uses adaptive text/accent colors; the terminal preserves a black surf
 
 Files support filename filtering, native project-content search, and searching inside the selected file. The code/diff viewer supports line numbers, wrapping, colored added/deleted lines, copying, expansion, and partial-content notices. Workspace requests load the visible page's catalogs.
 
-Use **+ → Attach photo / Paste image** for images. Images are converted to JPEG, resized, and limited to 1 MiB; total attachments are limited to eight. A model that advertises no image support disables image input. Attached files/images can be removed from the composer. **Session actions → Agent settings** opens the advertised model selector without leaving the conversation.
+Use the photo button or **+ → Attach photo / Paste image** for images. Each path opens a review screen where you can draw annotations, undo or clear marks, or attach the image unchanged. Images are converted to JPEG, resized, and limited to 1 MiB; total attachments are limited to eight. A model that advertises no image support disables image input. Attached images can be reopened for annotation or removed from the composer. **Session actions → Agent settings** opens the advertised model selector without leaving the conversation.
 
 A submitted request freezes its text, paths, and image payload for retries with the same request ID. Only identity metadata is persisted for uncertain delivery; a relaunched app must reconcile and inspect desktop Zed rather than replay an unavailable payload. Late diff/search/model/terminal responses are checked against connection/session scope.
 
@@ -78,11 +78,13 @@ The runner forwards test variables with Apple's documented [`TEST_RUNNER_` conve
 | VoiceOver/Reduce Motion/light mode | Navigation and actions have readable labels and usable controls; streaming does not require animation |
 | Markdown formatting | Paragraphs stay separate; nested lists retain markers and indentation; tables show headers, rows and aligned cells; fenced code does not become list/table content |
 | Scroll up / Latest | Latest occupies its own row below the transcript and never floats over message text |
-| Notification permission and test | Settings shows the actual permission status; Enable reports the actual error; test notification has no approval actions |
+| Notification permission and test | Settings shows the actual permission status; Enable reports the actual error; phone and ten-second Apple Watch tests contain no approval actions |
 
 Test Wi-Fi, cellular/Tailscale, background/return, and gateway restart separately. Record build revision, device/OS, route, expected effects, and actual results. Native APNs/background delivery is not configured without Apple credentials. Current native alerts are local while updates are received; use **Settings → Open browser for background push setup** for the existing browser push path. Watches may mirror supported phone notifications according to OS settings.
 
-In Settings, use **Enable local approval alerts**, then **Send test notification**. The test schedules a harmless alert after three seconds. Check Notification Center and Focus settings if a banner is hidden. If permission is denied, use **Open iPhone notification settings**; repeated permission requests cannot override a denial. Scheduling failures now appear in Settings rather than being silently discarded. See [Apple's notification authorization reference](https://developer.apple.com/documentation/usernotifications/unnotificationsettings/authorizationstatus). This test validates local delivery only; it does not test gateway approvals, watch mirroring or suspended-app push.
+In Settings, use **Enable local Agent alerts**, then **Send test notification**. The test schedules a harmless alert after three seconds. Check Notification Center and Focus settings if a banner is hidden. If permission is denied, use **Open iPhone notification settings**; repeated permission requests cannot override a denial. Scheduling failures now appear in Settings rather than being silently discarded. See [Apple's notification authorization reference](https://developer.apple.com/documentation/usernotifications/unnotificationsettings/authorizationstatus). This test validates local delivery only; it does not test gateway approvals or suspended-app push.
+
+For a paired Apple Watch, choose **Test Apple Watch in 10 seconds**, lock the iPhone, and keep the watch unlocked and on the wrist. Record which device receives the generic test alert. Confirm ZedLink is enabled in **Watch app → Notifications**. Apple routes a mirrored notification to one device based on lock state, so seeing it only on the watch is the expected result. Repeat with Focus enabled and disabled. This validates forwarding of an already scheduled local notification; it does not establish receipt of new Agent events after iOS suspends ZedLink.
 
 ## Approval forms and review controls
 

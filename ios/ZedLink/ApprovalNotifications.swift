@@ -33,7 +33,7 @@ import CryptoKit
         case .denied: status = "Blocked in iPhone Settings"
         case .notDetermined: status = "Permission not requested"
         case .authorized, .provisional, .ephemeral:
-            status = enabled ? "Local approval alerts enabled" : "Local approval alerts disabled"
+            status = enabled ? "Local Agent alerts enabled" : "Local Agent alerts disabled"
         @unknown default: status = "Permission status unavailable"
         }
     }
@@ -62,19 +62,35 @@ import CryptoKit
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard enabled, settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional || settings.authorizationStatus == .ephemeral else {
-            throw GatewayFailure.native("Enable local approval alerts and allow notifications in iPhone Settings first.")
+            throw GatewayFailure.native("Enable local Agent alerts and allow notifications in iPhone Settings first.")
         }
         let content = UNMutableNotificationContent()
         content.title = "ZedLink"
         content.body = "Test notification. No Agent approval is requested."
         content.sound = .default
+        content.threadIdentifier = "zedlink-tests"
         try await center.add(UNNotificationRequest(identifier: "zedlink-test", content: content,
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 3, repeats: false)))
     }
 
+    func sendAppleWatchTest() async throws {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard enabled, settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional || settings.authorizationStatus == .ephemeral else {
+            throw GatewayFailure.native("Enable local Agent alerts and allow notifications in iPhone Settings first.")
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "ZedLink · Apple Watch test"
+        content.body = "Mirrored Agent alerts are ready. This test contains no conversation or approval details."
+        content.sound = .default
+        content.threadIdentifier = "zedlink-tests"
+        try await center.add(UNNotificationRequest(identifier: "zedlink-watch-test", content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false)))
+    }
+
     func disable() {
         UserDefaults.standard.set(false, forKey: "zedlink.approvalNotifications")
-        status = blocked ? "Blocked in iPhone Settings" : "Local approval alerts disabled"
+        status = blocked ? "Blocked in iPhone Settings" : "Local Agent alerts disabled"
         responses.clear()
         clear()
     }
@@ -93,13 +109,15 @@ import CryptoKit
     }
 
     func clear() {
-        let ids = Array(currentIDs)
+        let ids = Array(currentIDs) + ["zedlink-test", "zedlink-watch-test"]
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
         currentIDs = []; scope = ""
     }
 
-    func update(gateway: String, target: String, instance: String, epoch: String, thread: String, approvals: [NativeApproval], allowActions: Bool, agentError: NativeAgentError? = nil) {
+    func update(gateway: String, target: String, instance: String, epoch: String, thread: String,
+                approvals: [NativeApproval], allowActions: Bool, activity: NativeAgentActivity,
+                turnID: Int?, agentError: NativeAgentError? = nil) {
         guard enabled else { clear(); return }
         let nextScope = [gateway, target, instance, epoch, thread].joined(separator: ":")
         if nextScope != scope { clear(); scope = nextScope }
@@ -114,6 +132,7 @@ import CryptoKit
             content.title = "ZedLink · Approval needed"
             content.body = "A Zed Agent is waiting. Review the request before allowing it."
             content.sound = .default
+            configurePresentation(content, gateway: gateway, target: target, thread: thread)
             var data = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
                         "thread": thread, "turn": String(turn), "approval": approval.id, "child": approval.subagentID ?? "", "created": String(Date().timeIntervalSince1970)]
             let allow = approval.decisions.first { $0.optionKind == "allow_once" && $0.choiceIndex == nil && $0.selectedPatternIndices.isEmpty && $0.action == nil }
@@ -132,6 +151,25 @@ import CryptoKit
                 }
             }
         }
+        if activity.isCompacting {
+            let id = "zedlink:\(nextScope):compaction:\(turnID ?? 0)"
+            nextIDs.insert(id)
+            if !currentIDs.contains(id) {
+                let content = UNMutableNotificationContent()
+                content.title = "ZedLink · Compacting context"
+                content.body = "Zed is summarizing earlier conversation history before continuing."
+                content.sound = .default
+                configurePresentation(content, gateway: gateway, target: target, thread: thread)
+                content.categoryIdentifier = "ZEDLINK_REVIEW"
+                content.userInfo = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
+                    "thread": thread, "type": "compaction", "created": String(Date().timeIntervalSince1970)]
+                center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
+                    guard let error else { return }
+                    let message = error.localizedDescription
+                    Task { @MainActor in self.lastError = message; self.currentIDs.remove(id) }
+                }
+            }
+        }
         if let error = agentError, !error.retrying {
             let digest = SHA256.hash(data: Data([error.kind, error.title, error.message].joined(separator: "\n").utf8))
                 .map { String(format: "%02x", $0) }.joined()
@@ -141,7 +179,9 @@ import CryptoKit
                 let content = UNMutableNotificationContent()
                 content.title = "ZedLink · Agent request failed"
                 content.body = "Open the session to review the error reported by desktop Zed."
-                content.sound = .default; content.categoryIdentifier = "ZEDLINK_REVIEW"
+                content.sound = .default
+                configurePresentation(content, gateway: gateway, target: target, thread: thread)
+                content.categoryIdentifier = "ZEDLINK_REVIEW"
                 content.userInfo = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
                     "thread": thread, "type": "agent_error", "created": String(Date().timeIntervalSince1970)]
                 center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
@@ -155,6 +195,14 @@ import CryptoKit
         center.removePendingNotificationRequests(withIdentifiers: removed)
         center.removeDeliveredNotifications(withIdentifiers: removed)
         currentIDs = nextIDs
+    }
+
+    private func configurePresentation(_ content: UNMutableNotificationContent, gateway: String,
+                                       target: String, thread: String) {
+        // Apple decides whether an iPhone notification appears on the phone or its paired
+        // watch. Group related Agent alerts without placing transcript or tool data in them.
+        content.threadIdentifier = "zedlink:\(gateway):\(target):\(thread)"
+        content.targetContentIdentifier = thread
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

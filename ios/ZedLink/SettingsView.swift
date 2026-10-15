@@ -62,8 +62,10 @@ private struct NotificationSettingsView: View {
 
     var body: some View {
         List {
-            Section("Local approval alerts") {
+            Section("Local Agent alerts") {
                 Text(notifications.status).foregroundStyle(ZLTheme.muted)
+                Text("Shows approvals, request failures, and context compaction while this app is receiving native Zed updates.")
+                    .font(.footnote).foregroundStyle(ZLTheme.muted)
                 if notifications.blocked {
                     Button("Open iPhone notification settings", action: openSystemSettings)
                 } else if !notifications.enabled {
@@ -88,7 +90,17 @@ private struct NotificationSettingsView: View {
             }
             Section("Background delivery") {
                 LabeledContent("Native push", value: "Not configured")
-                LabeledContent("Watch alerts", value: "Phone mirroring only")
+                LabeledContent("Apple Watch", value: notifications.permitted && notifications.enabled ? "System controlled" : "Enable alerts first")
+                Text("Apple Watch can mirror these iPhone alerts. After starting the test below, lock the iPhone and keep the paired watch unlocked and on your wrist. Apple decides which one device receives the alert.")
+                    .font(.footnote).foregroundStyle(ZLTheme.muted)
+                if notifications.enabled && notifications.permitted {
+                    Button("Test Apple Watch in 10 seconds") {
+                        run {
+                            try await notifications.sendAppleWatchTest()
+                            result = "Watch test scheduled. Lock the iPhone now; check Watch app → Notifications if it stays on the phone."
+                        }
+                    }.disabled(busy).accessibilityIdentifier("test-apple-watch-notification")
+                }
                 Text("Local alerts need incoming app updates. They cannot guarantee delivery while the app is suspended or closed. Browser push is the available background option.").font(.footnote).foregroundStyle(ZLTheme.muted)
                 if let profile = session.profile, let url = URL(string: profile.endpoint), url.scheme == "https" {
                     Link("Set up browser push", destination: url)

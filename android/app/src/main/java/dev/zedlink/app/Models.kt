@@ -98,6 +98,7 @@ data class NativeSubagent(val id: String, val title: String, val status: String,
 }
 data class NativeProjectFile(val id: String, val kind: String, val size: Int?)
 data class NativeChange(val id: String, val status: String, val staging: String)
+data class PromptImageAttachment(val id: String = java.util.UUID.randomUUID().toString(), val name: String, val mimeType: String, val data: ByteArray)
 
 data class NativeAgentError(val kind: String, val title: String, val message: String, val retrying: Boolean) {
     companion object {

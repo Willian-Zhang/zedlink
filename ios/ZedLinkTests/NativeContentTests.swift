@@ -12,6 +12,13 @@ final class SessionActivityTests: XCTestCase {
         thread.failed = true; XCTAssertEqual(SessionActivity(thread), .failed)
         thread = NativeThread(id: "fixture", title: "Demo", status: "Generating", currentTurnID: nil, failed: true)
         XCTAssertEqual(SessionActivity(thread), .generating)
+        thread.activity = NativeAgentActivity(phase: "compacting", label: "Compacting context", detail: nil)
+        XCTAssertEqual(SessionActivity(thread), .compacting)
+        thread.activity = NativeAgentActivity(phase: "running_tool", label: "Running tool", detail: "Search")
+        XCTAssertEqual(SessionActivity(thread), .generating)
+        thread.activity = NativeAgentActivity(phase: "waiting_for_approval", label: "Waiting for approval", detail: "Terminal")
+        XCTAssertEqual(SessionActivity(thread), .approval)
+        thread.activity = .ready
         thread.retrying = true; XCTAssertEqual(SessionActivity(thread), .retrying)
         thread.inputCount = 1; XCTAssertEqual(SessionActivity(thread), .input)
         thread.approvalCount = 2; XCTAssertEqual(SessionActivity(thread), .approval)

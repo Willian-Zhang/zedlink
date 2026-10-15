@@ -197,7 +197,7 @@ Earlier compaction prevents future buildup but cannot repair an already oversize
 
 If output remains visible but the command field and special-key row disappear when the keyboard opens, that is a layout defect. Check the exact installed version/build and interface revision under **Settings → Help & about**. A fresh browser reload cannot update an APK.
 
-The latest source correction is version 0.2.8 (10) on `test/android-terminal-emulator`: Workspace uses the main activity window instead of a full-screen dialog, with the Command draft above the output and tabs hidden while its keyboard is open. It still needs compilation and emulator/device verification. Until verified, use the mobile browser as an alternate client and report whether the browser has the same problem. See [mobile build status](Native-Mobile-Apps.md#files-and-terminal).
+The latest source correction is version 0.2.12 (14) on `test/android-terminal-emulator`: Workspace uses the main activity window instead of a full-screen dialog, renders the local command inline after terminal output instead of in a Command draft box, and hides tabs while its keyboard is open. The updated bridge also resizes the native PTY to the phone grid before later commands run. It still needs compilation and emulator/device verification. Until verified, use the mobile browser as an alternate client and report whether the browser has the same problem. See [mobile build status](Native-Mobile-Apps.md#files-and-terminal).
 
 ## Android dictation cannot record audio
 

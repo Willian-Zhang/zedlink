@@ -40,6 +40,34 @@ struct AgentOption: Identifiable, Equatable {
     let kind: String
 }
 
+struct NativeAgentActivity: Equatable {
+    let phase: String
+    let label: String
+    let detail: String?
+
+    static let ready = NativeAgentActivity(phase: "idle", label: "Ready", detail: nil)
+
+    init(phase: String, label: String, detail: String?) {
+        self.phase = phase
+        self.label = label
+        self.detail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? detail : nil
+    }
+
+    init(_ value: Any?, status: String, currentTurnID: Int?) {
+        let row = value as? [String: Any]
+        let fallbackWorking = currentTurnID != nil || status == "Generating"
+        phase = row?["phase"] as? String ?? (fallbackWorking ? "responding" : "idle")
+        label = row?["label"] as? String ?? (fallbackWorking ? "Agent is responding" : "Ready")
+        let rawDetail = row?["detail"] as? String
+        detail = rawDetail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? rawDetail : nil
+    }
+
+    var isWorking: Bool { phase != "idle" }
+    var isCompacting: Bool { phase == "compacting" }
+    var isWaitingForApproval: Bool { phase == "waiting_for_approval" }
+    var displayText: String { detail.map { "\(label) · \($0)" } ?? label }
+}
+
 struct NativeThread: Identifiable, Equatable {
     let id: String
     let title: String
@@ -50,6 +78,7 @@ struct NativeThread: Identifiable, Equatable {
     var failed = false
     var approvalCount: Int? = nil
     var inputCount: Int? = nil
+    var activity = NativeAgentActivity.ready
 }
 
 struct NativeCommand: Identifiable, Equatable {

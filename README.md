@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/eb599434-e283-4828-a300-e5e77d1c93f4
 | Client | Current status |
 | --- | --- |
 | Browser / installed web app | Most complete path. Connect over trusted HTTPS; no native app build required. |
-| iOS | SwiftUI source for a native companion. Requires a macOS/Xcode build and signing; device validation is ongoing. |
+| iOS | SwiftUI source with local Agent alerts and Apple Watch notification mirroring. Requires a macOS/Xcode build and signing; device validation is ongoing. |
 | Android | Compose source and development APK builds. Terminal keyboard visibility and speech recording have unresolved device reports; the latest layout fix still needs verification. |
 
 Native apps connect to the same gateway. Updating the gateway or website does **not** update an installed app: build and install a new native package. See [mobile setup and known issues](wiki/Native-Mobile-Apps.md).

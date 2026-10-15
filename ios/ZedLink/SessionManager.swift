@@ -22,6 +22,7 @@ import Combine
     @Published private(set) var changesRevision: String?
     @Published private(set) var terminals: [NativeTerminal] = []
     @Published private(set) var terminalSnapshot: NativeTerminalSnapshot?
+    @Published private(set) var creatingTerminal = false
     @Published private(set) var configuredTasks: [NativeConfiguredTask] = []
     @Published private(set) var debuggerCatalog: [NativeDebugScenario] = []
     @Published private(set) var debuggerSessions: [NativeDebuggerSession] = []
@@ -38,6 +39,7 @@ import Combine
     @Published var contextPaths: Set<String> = []
     @Published var attachments: [PromptAttachment] = []
     @Published private(set) var supportsImages: Bool?
+    @Published private(set) var liveActivity = NativeAgentActivity.ready
     @Published private(set) var diffContent = ""
     @Published private(set) var diffLoading = false
     @Published private(set) var diffTruncated = false
@@ -78,6 +80,8 @@ import Combine
     private var pollTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     private var eventStreamLive = false
+    private var lastFastSnapshot = Date.distantPast
+    private var lastAuxiliaryRefresh = Date.distantPast
     private var generation = UUID()
     private let threadExposureIssue = "The selected thread is no longer exposed in desktop Zed."
 
@@ -98,6 +102,9 @@ import Combine
         pollTask = nil
         eventTask = nil
         eventStreamLive = false
+        lastFastSnapshot = .distantPast
+        lastAuxiliaryRefresh = .distantPast
+        liveActivity = .ready
         client = nil
         profile = nil
         targets = []
@@ -303,6 +310,7 @@ import Combine
             var thread = NativeThread(id: id, title: row["title"] as? String ?? "Untitled Agent thread",
                                 status: row["status"] as? String ?? "Unknown",
                                 currentTurnID: row["current_turn_id"] as? Int)
+            thread.activity = NativeAgentActivity(row["activity"], status: thread.status, currentTurnID: thread.currentTurnID)
             thread.agentName = (row["agent"] as? [String: Any])?["name"] as? String ?? "Zed Agent"
             thread.retrying = row["retry_status"] is [String: Any]
             thread.failed = row["had_error"] as? Bool == true || row["agent_error"] is [String: Any]
@@ -338,6 +346,7 @@ import Combine
         if let selectedThreadID, !threads.contains(where: { $0.id == selectedThreadID }) {
             self.selectedThreadID = nil
             snapshot = nil
+            liveActivity = .ready
             commands = []
             issue = threadExposureIssue
         }
@@ -355,6 +364,7 @@ import Combine
             projectFolderEntries = nil; directoryRequest = UUID()
             projectFiles = []; projectFilesTruncated = false
             snapshot = nil
+            liveActivity = threads.first(where: { $0.id == id })?.activity ?? .ready
             commands = []
             if let profile {
                 draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, targetID: targetID, threadID: id)) ?? ""
@@ -391,11 +401,24 @@ import Combine
                         guard current == generation, selectedThreadID == threadID else { return }
                         try checkIdentity(result)
                         let events = result["events"] as? [[String: Any]] ?? []
+                        applyEventActivity(events)
                         if events.contains(where: { $0["kind"] as? String == "entry.removed" }) { snapshot = nil }
-                        if !events.isEmpty || snapshot == nil || snapshot?.isBusy == true {
-                            try await loadSnapshot(threadID)
+                        let heartbeatDue = snapshot?.isBusy == true && Date().timeIntervalSince(lastFastSnapshot) >= 1
+                        if !events.isEmpty || snapshot == nil || heartbeatDue {
+                            try await loadSnapshot(threadID, refreshAuxiliary: false)
+                        }
+                        if !events.isEmpty && Date().timeIntervalSince(lastAuxiliaryRefresh) >= 2 {
+                            do {
+                                try await loadAuxiliaryState(threadID)
+                                lastAuxiliaryRefresh = Date()
+                            } catch is CancellationError { return }
+                            catch { issue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)" }
                         }
                     }
+                    eventStreamLive = false
+                    if Task.isCancelled || current != generation || selectedThreadID != threadID { return }
+                    try? await Task.sleep(for: .seconds(delay))
+                    delay = min(10, delay * 2)
                 } catch {
                     eventStreamLive = false
                     if Task.isCancelled || current != generation || selectedThreadID != threadID { return }
@@ -440,6 +463,7 @@ import Combine
             guard result["outcome"] as? String == "unexposed" else { throw GatewayFailure.invalidResponse }
             selectedThreadID = nil
             snapshot = nil
+            liveActivity = .ready
             commands = []
             try await loadThreads()
             delivery = "Remote exposure stopped. The Agent thread remains open in desktop Zed."
@@ -451,7 +475,7 @@ import Combine
         }
     }
 
-    private func loadSnapshot(_ id: String) async throws {
+    private func loadSnapshot(_ id: String, refreshAuxiliary: Bool = true) async throws {
         guard let client else { return }
         let scope = operationScope
         var params: [String: Any] = ["thread_id": id]
@@ -536,10 +560,14 @@ import Combine
         let title = nativeTitle.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
             ?? (snapshot?.threadID == id ? snapshot?.title : nil)
             ?? threads.first(where: { $0.id == id })?.title ?? "Untitled Agent thread"
+        let nativeStatus = result["status"] as? String ?? "Unknown"
+        let nativeTurnID = result["current_turn_id"] as? Int
+        liveActivity = NativeAgentActivity(result["activity"], status: nativeStatus, currentTurnID: nativeTurnID)
+        if let index = threads.firstIndex(where: { $0.id == id }) { threads[index].activity = liveActivity }
         snapshot = ThreadSnapshot(threadID: id,
                                   title: title,
-                                  status: result["status"] as? String ?? "Unknown",
-                                  currentTurnID: result["current_turn_id"] as? Int,
+                                  status: nativeStatus,
+                                  currentTurnID: nativeTurnID,
                                   instanceID: instanceID ?? "", epoch: epoch ?? "",
                                   lastSequence: sequence, entries: mergedEntries,
                                   entryStartIndex: mergedStart, totalEntries: totalEntries,
@@ -551,9 +579,22 @@ import Combine
                                   agentError: NativeAgentError(snapshot: result))
         if let profile, let targetID, let instanceID, let epoch {
             ApprovalNotifications.shared.update(gateway: profile.gatewayID, target: targetID,
-                instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"), agentError: snapshot?.agentError)
+                instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"),
+                activity: liveActivity, turnID: nativeTurnID, agentError: snapshot?.agentError)
         }
-        try await loadAuxiliaryState(id)
+        lastFastSnapshot = Date()
+        if refreshAuxiliary {
+            try await loadAuxiliaryState(id)
+            lastAuxiliaryRefresh = Date()
+        }
+    }
+
+    private func applyEventActivity(_ events: [[String: Any]]) {
+        guard let row = events.reversed().compactMap({ $0["activity"] as? [String: Any] }).first else { return }
+        liveActivity = NativeAgentActivity(row, status: snapshot?.status ?? "Unknown", currentTurnID: snapshot?.currentTurnID)
+        if let id = selectedThreadID, let index = threads.firstIndex(where: { $0.id == id }) {
+            threads[index].activity = liveActivity
+        }
     }
 
     private func loadAuxiliaryState(_ id: String) async throws {
@@ -902,6 +943,42 @@ import Combine
     }
 
     private var requestedTerminalID: String?
+    private var requestedTerminalSize: (id: String, columns: Int, rows: Int)?
+    func createTerminal() async {
+        guard state == .live, !creatingTerminal, capabilities.contains("terminal.create"),
+              let client, let threadID = selectedThreadID else { return }
+        let scope = [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", threadID]
+        let receiptKey = "zedlink.terminalCreate.\(scope.joined(separator: "."))"
+        let requestID = UserDefaults.standard.string(forKey: receiptKey) ?? UUID().uuidString
+        UserDefaults.standard.set(requestID, forKey: receiptKey)
+        creatingTerminal = true
+        defer { creatingTerminal = false }
+        do {
+            let params: [String: Any] = ["instance_id": instanceID ?? "", "epoch": epoch ?? "", "thread_id": threadID]
+            for _ in 0..<10 {
+                guard scope == [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID ?? ""],
+                      state == .live, capabilities.contains("terminal.create") else { return }
+                let result = try await client.rpc("terminal.create", params: params, requestID: requestID)
+                guard scope == [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID ?? ""] else { return }
+                if result["outcome"] as? String == "ready" {
+                    guard let row = result["terminal"] as? [String: Any], let terminal = Self.decodeTerminal(row) else { throw GatewayFailure.invalidResponse }
+                    terminals.removeAll { $0.id == terminal.id }; terminals.append(terminal)
+                    await loadTerminal(terminal)
+                    UserDefaults.standard.removeObject(forKey: receiptKey)
+                    return
+                }
+                guard result["outcome"] as? String == "pending" else { throw GatewayFailure.invalidResponse }
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+            issue = "Terminal is still starting. Tap New terminal again to check the same request."
+        } catch is CancellationError { return }
+        catch {
+            if scope == [profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID ?? ""] {
+                issue = "\(error.localizedDescription) New terminal checks the same request without creating a duplicate."
+            }
+        }
+    }
+
     func loadTerminal(_ terminal: NativeTerminal, refresh: Bool = false) async {
         if refresh && requestedTerminalID != terminal.id { return }
         if !refresh { requestedTerminalID = terminal.id }
@@ -922,16 +999,43 @@ import Combine
         } catch { issue = error.localizedDescription }
     }
 
+    func resizeTerminal(columns: Int, rows: Int) async {
+        guard state == .live, let client, let terminal = terminalSnapshot?.terminal,
+              capabilities.contains("terminal.resize") else { return }
+        let columns = min(max(columns, 24), 120), rows = min(max(rows, 8), 80)
+        if let prior = requestedTerminalSize,
+           prior.id == terminal.id, prior.columns == columns, prior.rows == rows { return }
+        requestedTerminalSize = (terminal.id, columns, rows)
+        let scope = operationScope
+        do {
+            _ = try await client.rpc("terminal.resize", params: [
+                "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
+                "columns": columns, "rows": rows,
+            ], requestID: UUID().uuidString)
+            guard scope == operationScope, terminalSnapshot?.terminal.id == terminal.id else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+            await loadTerminal(terminal, refresh: true)
+        } catch let failure as GatewayFailure {
+            if case .native(let code) = failure, code == "UNSUPPORTED_CAPABILITY" {
+                capabilities.remove("terminal.resize")
+            } else if scope == operationScope { issue = "Could not fit the terminal to this screen: " + failure.localizedDescription }
+        } catch { if scope == operationScope { issue = "Could not fit the terminal to this screen: " + error.localizedDescription } }
+    }
+
     @discardableResult
     func sendTerminalInput(_ input: String, appendReturn: Bool = true) async -> Bool {
         guard state == .live, let client, let terminal = terminalSnapshot?.terminal, !input.isEmpty,
               capabilities.contains("terminal.input") else { return false }
         let scope = operationScope
         do {
-            _ = try await client.rpc("terminal.input", params: [
+            var params: [String: Any] = [
                 "instance_id": instanceID ?? "", "epoch": epoch ?? "", "terminal_id": terminal.id,
                 "input": appendReturn ? input + "\n" : input,
-            ], requestID: UUID().uuidString)
+            ]
+            if let size = requestedTerminalSize, size.id == terminal.id {
+                params["columns"] = size.columns; params["rows"] = size.rows
+            }
+            _ = try await client.rpc("terminal.input", params: params, requestID: UUID().uuidString)
             guard scope == operationScope, terminalSnapshot?.terminal.id == terminal.id else { return false }
             await loadTerminal(terminal, refresh: true)
             return true
@@ -1136,6 +1240,7 @@ import Combine
 
     private func pollLoop(_ current: UUID) async {
         while !Task.isCancelled && current == generation {
+            var auxiliaryIssue: String?
             do {
                 if let id = selectedThreadID, let client {
                     let result = try await client.rpc("thread.events", params: [
@@ -1145,12 +1250,13 @@ import Combine
                     try checkIdentity(result)
                     guard result["thread_id"] as? String == id else { throw GatewayFailure.invalidResponse }
                     if let events = result["events"] as? [[String: Any]], !events.isEmpty {
+                        applyEventActivity(events)
                         if events.contains(where: { $0["kind"] as? String == "entry.removed" }) {
                             snapshot = nil
                         }
-                        try await loadSnapshot(id)
+                        try await loadSnapshot(id, refreshAuxiliary: false)
                     } else if snapshot == nil || snapshot?.isBusy == true || (snapshot?.subagents.isEmpty == false && Date().timeIntervalSince(lastChildSnapshot) > 3) {
-                        try await loadSnapshot(id)
+                        try await loadSnapshot(id, refreshAuxiliary: false)
                     } else if let sequence = result["last_sequence"] as? Int,
                               var old = snapshot, sequence >= old.lastSequence {
                         old = ThreadSnapshot(threadID: old.threadID, title: old.title, status: old.status,
@@ -1169,11 +1275,17 @@ import Combine
                 } else {
                     try await loadThreads()
                 }
-                if let id = selectedThreadID, Date().timeIntervalSince(lastCommandsRefresh) >= 5 { try await loadCommands(id) }
+                if let id = selectedThreadID, Date().timeIntervalSince(lastAuxiliaryRefresh) >= 2 {
+                    do {
+                        try await loadAuxiliaryState(id)
+                        lastAuxiliaryRefresh = Date()
+                    } catch is CancellationError { break }
+                    catch { auxiliaryIssue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)" }
+                }
                 if pending != nil { await reconcilePending() }
                 if current == generation {
                     state = .live
-                    if issue != threadExposureIssue { issue = "" }
+                    if issue != threadExposureIssue { issue = auxiliaryIssue ?? "" }
                 }
             } catch {
                 if case GatewayFailure.native("RESYNC_REQUIRED") = error, let id = selectedThreadID {
@@ -1184,6 +1296,7 @@ import Combine
                     guard current == generation else { break }
                     selectedThreadID = nil
                     snapshot = nil
+                    liveActivity = .ready
                     commands = []
                     do {
                         try await loadThreads()

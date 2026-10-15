@@ -58,10 +58,11 @@ class MobileLayoutTest {
             }
             val field = compose.onNode(hasSetTextAction())
             field.assertIsDisplayed()
-            compose.onNodeWithText("Command draft").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Type directly in terminal").assertIsDisplayed()
             compose.onNodeWithContentDescription("Type in terminal").performClick()
             field.assertIsFocused().performTextInput("printf visible-draft")
             field.assertTextContains("printf visible-draft").assertIsDisplayed()
+            compose.onNodeWithTag("terminal-output").assertTextContains("printf visible-draft", substring = true).assertIsDisplayed()
             compose.waitUntil(timeoutMillis = 5000) {
                 automation.windows.any { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             }
@@ -86,7 +87,7 @@ class MobileLayoutTest {
         }
     }
 
-    @Test fun tappingTerminalFocusesVisibleCommandField() {
+    @Test fun tappingTerminalFocusesKeyboardCapture() {
         compose.setContent {
             val requester = remember { FocusRequester() }
             ZedLinkTheme("dark") {
