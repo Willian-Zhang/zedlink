@@ -269,7 +269,7 @@ struct NativeAgentError: Equatable {
     }
 }
 
-struct ThreadSnapshot {
+struct ThreadSnapshot: Equatable {
     let threadID: String
     let title: String
     let status: String

@@ -3,19 +3,28 @@ import UIKit
 
 enum ZLTheme {
     static let background = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0, green: 0, blue: 0, alpha: 1) : .systemBackground
+        if traits.accessibilityContrast == .high { return .systemBackground }
+        return traits.userInterfaceStyle == .dark ? UIColor(red: 0, green: 0, blue: 0, alpha: 1) : .systemBackground
     })
     static let surface = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 13 / 255, green: 14 / 255, blue: 16 / 255, alpha: 1) : .secondarySystemBackground
+        if traits.accessibilityContrast == .high { return .secondarySystemBackground }
+        return traits.userInterfaceStyle == .dark ? UIColor(red: 13 / 255, green: 14 / 255, blue: 16 / 255, alpha: 1) : .secondarySystemBackground
     })
     static let raised = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 21 / 255, green: 23 / 255, blue: 25 / 255, alpha: 1) : .tertiarySystemBackground
+        if traits.accessibilityContrast == .high { return .tertiarySystemBackground }
+        return traits.userInterfaceStyle == .dark ? UIColor(red: 21 / 255, green: 23 / 255, blue: 25 / 255, alpha: 1) : .tertiarySystemBackground
     })
     static let line = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 43 / 255, green: 45 / 255, blue: 48 / 255, alpha: 1) : .separator
+        if traits.accessibilityContrast == .high { return .separator }
+        return traits.userInterfaceStyle == .dark ? UIColor(red: 43 / 255, green: 45 / 255, blue: 48 / 255, alpha: 1) : .separator
     })
     static let ink = Color(uiColor: .label)
-    static let muted = adaptive(UIColor(red: 0.64, green: 0.65, blue: 0.67, alpha: 1), UIColor(red: 0.36, green: 0.38, blue: 0.41, alpha: 1))
+    static let muted = Color(uiColor: UIColor { traits in
+        if traits.accessibilityContrast == .high { return .secondaryLabel }
+        return traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.64, green: 0.65, blue: 0.67, alpha: 1)
+            : UIColor(red: 0.36, green: 0.38, blue: 0.41, alpha: 1)
+    })
     static let subtle = muted
     private static func adaptive(_ dark: UIColor, _ light: UIColor) -> Color {
         Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
@@ -31,7 +40,8 @@ enum ZLTheme {
 }
 
 struct Hairline: View {
-    var body: some View { Rectangle().fill(ZLTheme.line).frame(height: 1 / UIScreen.main.scale) }
+    @Environment(\.displayScale) private var displayScale
+    var body: some View { Rectangle().fill(ZLTheme.line).frame(height: 1 / displayScale) }
 }
 
 struct ConnectionStatusView: View {

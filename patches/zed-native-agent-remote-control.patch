@@ -1,63 +1,43 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 39b99bf26e..24a8a1e628 100644
+index 260d78e8bc..fec8db462b 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -474,7 +474,9 @@ dependencies = [
-  "command_palette_hooks",
-  "component",
+@@ -478,3 +478,5 @@ dependencies = [
   "context_server",
 + "dap",
   "db",
 + "debugger_ui",
   "editor",
-  "eval_utils",
-  "extension",
-@@ -531,7 +533,9 @@ dependencies = [
-  "serde_json",
-  "serde_json_lenient",
+@@ -536,3 +538,5 @@ dependencies = [
   "settings",
 + "sha2",
   "shlex 2.0.1",
 + "smol",
   "streaming_diff",
-  "task",
-  "telemetry",
-@@ -550,6 +554,7 @@ dependencies = [
-  "vim",
-  "watch",
+@@ -555,2 +559,3 @@ dependencies = [
   "workspace",
 + "worktree",
   "zed_actions",
- ]
-
-@@ -16470,7 +16475,9 @@ dependencies = [
-  "serde_yaml_ng",
-  "settings",
+@@ -16636,3 +16641,5 @@ dependencies = [
   "shell_command_parser",
 + "smol",
   "strum 0.28.0",
 + "task",
   "telemetry",
-  "theme",
-  "theme_settings",
 diff --git a/README.md b/README.md
 index 9f641fb384..24840eec03 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,3 +1,6 @@
+@@ -1 +1,4 @@
 +> [!IMPORTANT]
 +> Remove this line to confirm you've reviewed this PR before submitting.
 +
  # Zed
-
- [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index 29ef750de2..4aa05ac0d4 100644
+index ed88af25e3..17f3be984d 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
-@@ -2932,6 +2932,37 @@
-   //   - "proxy": "socks5h://localhost:10808"
-   //   - "proxy": "http://127.0.0.1:10809"
+@@ -2947,2 +2947,33 @@
    "proxy": "",
 +  // Configure the private local bridge used by ZedLink. Only Agent threads
 +  // explicitly exposed with /remote-control become available remotely.
@@ -91,133 +71,117 @@ index 29ef750de2..4aa05ac0d4 100644
 +    "connection_origin_tls_name": "",
 +  },
    // Set to configure aliases for the command palette.
-   // When typing a query which is a key of this object, the value will be used instead.
-   //
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 38a711270c..a26db1a496 100644
+index 0bbd96a639..41960297ec 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3977,6 +3977,10 @@ impl AcpThread {
-         }
-     }
+@@ -4110,2 +4110,11 @@ impl AcpThread {
 
-+    pub fn current_turn_id(&self) -> Option<u32> {
-+        self.running_turn.as_ref().map(|turn| turn.id)
++    pub fn current_turn_id(&self) -> Option<u64> {
++        if let Some(turn) = &self.running_turn {
++            return Some(u64::from(turn.id));
++        }
++        // Receipt submissions report a foreground generation instead of owning a running_turn.
++        (self.uses_reported_activity() && self.foreground_activity().is_active())
++            .then(|| self.activity.generation())
 +    }
 +
-     pub fn uses_reported_activity(&self) -> bool {
-         self.submissions.receipt_transport().is_some()
-     }
+     /// Whether the agent reports this session's foreground state, rather than Zed
 diff --git a/crates/agent_ui/Cargo.toml b/crates/agent_ui/Cargo.toml
-index 2ff9434008..8a2f8f5c49 100644
+index 4e9c63532f..51217f5258 100644
 --- a/crates/agent_ui/Cargo.toml
 +++ b/crates/agent_ui/Cargo.toml
-@@ -49,6 +49,8 @@ command_palette_hooks.workspace = true
- component.workspace = true
- context_server.workspace = true
+@@ -51,2 +51,4 @@ context_server.workspace = true
  db.workspace = true
 +debugger_ui.workspace = true
 +dap.workspace = true
  editor.workspace = true
- eval_utils = { workspace = true, optional = true }
- extension.workspace = true
-@@ -96,6 +98,8 @@ schemars.workspace = true
- search.workspace = true
- serde.workspace = true
+@@ -99,2 +101,4 @@ serde.workspace = true
  serde_json.workspace = true
 +sha2.workspace = true
 +smol.workspace = true
  serde_json_lenient.workspace = true
- settings.workspace = true
- streaming_diff.workspace = true
-@@ -113,6 +117,7 @@ url.workspace = true
- util.workspace = true
- uuid.workspace = true
+@@ -116,2 +120,3 @@ uuid.workspace = true
  watch.workspace = true
 +worktree.workspace = true
  workspace.workspace = true
- git_ui_core.workspace = true
- zed_actions.workspace = true
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index e6d0e987f1..1093667112 100644
+index 058c8c2e67..99d3a41430 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -36,6 +36,8 @@ pub mod thread_worktree_archive;
- pub mod threads_archive_view;
- mod ui;
+@@ -39,2 +39,4 @@ mod ui;
  mod unicode_confusables;
 +#[cfg(unix)]
 +mod zedlink_probe;
 
- use std::rc::Rc;
- use std::sync::Arc;
-@@ -709,6 +711,10 @@ pub fn init(
-         init_language_model_settings(cx);
-     }
+@@ -712,2 +714,6 @@ pub fn init(
      agent_panel::init(cx);
 +    #[cfg(unix)]
 +    if !is_eval {
 +        zedlink_probe::init(cx);
 +    }
      context_server_configuration::init(language_registry, fs.clone(), cx);
-     thread_metadata_store::init(cx);
-     terminal_thread_metadata_store::init(cx);
 diff --git a/crates/agent_ui/src/completion_provider.rs b/crates/agent_ui/src/completion_provider.rs
 index 80589fa87a..818ee356cf 100644
 --- a/crates/agent_ui/src/completion_provider.rs
 +++ b/crates/agent_ui/src/completion_provider.rs
-@@ -199,6 +199,8 @@ impl PromptContextAction {
- pub enum PromptLocalCommand {
-     ThumbsUp,
+@@ -201,2 +201,4 @@ pub enum PromptLocalCommand {
      ThumbsDown,
 +    #[cfg(unix)]
 +    RemoteControl,
  }
-
- impl PromptLocalCommand {
-@@ -206,6 +208,8 @@ impl PromptLocalCommand {
-         match self {
-             Self::ThumbsUp => "helpful",
+@@ -208,2 +210,4 @@ impl PromptLocalCommand {
              Self::ThumbsDown => "not-helpful",
 +            #[cfg(unix)]
 +            Self::RemoteControl => "remote-control",
          }
-     }
-
-@@ -213,6 +217,8 @@ impl PromptLocalCommand {
-         match self {
-             Self::ThumbsUp => "Positive Feedback",
+@@ -215,2 +219,4 @@ impl PromptLocalCommand {
              Self::ThumbsDown => "Negative Feedback",
 +            #[cfg(unix)]
 +            Self::RemoteControl => "Remote Control",
          }
-     }
-
-@@ -224,6 +230,8 @@ impl PromptLocalCommand {
-             Self::ThumbsDown => {
-                 "Rate this response as not helpful. Sends the current conversation to the Zed team."
+@@ -226,2 +232,4 @@ impl PromptLocalCommand {
              }
 +            #[cfg(unix)]
 +            Self::RemoteControl => "Expose or stop exposing this native Agent thread to ZedLink.",
          }
-     }
-
-@@ -231,6 +239,8 @@ impl PromptLocalCommand {
-         match self {
-             Self::ThumbsUp => IconName::ThumbsUp,
+@@ -233,2 +241,4 @@ impl PromptLocalCommand {
              Self::ThumbsDown => IconName::ThumbsDown,
 +            #[cfg(unix)]
 +            Self::RemoteControl => IconName::Link,
          }
-     }
- }
+diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/agent_ui/src/conversation_view/message_queue.rs
+index 5984ffd186..99980c13a5 100644
+--- a/crates/agent_ui/src/conversation_view/message_queue.rs
++++ b/crates/agent_ui/src/conversation_view/message_queue.rs
+@@ -7,2 +7,8 @@ pub struct QueueEntryId(usize);
+
++impl QueueEntryId {
++    pub fn as_usize(self) -> usize {
++        self.0
++    }
++}
++
+ pub struct QueueEntry {
+@@ -11,2 +17,3 @@ pub struct QueueEntry {
+     pub tracked_buffers: Vec<Entity<Buffer>>,
++    pub remote_request_id: Option<String>,
+     /// When true, this message interrupts the agent at the next turn boundary
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index e0ce09bb64..cf83477e7a 100644
+index 2e1a3d3ae8..fe1d9b9a54 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -1178,6 +1178,88 @@ impl ThreadView {
-         }
-     }
+@@ -771,2 +771,4 @@ pub struct ThreadView {
+     pub current_submission: Option<SubmissionId>,
++    remote_submission: Option<(SubmissionId, String, usize)>,
++    remote_submissions: std::collections::VecDeque<(SubmissionId, String, usize)>,
+     pub _subscriptions: Vec<Subscription>,
+@@ -1283,2 +1285,4 @@ impl ThreadView {
+             current_submission,
++            remote_submission: None,
++            remote_submissions: std::collections::VecDeque::new(),
+             message_editor,
+@@ -1400,2 +1404,84 @@ impl ThreadView {
 
 +    pub(crate) fn send_remote_skill(
 +        &mut self,
@@ -302,11 +266,7 @@ index e0ce09bb64..cf83477e7a 100644
 +    }
 +
      fn run_local_command(
-         &mut self,
-         command: PromptLocalCommand,
-@@ -1192,6 +1274,19 @@ impl ThreadView {
-             PromptLocalCommand::ThumbsDown => {
-                 self.handle_feedback_click(ThreadFeedback::Negative, window, cx);
+@@ -1414,2 +1500,15 @@ impl ThreadView {
              }
 +            #[cfg(unix)]
 +            PromptLocalCommand::RemoteControl => {
@@ -322,22 +282,97 @@ index e0ce09bb64..cf83477e7a 100644
 +                }
 +            }
          }
-     }
-
-@@ -1884,6 +1979,10 @@ impl ThreadView {
-         self.send_impl(message_editor, window, cx)
-     }
+@@ -2163,2 +2262,6 @@ impl ThreadView {
 
 +    pub(crate) fn is_loading_message_contents(&self) -> bool {
 +        self.is_loading_contents
 +    }
 +
      /// Sends a bare `/command` turn and queues everything the user typed after
-     /// it as a follow-up message. The queued remainder auto-processes when the
-     /// command turn stops, so e.g. `/compact do X` compacts and then runs `do X`
-@@ -2216,6 +2315,137 @@ impl ThreadView {
-         cx.notify();
-     }
+@@ -2274,2 +2377,54 @@ impl ThreadView {
+         cx: &mut Context<Self>,
++    ) {
++        self.send_content_with_remote_origin(contents_task, is_native_command, None, window, cx);
++    }
++
++    pub(crate) fn send_content_from_remote(
++        &mut self,
++        contents_task: Task<
++            anyhow::Result<Option<(Vec<acp_v2::ContentBlock>, Vec<Entity<Buffer>>)>>,
++        >,
++        is_native_command: bool,
++        request_id: String,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        self.send_content_with_remote_origin(
++            contents_task,
++            is_native_command,
++            Some(request_id),
++            window,
++            cx,
++        );
++    }
++
++    pub(crate) fn remote_submission(&self) -> Option<(SubmissionId, &str, usize)> {
++        let (submission_id, request_id, entry_start_index) = self.remote_submission.as_ref()?;
++        (self.current_submission == Some(*submission_id)).then_some((
++            *submission_id,
++            request_id.as_str(),
++            *entry_start_index,
++        ))
++    }
++
++    pub(crate) fn remote_submission_for_request(
++        &self,
++        request_id: &str,
++    ) -> Option<(SubmissionId, usize)> {
++        self.remote_submissions
++            .iter()
++            .rev()
++            .find(|(_, saved_request_id, _)| saved_request_id == request_id)
++            .map(|(submission_id, _, entry_start_index)| (*submission_id, *entry_start_index))
++    }
++
++    fn send_content_with_remote_origin(
++        &mut self,
++        contents_task: Task<
++            anyhow::Result<Option<(Vec<acp_v2::ContentBlock>, Vec<Entity<Buffer>>)>>,
++        >,
++        is_native_command: bool,
++        remote_request_id: Option<String>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
+     ) {
+@@ -2351,3 +2506,4 @@ impl ThreadView {
+             let turn_start_time = Instant::now();
+-            let send = thread.update(cx, |thread, cx| {
++            let (send, entry_start_index) = thread.update(cx, |thread, cx| {
++                let entry_start_index = thread.entries().len();
+                 thread.action_log().update(cx, |action_log, cx| {
+@@ -2369,3 +2525,3 @@ impl ThreadView {
+
+-                if is_native_command {
++                let send = if is_native_command {
+                     thread.send_command(contents, cx)
+@@ -2373,3 +2529,4 @@ impl ThreadView {
+                     thread.send(contents, cx)
+-                }
++                };
++                (send, entry_start_index)
+             })?;
+@@ -2379,2 +2536,10 @@ impl ThreadView {
+                 this.current_submission = Some(submission_id);
++                this.remote_submission = remote_request_id.map(|request_id| {
++                    let record = (submission_id, request_id, entry_start_index);
++                    this.remote_submissions.push_back(record.clone());
++                    if this.remote_submissions.len() > 256 {
++                        this.remote_submissions.pop_front();
++                    }
++                    record
++                });
+                 this.sync_generating_indicator(cx);
+@@ -2499,2 +2664,133 @@ impl ThreadView {
 
 +    pub(crate) fn zedlink_error_summary(&self) -> Option<(&'static str, String, String, bool)> {
 +        self.thread_error.as_ref().map(|error| match error {
@@ -471,11 +506,60 @@ index e0ce09bb64..cf83477e7a 100644
 +    }
 +
      fn emit_thread_error_telemetry(&self, error: &ThreadError, cx: &mut Context<Self>) {
-         let (error_kind, acp_error_code, message): (&str, Option<SharedString>, SharedString) =
-             match error {
-@@ -7619,6 +7849,11 @@ impl ThreadView {
-             commands.push(PromptLocalCommand::ThumbsDown);
-         }
+@@ -2778,2 +3074,25 @@ impl ThreadView {
+     ) {
++        self.add_to_queue_with_remote_origin(content, tracked_buffers, None, window, cx);
++    }
++
++    pub(crate) fn add_to_queue_from_remote(
++        &mut self,
++        content: Vec<acp_v2::ContentBlock>,
++        tracked_buffers: Vec<Entity<Buffer>>,
++        request_id: String,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> usize {
++        self.add_to_queue_with_remote_origin(content, tracked_buffers, Some(request_id), window, cx)
++            .as_usize()
++    }
++
++    fn add_to_queue_with_remote_origin(
++        &mut self,
++        content: Vec<acp_v2::ContentBlock>,
++        tracked_buffers: Vec<Entity<Buffer>>,
++        remote_request_id: Option<String>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> QueueEntryId {
+         // The ID must be allocated up front so the editor event subscription
+@@ -2811,2 +3130,3 @@ impl ThreadView {
+             tracked_buffers,
++            remote_request_id,
+             steer: false,
+@@ -2817,2 +3137,3 @@ impl ThreadView {
+         cx.notify();
++        id
+     }
+@@ -2881,2 +3202,3 @@ impl ThreadView {
+                     entry.tracked_buffers = tracked_buffers;
++                    entry.remote_request_id = None;
+                 }
+@@ -2996,2 +3318,3 @@ impl ThreadView {
+
++        let remote_request_id = entry.remote_request_id.clone();
+         // A queued message can itself be a built-in command (e.g. the user typed
+@@ -3038,3 +3361,9 @@ impl ThreadView {
+
+-        self.send_content(contents_task, is_native_command, window, cx);
++        self.send_content_with_remote_origin(
++            contents_task,
++            is_native_command,
++            remote_request_id,
++            window,
++            cx,
++        );
+     }
+@@ -8044,2 +8373,7 @@ impl ThreadView {
 
 +        #[cfg(unix)]
 +        if self.parent_session_id.is_none() && crate::zedlink_probe::is_available(cx) {
@@ -483,37 +567,27 @@ index e0ce09bb64..cf83477e7a 100644
 +        }
 +
          commands
-     }
-
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
-index 605817d05b..0009eeb571 100644
+index ad5eca5cdf..b8ffdcaa0d 100644
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
-@@ -749,8 +749,7 @@ impl MessageEditor {
-             .is_some_and(|menu| matches!(menu, CodeContextMenu::Completions(_)) && menu.visible())
-     }
+@@ -756,4 +756,3 @@ impl MessageEditor {
 
 -    #[cfg(test)]
 -    pub fn mention_set(&self) -> &Entity<MentionSet> {
 +    pub(crate) fn mention_set(&self) -> &Entity<MentionSet> {
          &self.mention_set
-     }
-
-@@ -2182,7 +2181,7 @@ fn image_preview_task_for_mention(
-     )
- }
+@@ -2189,3 +2188,3 @@ fn image_preview_task_for_mention(
 
 -fn mention_to_content_block(
 +pub(crate) fn mention_to_content_block(
      uri: &MentionUri,
-     mention: Option<&Mention>,
-     supports_embedded_context: bool,
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..e0053ee532
+index 0000000000..3c7e201269
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
-@@ -0,0 +1,4751 @@
+@@ -0,0 +1,4994 @@
 +use std::{
 +    cell::{Cell, RefCell},
 +    collections::{HashMap, HashSet, VecDeque},
@@ -530,8 +604,8 @@ index 0000000000..e0053ee532
 +};
 +
 +use acp_thread::{
-+    AcpThread, AcpThreadEvent, AgentThreadEntry, AuthorizationKind, SelectedPermissionOutcome,
-+    ThreadStatus, ToolCallStatus,
++    AcpThread, AcpThreadEvent, AgentThreadEntry, AssistantMessageChunk, AuthorizationKind,
++    MessageIdentity, SelectedPermissionOutcome, SubmissionState, ThreadStatus, ToolCallStatus,
 +};
 +use agent_client_protocol::schema::v2 as acp;
 +use agent_settings::{AgentProfile, AgentProfileId};
@@ -702,12 +776,14 @@ index 0000000000..e0053ee532
 +        let mut capabilities = vec![
 +            "thread.list",
 +            "thread.snapshot",
++            "thread.snapshot.delta",
 +            "thread.history",
 +            "thread.events",
 +            "thread.commands",
 +            "thread.settings",
 +            "thread.elicitations",
 +            "thread.queue",
++            "thread.queue.remove",
 +            "thread.edit_review",
 +            "thread.send",
 +            "thread.cancel",
@@ -832,6 +908,7 @@ index 0000000000..e0053ee532
 +    thread_id: String,
 +    payload_digest: String,
 +    outcome: &'static str,
++    queue_entry_id: Option<usize>,
 +}
 +
 +struct CreationRecord {
@@ -1064,6 +1141,12 @@ index 0000000000..e0053ee532
 +        let id = id.clone();
 +        move |thread, event: &AcpThreadEvent, cx| {
 +            let activity = thread_activity_value(thread.read(cx));
++            let entry_index = match event {
++                AcpThreadEvent::NewEntry => thread.read(cx).entries().len().checked_sub(1),
++                AcpThreadEvent::EntryUpdated(index) => Some(*index),
++                AcpThreadEvent::EntriesRemoved(range) => Some(range.start),
++                _ => None,
++            };
 +            let mut events = state.events.borrow_mut();
 +            let record = events.entry(id.clone()).or_default();
 +            let Some(sequence) = record.last_sequence.checked_add(1) else {
@@ -1074,6 +1157,7 @@ index 0000000000..e0053ee532
 +                "sequence": sequence,
 +                "kind": event_kind(event),
 +                "activity": activity,
++                "entry_index": entry_index,
 +            }));
 +            if record.records.len() > 256 {
 +                record.records.pop_front();
@@ -1164,15 +1248,94 @@ index 0000000000..e0053ee532
 +    }
 +}
 +
++fn remote_submission_entry_index(
++    thread: &AcpThread,
++    submission_id: acp_thread::SubmissionId,
++    entry_start_index: usize,
++) -> Option<usize> {
++    let receipt_entry_index = thread.submission(submission_id).and_then(|submission| {
++        let SubmissionState::Accepted { receipt, .. } = &submission.state else {
++            return None;
++        };
++        thread.entries().iter().position(|entry| {
++            matches!(entry, AgentThreadEntry::UserMessage(message)
++                if matches!(&message.identity, MessageIdentity::Keyed(id) if id == &receipt.message_id))
++        })
++    });
++    // Legacy native responses can lack a keyed receipt. The entry boundary was captured
++    // in the same application-thread update that dispatched this exact submission.
++    receipt_entry_index.or_else(|| {
++        thread
++            .entries()
++            .get(entry_start_index..)
++            .and_then(|entries| {
++                entries
++                    .iter()
++                    .position(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
++                    .map(|offset| entry_start_index + offset)
++            })
++    })
++}
++
++fn active_remote_submission(
++    thread: &AcpThread,
++    view: &ThreadView,
++) -> (Option<String>, Option<usize>) {
++    if thread.current_turn_id().is_none() {
++        return (None, None);
++    }
++    let Some((submission_id, request_id, entry_start_index)) = view.remote_submission() else {
++        return (None, None);
++    };
++    (
++        Some(request_id.to_string()),
++        remote_submission_entry_index(thread, submission_id, entry_start_index),
++    )
++}
++
++fn transcript_entry_meta(entry: &AgentThreadEntry, cx: &App) -> Value {
++    match entry {
++        AgentThreadEntry::UserMessage(_) => json!({"kind": "user"}),
++        AgentThreadEntry::AssistantMessage(message) => json!({
++            "kind": "assistant",
++            "segments": message.chunks.iter().map(|chunk| match chunk {
++                AssistantMessageChunk::Message { block, .. } =>
++                    json!({"kind": "assistant", "text": block.to_markdown(cx)}),
++                AssistantMessageChunk::Thought { block, .. } =>
++                    json!({"kind": "reasoning", "text": block.to_markdown(cx)}),
++            }).collect::<Vec<_>>(),
++        }),
++        AgentThreadEntry::ToolCall(tool) => {
++            let status = match tool.status() {
++                ToolCallStatus::Pending
++                | ToolCallStatus::WaitingForConfirmation
++                | ToolCallStatus::InProgress => "running",
++                ToolCallStatus::Completed => "completed",
++                ToolCallStatus::Failed => "failed",
++                ToolCallStatus::Rejected | ToolCallStatus::Canceled => "canceled",
++            };
++            json!({
++                "kind": "tool",
++                "call_id": tool.id.0.as_ref(),
++                "name": tool.tool_name.as_ref().or(tool.name.as_ref())
++                    .map(ToString::to_string).unwrap_or_else(|| "Zed tool".to_string()),
++                "status": status,
++            })
++        }
++        _ => json!({"kind": "other"}),
++    }
++}
++
 +fn transcript_page(
 +    thread: &AcpThread,
 +    before_entry_index: usize,
 +    max_entries: usize,
 +    cx: &App,
-+) -> (usize, usize, Vec<String>) {
++) -> (usize, usize, Vec<String>, Vec<Value>) {
 +    let end = before_entry_index.min(thread.entries().len());
 +    let mut used = 0;
 +    let mut entries = Vec::new();
++    let mut entry_meta = Vec::new();
 +    for entry in thread.entries()[..end].iter().rev() {
 +        let markdown = entry.to_markdown(cx);
 +        if !entries.is_empty()
@@ -1182,10 +1345,49 @@ index 0000000000..e0053ee532
 +        }
 +        used += markdown.len();
 +        entries.push(markdown);
++        entry_meta.push(transcript_entry_meta(entry, cx));
 +    }
 +    entries.reverse();
++    entry_meta.reverse();
 +    let start = end.saturating_sub(entries.len());
-+    (start, end, entries)
++    (start, end, entries, entry_meta)
++}
++
++fn transcript_delta_start(
++    params: &Value,
++    events: Option<&ThreadEvents>,
++    total_entries: usize,
++) -> Option<usize> {
++    let after_sequence = params.get("after_sequence")?.as_u64()?;
++    let known_start = usize::try_from(params.get("entry_start_index")?.as_u64()?).ok()?;
++    let known_end = usize::try_from(params.get("entry_end_index")?.as_u64()?).ok()?;
++    if known_start > known_end || known_end > total_entries {
++        return None;
++    }
++    let events = events?;
++    if after_sequence > events.last_sequence
++        || (after_sequence < events.last_sequence && events.records.is_empty())
++        || events.records.front().is_some_and(|record| {
++            after_sequence.saturating_add(1) < record["sequence"].as_u64().unwrap_or(0)
++        })
++    {
++        return None;
++    }
++    let mut start = known_end;
++    for record in events.records.iter().filter(|record| {
++        record["sequence"]
++            .as_u64()
++            .is_some_and(|sequence| sequence > after_sequence)
++    }) {
++        match record["kind"].as_str() {
++            Some("entry.added" | "entry.updated") => {
++                start = start.min(usize::try_from(record["entry_index"].as_u64()?).ok()?);
++            }
++            Some("entry.removed") => return None,
++            _ => {}
++        }
++    }
++    (start >= known_start).then_some(start)
 +}
 +
 +pub(crate) fn is_available(cx: &App) -> bool {
@@ -1276,9 +1478,21 @@ index 0000000000..e0053ee532
 +            if !state.exposed_threads.borrow().contains(&record.thread_id) {
 +                return error(&request.request_id, "THREAD_NOT_EXPOSED");
 +            }
++            let entry_index = loaded_thread_views(&state.project_root, cx)
++                .into_iter()
++                .find(|(thread, _)| thread.read(cx).session_id().to_string() == record.thread_id)
++                .and_then(|(thread, view)| {
++                    let (submission_id, entry_start_index) = view
++                        .read(cx)
++                        .remote_submission_for_request(original_request_id)?;
++                    remote_submission_entry_index(thread.read(cx), submission_id, entry_start_index)
++                });
 +            success(
 +                &request.request_id,
-+                json!({"known": true, "outcome": record.outcome, "provisional": true}),
++                json!({"known": true, "outcome": record.outcome,
++                    "native_request_id": original_request_id,
++                    "queue_entry_id": record.queue_entry_id,
++                    "entry_index": entry_index, "provisional": true}),
 +            )
 +        }
 +        "thread.list" => {
@@ -1339,6 +1553,8 @@ index 0000000000..e0053ee532
 +            };
 +            let server_view = view.read(cx).server_view.upgrade();
 +            let thread = thread.read(cx);
++            let (active_request_id, active_request_entry_index) =
++                active_remote_submission(thread, view.read(cx));
 +            let agent_error =
 +                zedlink_error_value(thread.had_error(), view.read(cx).zedlink_error_summary());
 +            let retry_status = zedlink_retry_value(view.read(cx).zedlink_retry_status());
@@ -1389,8 +1605,33 @@ index 0000000000..e0053ee532
 +                    })
 +                })
 +                .collect::<Vec<_>>();
-+            let (entry_start_index, entry_end_index, entries) =
-+                transcript_page(thread, total_entries, tail_entry_count, cx);
++            let delta_start = if matches_instance(&request, state) {
++                transcript_delta_start(
++                    &request.params,
++                    state.events.borrow().get(id),
++                    total_entries,
++                )
++            } else {
++                None
++            };
++            let delta_count = delta_start.map(|start| total_entries.saturating_sub(start));
++            let (entry_start_index, entry_end_index, entries, entry_meta, delta_used) =
++                match delta_count.filter(|count| *count <= MAX_TRANSCRIPT_PAGE_ENTRIES) {
++                    Some(0) => (total_entries, total_entries, Vec::new(), Vec::new(), true),
++                    Some(count) => {
++                        let page = transcript_page(thread, total_entries, count, cx);
++                        if Some(page.0) == delta_start {
++                            (page.0, page.1, page.2, page.3, true)
++                        } else {
++                            let page = transcript_page(thread, total_entries, tail_entry_count, cx);
++                            (page.0, page.1, page.2, page.3, false)
++                        }
++                    }
++                    None => {
++                        let page = transcript_page(thread, total_entries, tail_entry_count, cx);
++                        (page.0, page.1, page.2, page.3, false)
++                    }
++                };
 +            let truncated = entry_start_index > 0;
 +            // Retain the older activity projection for compatible clients. Updated clients
 +            // render the indexed transcript tail directly and request a smaller live tail.
@@ -1430,6 +1671,8 @@ index 0000000000..e0053ee532
 +                    "title": thread.title().map(|title| title.to_string()),
 +                    "status": format!("{:?}", thread.status()),
 +                    "current_turn_id": thread.current_turn_id(),
++                    "active_request_id": active_request_id,
++                    "active_request_entry_index": active_request_entry_index,
 +                    "had_error": thread.had_error(),
 +                    "agent_error": agent_error,
 +                    "image_recovery": image_recovery,
@@ -1439,6 +1682,8 @@ index 0000000000..e0053ee532
 +                    "pending_approvals": pending_approvals(thread, cx),
 +                    "subagents": subagent_snapshots(thread, server_view.as_ref(), cx),
 +                    "entries_markdown": entries,
++                    "delta": delta_used,
++                    "entries_meta": entry_meta,
 +                    "entry_start_index": entry_start_index,
 +                    "entry_end_index": entry_end_index,
 +                    "total_entries": total_entries,
@@ -1487,7 +1732,7 @@ index 0000000000..e0053ee532
 +            if before_entry_index > total_entries {
 +                return error(&request.request_id, "RESYNC_REQUIRED");
 +            }
-+            let (entry_start_index, entry_end_index, entries) =
++            let (entry_start_index, entry_end_index, entries, entry_meta) =
 +                transcript_page(thread, before_entry_index, MAX_TRANSCRIPT_PAGE_ENTRIES, cx);
 +            success(
 +                &request.request_id,
@@ -1497,6 +1742,7 @@ index 0000000000..e0053ee532
 +                    "thread_id": id,
 +                    "subagent_id": subagent_id,
 +                    "entries_markdown": entries,
++                    "entries_meta": entry_meta,
 +                    "entry_start_index": entry_start_index,
 +                    "entry_end_index": entry_end_index,
 +                    "total_entries": total_entries,
@@ -1560,6 +1806,7 @@ index 0000000000..e0053ee532
 +        "thread.elicitations" => elicitation_list(&request, state, cx),
 +        "elicitation.respond" => elicitation_response(&request, state, cx),
 +        "thread.queue" => queue_state(&request, state, cx),
++        "thread.queue.remove" => remove_queued_request(&request, state, cx),
 +        "thread.queue.clear" => clear_queue(&request, state, cx),
 +        "thread.edit_review" => edit_review_state(&request, state, cx),
 +        "thread.edit_review.respond" => edit_review_response(&request, state, cx),
@@ -2131,12 +2378,7 @@ index 0000000000..e0053ee532
 +    let Some(approval_id) = request.params.get("approval_id").and_then(Value::as_str) else {
 +        return error(&request.request_id, "INVALID_REQUEST");
 +    };
-+    let Some(turn_id) = request
-+        .params
-+        .get("turn_id")
-+        .and_then(Value::as_u64)
-+        .and_then(|id| u32::try_from(id).ok())
-+    else {
++    let Some(turn_id) = request.params.get("turn_id").and_then(Value::as_u64) else {
 +        return error(&request.request_id, "INVALID_REQUEST");
 +    };
 +    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
@@ -2302,12 +2544,7 @@ index 0000000000..e0053ee532
 +    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
 +        return error(&request.request_id, "INVALID_REQUEST");
 +    };
-+    let Some(turn_id) = request
-+        .params
-+        .get("turn_id")
-+        .and_then(Value::as_u64)
-+        .and_then(|id| u32::try_from(id).ok())
-+    else {
++    let Some(turn_id) = request.params.get("turn_id").and_then(Value::as_u64) else {
 +        return error(&request.request_id, "INVALID_REQUEST");
 +    };
 +    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
@@ -2374,12 +2611,7 @@ index 0000000000..e0053ee532
 +    let Some(subagent_id) = request.params.get("subagent_id").and_then(Value::as_str) else {
 +        return error(&request.request_id, "INVALID_REQUEST");
 +    };
-+    let Some(turn_id) = request
-+        .params
-+        .get("turn_id")
-+        .and_then(Value::as_u64)
-+        .and_then(|id| u32::try_from(id).ok())
-+    else {
++    let Some(turn_id) = request.params.get("turn_id").and_then(Value::as_u64) else {
 +        return error(&request.request_id, "INVALID_REQUEST");
 +    };
 +    if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
@@ -3009,6 +3241,71 @@ index 0000000000..e0053ee532
 +            "count": entries.len(),
 +        }),
 +    )
++}
++
++fn remove_queued_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    if !matches_instance(request, state) {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(original_request_id) = request
++        .params
++        .get("original_request_id")
++        .and_then(Value::as_str)
++        .filter(|value| !value.is_empty())
++    else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(queue_entry_id) = request
++        .params
++        .get("queue_entry_id")
++        .and_then(Value::as_u64)
++        .and_then(|value| usize::try_from(value).ok())
++    else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    {
++        let submissions = state.submissions.borrow();
++        let Some(record) = submissions.get(original_request_id) else {
++            return success(&request.request_id, json!({"outcome": "unknown"}));
++        };
++        if record.thread_id != thread_id || record.queue_entry_id != Some(queue_entry_id) {
++            return error(&request.request_id, "REQUEST_CONFLICT");
++        }
++        if record.outcome == "removed" {
++            return success(&request.request_id, json!({"outcome": "removed"}));
++        }
++    }
++    let Some((_, view)) = exposed_thread_view(thread_id, state, cx) else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    let removed = view.update(cx, |view, cx| {
++        let entry_id = view
++            .message_queue
++            .iter()
++            .find(|entry| {
++                entry.id.as_usize() == queue_entry_id
++                    && entry.remote_request_id.as_deref() == Some(original_request_id)
++            })
++            .map(|entry| entry.id);
++        let Some(entry_id) = entry_id else {
++            return false;
++        };
++        let removed = view.remove_from_queue(entry_id, cx).is_some();
++        if removed {
++            cx.notify();
++        }
++        removed
++    });
++    if !removed {
++        return success(&request.request_id, json!({"outcome": "not_queued"}));
++    }
++    if let Some(record) = state.submissions.borrow_mut().get_mut(original_request_id) {
++        record.outcome = "removed";
++    }
++    success(&request.request_id, json!({"outcome": "removed"}))
 +}
 +
 +fn clear_queue(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
@@ -3957,7 +4254,11 @@ index 0000000000..e0053ee532
 +        if previous.thread_id != thread_id || previous.payload_digest != payload_digest {
 +            return error(&request.request_id, "REQUEST_CONFLICT");
 +        }
-+        return send_result(&request.request_id, previous.outcome);
++        return send_result(
++            &request.request_id,
++            previous.outcome,
++            previous.queue_entry_id,
++        );
 +    }
 +    if submissions.len() >= 256 {
 +        return error(&request.request_id, "RATE_LIMITED");
@@ -4058,9 +4359,10 @@ index 0000000000..e0053ee532
 +                thread_id: thread_id.to_string(),
 +                payload_digest,
 +                outcome,
++                queue_entry_id: None,
 +            },
 +        );
-+        return send_result(&request.request_id, outcome);
++        return send_result(&request.request_id, outcome, None);
 +    }
 +    let native_command = selected_command
 +        .is_some_and(|command| command.get("category").and_then(Value::as_str) == Some("native"));
@@ -4117,9 +4419,10 @@ index 0000000000..e0053ee532
 +                    thread_id: thread_id.to_string(),
 +                    payload_digest,
 +                    outcome: "unknown",
++                    queue_entry_id: None,
 +                },
 +            );
-+            return send_result(&request.request_id, "unknown");
++            return send_result(&request.request_id, "unknown", None);
 +        }
 +    }
 +    let can_send_now =
@@ -4144,7 +4447,7 @@ index 0000000000..e0053ee532
 +                            cx,
 +                        );
 +                    }
-+                    view.send_content(
++                    view.send_content_from_remote(
 +                        Task::ready(Ok(Some((
 +                            vec![acp::ContentBlock::Text(acp::TextContent::new(format!(
 +                                "/{name}"
@@ -4152,25 +4455,33 @@ index 0000000000..e0053ee532
 +                            Vec::new(),
 +                        )))),
 +                        true,
++                        request.request_id.clone(),
 +                        window,
 +                        cx,
 +                    );
 +                } else {
-+                    view.send_content(
++                    view.send_content_from_remote(
 +                        Task::ready(Ok(Some((content, Vec::new())))),
 +                        false,
++                        request.request_id.clone(),
 +                        window,
 +                        cx,
 +                    );
 +                }
-+                "unknown"
++                ("unknown", None)
 +            } else {
-+                view.add_to_queue(content, Vec::new(), window, cx);
-+                "queued"
++                let queue_entry_id = view.add_to_queue_from_remote(
++                    content,
++                    Vec::new(),
++                    request.request_id.clone(),
++                    window,
++                    cx,
++                );
++                ("queued", Some(queue_entry_id))
 +            }
 +        })
 +    });
-+    let Some(outcome) = sent else {
++    let Some((outcome, queue_entry_id)) = sent else {
 +        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
 +    };
 +    state.submissions.borrow_mut().insert(
@@ -4179,13 +4490,19 @@ index 0000000000..e0053ee532
 +            thread_id: thread_id.to_string(),
 +            payload_digest,
 +            outcome,
++            queue_entry_id,
 +        },
 +    );
-+    send_result(&request.request_id, outcome)
++    send_result(&request.request_id, outcome, queue_entry_id)
 +}
 +
-+fn send_result(request_id: &str, outcome: &str) -> Value {
-+    success(request_id, json!({"outcome": outcome, "provisional": true}))
++fn send_result(request_id: &str, outcome: &str, queue_entry_id: Option<usize>) -> Value {
++    success(
++        request_id,
++        json!({"outcome": outcome,
++        "native_request_id": request_id,
++        "queue_entry_id": queue_entry_id, "provisional": true}),
++    )
 +}
 +
 +fn zedlink_error_value(
@@ -5269,36 +5586,26 @@ diff --git a/crates/debugger_ui/src/debugger_panel.rs b/crates/debugger_ui/src/d
 index e980e0a7cc..7a7c0de0f5 100644
 --- a/crates/debugger_ui/src/debugger_panel.rs
 +++ b/crates/debugger_ui/src/debugger_panel.rs
-@@ -139,8 +139,7 @@ impl DebugPanel {
-         });
-     }
+@@ -141,4 +141,3 @@ impl DebugPanel {
 
 -    #[cfg(test)]
 -    pub(crate) fn sessions(&self) -> impl Iterator<Item = Entity<DebugSession>> {
 +    pub fn sessions(&self) -> impl Iterator<Item = Entity<DebugSession>> {
          self.sessions_with_children.keys().cloned()
-     }
-
 diff --git a/crates/debugger_ui/src/debugger_ui.rs b/crates/debugger_ui/src/debugger_ui.rs
 index 35096898de..5a28e274b5 100644
 --- a/crates/debugger_ui/src/debugger_ui.rs
 +++ b/crates/debugger_ui/src/debugger_ui.rs
-@@ -20,7 +20,7 @@ pub mod debugger_panel;
- mod dropdown_menus;
- mod new_process_modal;
+@@ -22,3 +22,3 @@ mod new_process_modal;
  mod persistence;
 -pub(crate) mod session;
 +pub mod session;
 
- #[cfg(any(test, feature = "test-support"))]
- pub mod tests;
 diff --git a/crates/project/src/task_inventory.rs b/crates/project/src/task_inventory.rs
 index 75363e9d4b..b665ea9813 100644
 --- a/crates/project/src/task_inventory.rs
 +++ b/crates/project/src/task_inventory.rs
-@@ -305,6 +305,31 @@ impl Inventory {
-         })
-     }
+@@ -307,2 +307,27 @@ impl Inventory {
 
 +    pub fn configured_tasks_for_worktree(
 +        &self,
@@ -5326,27 +5633,19 @@ index 75363e9d4b..b665ea9813 100644
 +    }
 +
      pub fn scenario_scheduled(
-         &mut self,
-         scenario: DebugScenario,
 diff --git a/crates/settings/src/vscode_import.rs b/crates/settings/src/vscode_import.rs
-index 8f6e81ec69..3afaf26f07 100644
+index 3cc073635e..42815dfbfb 100644
 --- a/crates/settings/src/vscode_import.rs
 +++ b/crates/settings/src/vscode_import.rs
-@@ -245,6 +245,7 @@ impl VsCodeSettings {
-             modeline_lines: None,
-             feature_flags: None,
+@@ -248,2 +248,3 @@ impl VsCodeSettings {
              instrumentation: None,
 +            zedlink: None,
          }
-     }
-
 diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
-index 88083da0ba..234e820298 100644
+index c97679dfae..f3c69f244b 100644
 --- a/crates/settings_content/src/settings_content.rs
 +++ b/crates/settings_content/src/settings_content.rs
-@@ -334,6 +334,199 @@ pub struct SettingsContent {
-     /// Settings for developer-oriented instrumentation tools (profilers,
-     /// tracers, etc.) that can be toggled at runtime.
+@@ -337,2 +337,195 @@ pub struct SettingsContent {
      pub instrumentation: Option<InstrumentationSettingsContent>,
 +
 +    /// Configuration for the local ZedLink bridge used to expose explicitly
@@ -5542,36 +5841,26 @@ index 88083da0ba..234e820298 100644
 +    #[strum(serialize = "Custom Private HTTPS")]
 +    Custom,
  }
-
- /// Configuration for developer-oriented instrumentation tools that collect
-@@ -411,7 +604,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
-         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
-         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
+@@ -414,3 +607,3 @@ fallible_options::flattened_deserialize!(SettingsContent {
          title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
 -        instrumentation,
 +        instrumentation, zedlink,
      },
-     defaults: {},
- });
 diff --git a/crates/settings_ui/Cargo.toml b/crates/settings_ui/Cargo.toml
 index 861b71e221..c9284f4305 100644
 --- a/crates/settings_ui/Cargo.toml
 +++ b/crates/settings_ui/Cargo.toml
-@@ -63,7 +63,9 @@ serde_json.workspace = true
- serde_yaml_ng.workspace = true
- settings.workspace = true
+@@ -65,3 +65,5 @@ settings.workspace = true
  shell_command_parser.workspace = true
 +smol.workspace = true
  strum.workspace = true
 +task.workspace = true
  telemetry.workspace = true
- theme.workspace = true
- theme_settings.workspace = true
 diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
-index 24b82e56d0..68dccf2eda 100644
+index 138acacbc8..628b1704cd 100644
 --- a/crates/settings_ui/src/page_data.rs
 +++ b/crates/settings_ui/src/page_data.rs
-@@ -1,13 +1,22 @@
+@@ -1,11 +1,20 @@
 -use gpui::{Action as _, App};
 +use gpui::{
 +    Action as _, AnyElement, App, Context, PromptButton, PromptLevel, ReadGlobal, ScrollHandle,
@@ -5596,11 +5885,7 @@ index 24b82e56d0..68dccf2eda 100644
 +};
 +use util::ResultExt as _;
 
- use crate::{
-     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
-@@ -23,6 +32,71 @@ const DEFAULT_STRING: String = String::new();
- /// A default empty string reference. Useful in `pick` functions for cases either in dynamic item fields, or when dealing with `settings::Maybe`
- /// to avoid the "NO DEFAULT" case.
+@@ -25,2 +34,67 @@ const DEFAULT_STRING: String = String::new();
  const DEFAULT_EMPTY_STRING: Option<&String> = Some(&DEFAULT_STRING);
 +const TAILSCALE_DNS_ADMIN_URL: &str = "https://login.tailscale.com/admin/dns";
 +
@@ -5668,17 +5953,11 @@ index 24b82e56d0..68dccf2eda 100644
 +    }
 +}
 
- const DEFAULT_AUDIO_OUTPUT: AudioOutputDeviceName = AudioOutputDeviceName(None);
- const DEFAULT_EMPTY_AUDIO_OUTPUT: Option<&AudioOutputDeviceName> = Some(&DEFAULT_AUDIO_OUTPUT);
-@@ -77,11 +151,1534 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
-         version_control_page(),
-         collaboration_page(),
+@@ -79,2 +153,3 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
          ai_page(cx),
 +        zedlink_page(),
          network_page(),
-         developer_page(cx),
-     ]
- }
+@@ -84,2 +159,1524 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
 
 +fn run_zedlink_in_terminal(
 +    action: &'static str,
@@ -7203,36 +7482,24 @@ index 24b82e56d0..68dccf2eda 100644
 +}
 +
  fn developer_page(cx: &App) -> SettingsPage {
-     use feature_flags::FeatureFlagAppExt as _;
-
 diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
-index 857a0ce621..9699d4ac4c 100644
+index f2eef116d9..f8d99d60d9 100644
 --- a/crates/settings_ui/src/settings_ui.rs
 +++ b/crates/settings_ui/src/settings_ui.rs
-@@ -640,6 +640,7 @@ fn init_renderers(cx: &mut App) {
-         .add_basic_renderer::<settings::NotifyWhenAgentWaiting>(render_dropdown)
-         .add_basic_renderer::<settings::PlaySoundWhenAgentDone>(render_dropdown)
+@@ -642,2 +642,3 @@ fn init_renderers(cx: &mut App) {
          .add_basic_renderer::<settings::ThinkingBlockDisplay>(render_dropdown)
 +        .add_basic_renderer::<settings::ZedLinkConnectionProvider>(render_dropdown)
          .add_basic_renderer::<settings::ImageFileSizeUnit>(render_dropdown)
-         .add_basic_renderer::<settings::StatusStyle>(render_dropdown)
-         .add_basic_renderer::<settings::GitPanelClickBehavior>(render_dropdown)
 diff --git a/crates/terminal/src/alacritty.rs b/crates/terminal/src/alacritty.rs
 index b2e2107da9..6b37e400ab 100644
 --- a/crates/terminal/src/alacritty.rs
 +++ b/crates/terminal/src/alacritty.rs
-@@ -18,7 +18,7 @@ use alacritty_terminal::{
-     sync::FairMutex,
-     term::{
+@@ -20,3 +20,3 @@ use alacritty_terminal::{
          Config, Osc52, RenderableCursor, SEMANTIC_ESCAPE_CHARS, Term, TermMode,
 -        cell::{Cell as AlacCell, Flags, Hyperlink as AlacHyperlink},
 +        cell::{Cell as AlacCell, Flags, Hyperlink as AlacHyperlink, LineLength},
          search::{Match, RegexIter, RegexSearch},
-     },
-     tty,
-@@ -951,6 +951,73 @@ pub(super) fn make_content(term: &Term<ZedListener>, last_content: &Content) ->
-     }
- }
+@@ -953,2 +953,69 @@ pub(super) fn make_content(term: &Term<ZedListener>, last_content: &Content) ->
 
 +pub(super) fn styled_content(term: &Term<ZedListener>, max_bytes: usize) -> Vec<(String, Cell)> {
 +    let grid = term.grid();
@@ -7302,15 +7569,11 @@ index b2e2107da9..6b37e400ab 100644
 +}
 +
  pub(super) fn content_text(term: &Term<ZedListener>) -> String {
-     let start = AlacPoint::new(term.topmost_line(), Column(0));
-     let end = AlacPoint::new(term.bottommost_line(), term.last_column());
 diff --git a/crates/terminal/src/terminal.rs b/crates/terminal/src/terminal.rs
-index aee760ec58..16b6c89334 100644
+index 141a9224f1..2056bf8dfd 100644
 --- a/crates/terminal/src/terminal.rs
 +++ b/crates/terminal/src/terminal.rs
-@@ -2522,6 +2522,11 @@ impl Terminal {
-         f(RenderableCells::new(content.display_iter))
-     }
+@@ -2524,2 +2524,7 @@ impl Terminal {
 
 +    pub fn get_styled_content(&self, max_bytes: usize) -> Vec<(String, Cell)> {
 +        let term = self.term.lock_unfair();
@@ -7318,8 +7581,6 @@ index aee760ec58..16b6c89334 100644
 +    }
 +
      pub fn get_content(&self) -> String {
-         let term = self.term.lock_unfair();
-         content_text(&term)
 diff --git a/crates/zed/RELEASE_CHANNEL b/crates/zed/RELEASE_CHANNEL
 index 38f8e886e1..870bbe4e50 100644
 --- a/crates/zed/RELEASE_CHANNEL

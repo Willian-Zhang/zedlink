@@ -59,11 +59,12 @@ struct GatewayClient {
         return result
     }
 
-    private func call(_ path: String, payload: [String: Any]? = nil, authorized: Bool = false) async throws -> [String: Any] {
+    private func call(_ path: String, payload: [String: Any]? = nil, authorized: Bool = false,
+                      method: String? = nil) async throws -> [String: Any] {
         var request = URLRequest(url: try address(path))
         request.timeoutInterval = 12
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.httpMethod = payload == nil ? "GET" : "POST"
+        request.httpMethod = method ?? (payload == nil ? "GET" : "POST")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let payload {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -144,6 +145,32 @@ struct GatewayClient {
         return result
     }
 
+    func apnsStatus() async throws -> (supported: Bool, enabled: Bool) {
+        try await verifyIdentity()
+        let result = try await call("/v1/notifications/apns", authorized: true)
+        guard let supported = result["supported"] as? Bool,
+              let enabled = result["enabled"] as? Bool else { throw GatewayFailure.invalidResponse }
+        return (supported, enabled)
+    }
+
+    func registerAPNs(token: String, environment: String) async throws {
+        try await verifyIdentity()
+        let result = try await call("/v1/notifications/apns", payload: ["token": token, "environment": environment], authorized: true)
+        guard result["enabled"] as? Bool == true else { throw GatewayFailure.invalidResponse }
+    }
+
+    func unregisterAPNs() async throws {
+        try await verifyIdentity()
+        let result = try await call("/v1/notifications/apns", authorized: true, method: "DELETE")
+        guard result["enabled"] as? Bool == false else { throw GatewayFailure.invalidResponse }
+    }
+
+    func testAPNs() async throws {
+        try await verifyIdentity()
+        let result = try await call("/v1/notifications/apns/test", payload: [:], authorized: true)
+        guard result["delivered"] as? Bool == true else { throw GatewayFailure.invalidResponse }
+    }
+
     func eventStream(threadID: String, afterSequence: Int) throws -> AsyncThrowingStream<[String: Any], Error> {
         guard let token else { throw GatewayFailure.native("Pair this device first.") }
         guard var components = URLComponents(string: profile.endpoint), components.scheme == "https" else {
@@ -156,9 +183,29 @@ struct GatewayClient {
             URLQueryItem(name: "after_sequence", value: String(afterSequence)),
         ] + (targetID.map { [URLQueryItem(name: "target_id", value: $0)] } ?? [])
         guard let url = components.url else { throw GatewayFailure.invalidResponse }
-        let task = URLSession.shared.webSocketTask(with: url, protocols: ["zedlink-v1", "zedlink-token-\(token)"])
+        let task = Self.session.webSocketTask(with: url, protocols: ["zedlink-v1", "zedlink-token-\(token)"])
+        task.maximumMessageSize = 4_194_304
         return AsyncThrowingStream { continuation in
             task.resume()
+            let heartbeat = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(15))
+                    if Task.isCancelled { return }
+                    let timeout = Task {
+                        try? await Task.sleep(for: .seconds(5))
+                        if Task.isCancelled { return }
+                        continuation.finish(throwing: GatewayFailure.native("Gateway event stream timed out."))
+                        task.cancel(with: .goingAway, reason: nil)
+                    }
+                    task.sendPing { error in
+                        timeout.cancel()
+                        if let error {
+                            continuation.finish(throwing: error)
+                            task.cancel(with: .goingAway, reason: nil)
+                        }
+                    }
+                }
+            }
             let receiver = Task {
                 do {
                     while !Task.isCancelled {
@@ -172,7 +219,9 @@ struct GatewayClient {
                     }
                 } catch { continuation.finish(throwing: error) }
             }
-            continuation.onTermination = { _ in receiver.cancel(); task.cancel(with: .goingAway, reason: nil) }
+            continuation.onTermination = { _ in
+                receiver.cancel(); heartbeat.cancel(); task.cancel(with: .goingAway, reason: nil)
+            }
         }
     }
 }

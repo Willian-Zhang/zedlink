@@ -12,13 +12,12 @@ struct SessionsView: View {
     @State private var filter = "All"
     @State private var showingNewSession = false
     @Binding var navigationPath: [String]
-    @FocusState private var searchFocused: Bool
     private let groups = ["Needs attention", "Running", "Ready & other"]
     private func key(_ thread: NativeThread) -> String {
         SessionLibrary.key(profile: session.profile?.gatewayID ?? "", target: session.targetID ?? "", thread: thread.id)
     }
     private var visibleThreads: [NativeThread] {
-        session.threads.filter { thread in
+        session.visibleThreads.filter { thread in
             let activity = SessionActivity(thread)
             return (search.isEmpty || (thread.title + " " + thread.agentName + " " + thread.id).localizedCaseInsensitiveContains(search)) &&
                 (filter == "All" || filter == "Needs attention" && activity.attention || filter == "Running" && activity.running || filter == "Pinned" && library.pins.contains(key(thread)))
@@ -35,17 +34,14 @@ struct SessionsView: View {
                     connectionHeader
                     if session.demoPreview { Text("DEMO PREVIEW · Sample sessions, no live connection").font(.caption).foregroundStyle(ZLTheme.warning).padding(.horizontal, 16).padding(.vertical, 8) }
                     if !session.issue.isEmpty { SessionIssueBanner() }
-                    HStack(spacing: 9) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(ZLTheme.muted)
-                        TextField("Search sessions or agents", text: $search)
-                            .textInputAutocapitalization(.never).submitLabel(.search).focused($searchFocused)
-                            .onSubmit { searchFocused = false }.accessibilityIdentifier("session-search")
-                    }.padding(.horizontal, 12).frame(minHeight: 44).background(ZLTheme.surface)
-                        .overlay(Rectangle().stroke(ZLTheme.line)).padding(.horizontal, 16).padding(.top, 12)
+                    if session.state != .live && !session.visibleThreads.isEmpty {
+                        Text(session.state == .connecting ? "Saved sessions · reconciling with desktop Zed" : "Saved sessions · reconnect to update")
+                            .font(.caption).foregroundStyle(ZLTheme.warning).padding(.horizontal, 16).padding(.vertical, 8)
+                    }
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 16) {
                             ForEach(["All", "Needs attention", "Running", "Pinned"], id: \.self) { label in
-                                Button { filter = label; searchFocused = false } label: {
+                                Button { filter = label; dismissZedLinkKeyboard() } label: {
                                     Text(label).font(.subheadline).foregroundStyle(filter == label ? ZLTheme.ink : ZLTheme.muted)
                                         .frame(minHeight: 44).overlay(alignment: .bottom) { if filter == label { Rectangle().fill(ZLTheme.ink).frame(height: 2) } }
                                 }.buttonStyle(.plain).accessibilityIdentifier("session-filter-" + label)
@@ -55,8 +51,18 @@ struct SessionsView: View {
                     Hairline()
                     if visibleThreads.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(session.profile == nil ? "Choose a connection" : session.threads.isEmpty ? (session.state == .live ? "No exposed sessions" : "Sessions unavailable") : "No matching sessions").font(.headline)
-                            Text(session.profile == nil ? "Pair a private gateway in Connections." : session.threads.isEmpty ? (session.state == .live ? "Expose a conversation with /remote-control in desktop Zed, or create a session using +." : "Reconnect to refresh your sessions.") : "Try another search or filter.").font(.subheadline).foregroundStyle(ZLTheme.muted)
+                            Text(session.profile == nil ? "Choose a connection" : session.visibleThreads.isEmpty ? (session.state == .live ? "No exposed sessions" : "Sessions unavailable") : "No matching sessions").font(.headline)
+                            Text(session.profile == nil ? "Pair a private gateway in Connections." : session.visibleThreads.isEmpty ? (session.state == .live ? "Expose a conversation with /remote-control in desktop Zed, or create a session using +." : "Reconnect to refresh your sessions.") : "Try another search or filter.").font(.subheadline).foregroundStyle(ZLTheme.muted)
+                            if session.profile == nil {
+                                Button("Open Connections") { session.showConnections = true }
+                                    .buttonStyle(.borderedProminent)
+                            } else if session.state != .live {
+                                Button("Reconnect") { Task { await session.refresh() } }
+                                    .buttonStyle(.bordered).disabled(session.state == .connecting || session.state == .reconnecting)
+                            } else if session.visibleThreads.isEmpty && session.capabilities.contains("thread.create") {
+                                Button("Create Agent session") { showingNewSession = true }
+                                    .buttonStyle(.bordered)
+                            }
                         }.padding(20)
                     }
                     ForEach(groups, id: \.self) { group in
@@ -70,7 +76,7 @@ struct SessionsView: View {
                                         SessionRow(thread: thread, live: session.state == .live, updated: library.updated.contains(key(thread)))
                                     }.buttonStyle(.plain).accessibilityIdentifier("thread-" + thread.id)
                                         .allowsHitTesting(!session.demoPreview)
-                                        .simultaneousGesture(TapGesture().onEnded { searchFocused = false; library.seen(key(thread)) })
+                                        .simultaneousGesture(TapGesture().onEnded { dismissZedLinkKeyboard(); library.seen(key(thread)) })
                                     Button { library.toggle(key(thread)) } label: {
                                         Image(systemName: library.pins.contains(key(thread)) ? "pin.fill" : "pin")
                                             .foregroundStyle(library.pins.contains(key(thread)) ? ZLTheme.focus : ZLTheme.muted).frame(width: 44, height: 44)
@@ -82,6 +88,8 @@ struct SessionsView: View {
                     }
                 }.padding(.bottom, 16)
             }.background(ZLTheme.background).scrollDismissesKeyboard(.interactively)
+                .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions and agents")
+                .onSubmit(of: .search) { dismissZedLinkKeyboard() }
                 .toolbar(.visible, for: .navigationBar).navigationTitle("Sessions").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -99,7 +107,7 @@ struct SessionsView: View {
                     library.observe(threads, profile: session.profile?.gatewayID ?? "", target: session.targetID ?? "", selected: session.selectedThreadID)
                 }
                 .onChange(of: session.notificationThreadID) { _, thread in
-                    if let thread { searchFocused = false; navigationPath = [thread]; session.notificationThreadID = nil }
+                    if let thread { dismissZedLinkKeyboard(); navigationPath = [thread]; session.notificationThreadID = nil }
                 }
                 .refreshable { await session.refresh() }
         }
@@ -211,11 +219,15 @@ struct ConversationView: View {
     @State private var showingAgentHistory = false
     @State private var lastKnownTitle = ""
     @State private var showingModelControls = false
+    @State private var showingConversationSearch = false
+    @State private var searchJumpIndex: Int?
+    @State private var unreadEntries = 0
+    @State private var newActivityWhileReading = false
     @State private var dismissedSlashDraft = ""
     @State private var followsConversation = true
     @State private var scrollHeight: CGFloat = 0
     @State private var userScrolling = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var followScrollTask: Task<Void, Never>?
     @State private var proposedTitle = ""
     @State private var rewindPoint: NativeRewindPoint?
     @State private var composerPhoto: PhotosPickerItem?
@@ -227,8 +239,10 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             SessionIssueBanner()
             if let snapshot = session.snapshot, snapshot.threadID == threadID {
+                if session.state != .live { savedConversationBanner("Showing the last known conversation while reconnecting.") }
                 conversation(snapshot)
-                if let error = snapshot.agentError {
+                    .onAppear { session.markConversationVisible() }
+                if session.state == .live, let error = snapshot.agentError {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(error.title, systemImage: "exclamationmark.triangle").font(.caption.bold())
                         ScrollView { Text(error.message).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 100)
@@ -236,18 +250,31 @@ struct ConversationView: View {
                     }.foregroundStyle(ZLTheme.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                         .background(ZLTheme.surface).accessibilityIdentifier("native-agent-error")
                 }
-                if !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
-                if !session.elicitations.isEmpty { elicitationStack }
-                if session.editReview != nil || !session.queuedMessages.isEmpty { nativeControls }
+                if session.state == .live && !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
+                if session.state == .live && !session.elicitations.isEmpty { elicitationStack }
+                if session.state == .live && (session.editReview != nil || !session.queuedMessages.isEmpty) { nativeControls }
+            } else if (session.state != .live || session.selectedThreadID != threadID),
+                      let cached = session.cachedConversation(threadID) {
+                let detail = session.state != .live ? "Reconnect for current state and earlier messages."
+                    : session.threads.contains(where: { $0.id == threadID }) ? "Loading current state from desktop Zed."
+                    : "This thread is not currently exposed."
+                savedConversationBanner("Saved copy from \(cached.updatedAt.formatted(date: .abbreviated, time: .shortened)). \(detail)")
+                conversation(cached.displaySnapshot)
+                    .onAppear { session.markConversationVisible() }
             } else {
-                ContentUnavailableView(session.state == .live && !session.threads.contains(where: { $0.id == threadID }) ? "Session is not exposed" : "Loading native thread", systemImage: "bubble.left", description: Text("Keep this conversation exposed with /remote-control in desktop Zed. Its contents will reload when it becomes available."))
-                    .frame(maxHeight: .infinity)
+                VStack(spacing: 12) {
+                    ContentUnavailableView(session.state == .live && !session.threads.contains(where: { $0.id == threadID }) ? "Session is not exposed" : "Loading native thread", systemImage: "bubble.left", description: Text("Keep this conversation exposed with /remote-control in desktop Zed. Its contents will reload when it becomes available."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if session.state != .live { recoveryAction.padding(.bottom, 16) }
+                    else { Button("Back to sessions") { dismiss() }.buttonStyle(.bordered).padding(.bottom, 16) }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(ZLTheme.background)
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
         .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
         .task(id: [threadID, session.profile?.id.uuidString ?? "", session.targetID ?? "", session.instanceID ?? "", session.epoch ?? "", String(session.state == .live), String(session.threads.contains(where: { $0.id == threadID }))]) {
             guard session.state == .live, session.threads.contains(where: { $0.id == threadID }) else { return }
             lastKnownTitle = session.threads.first { $0.id == threadID }?.title ?? "Agent thread"
@@ -257,8 +284,18 @@ struct ConversationView: View {
         .onChange(of: session.snapshot?.title) { _, title in
             if session.snapshot?.threadID == threadID, let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lastKnownTitle = title }
         }
+        .onChange(of: session.cachedConversations.count, initial: true) { _, _ in
+            if let title = session.cachedConversation(threadID)?.title, lastKnownTitle.isEmpty { lastKnownTitle = title }
+        }
         .sheet(isPresented: $showingAgentHistory) { SubagentHistoryView() }
-        .onDisappear { composerFocused = false }
+        .sheet(isPresented: $showingConversationSearch) {
+            ConversationSearchSheet(threadID: threadID) { index in
+                followsConversation = false
+                searchJumpIndex = index
+                showingConversationSearch = false
+            }
+        }
+        .onDisappear { composerFocused = false; followScrollTask?.cancel(); followScrollTask = nil }
         .sheet(isPresented: Binding(get: { selectedChildID != nil }, set: { if !$0 { selectedChildID = nil } })) {
             if let id = selectedChildID { SubagentReader(childID: id) }
         }
@@ -315,34 +352,87 @@ struct ConversationView: View {
         } message: { Text("Messages and Agent edits after this point may be removed.") }
     }
 
+    private func savedConversationBanner(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(message, systemImage: "clock.arrow.circlepath")
+                .font(.caption).foregroundStyle(ZLTheme.warning)
+            if session.state != .live { recoveryAction }
+        }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("saved-conversation-banner")
+    }
+
+    private var recoveryAction: some View {
+        Group {
+            if session.profile == nil {
+                Button("Choose connection") { session.showConnections = true }
+            } else {
+                Button("Reconnect to desktop Zed") { Task { await session.refresh() } }
+                    .disabled(session.state == .connecting || session.state == .reconnecting)
+            }
+        }.buttonStyle(.bordered).frame(minHeight: 44)
+            .accessibilityIdentifier("conversation-reconnect")
+    }
+
     private var conversationHeader: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button { composerFocused = false; dismiss() } label: {
-                    Image(systemName: "arrow.left").frame(width: 44, height: 44)
-                }.accessibilityLabel("Back to sessions").accessibilityIdentifier("back-to-sessions")
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(lastKnownTitle.isEmpty ? "Agent thread" : lastKnownTitle).font(.headline).lineLimit(2)
-                    if session.state != .live { ConnectionStatusView(state: session.state) }
-                }.frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("conversation-title")
-                Button { composerFocused = false; showingContext = true } label: {
-                    Image(systemName: "square.grid.2x2").frame(width: 44, height: 44)
-                }.accessibilityLabel("Workspace").accessibilityIdentifier("open-workspace")
-                Menu {
-                    Text("Connection: \(session.state.label)")
-                    if !session.delivery.isEmpty { Menu("Recent delivery status") { Text(session.delivery) } }
-                    Button("Agent history", systemImage: "person.2") { composerFocused = false; showingAgentHistory = true }
-                    Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
-                    Button("Rename session", systemImage: "pencil") {
-                        proposedTitle = session.snapshot?.title ?? ""; showingRename = true
-                    }.disabled(!session.capabilities.contains("thread.rename"))
-                    Button("Stop exposing", systemImage: "eye.slash", role: .destructive) { showingUnexposeConfirmation = true }
-                        .disabled(!session.capabilities.contains("thread.unexpose"))
-                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
-                    .accessibilityLabel("Session actions")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    backButton
+                    headerTitle.frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+                    workspaceButton
+                    headerActions
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        backButton
+                        Spacer(minLength: 0)
+                        workspaceButton
+                        headerActions
+                    }
+                    headerTitle.padding(.horizontal, 12).padding(.bottom, 8)
+                }
             }.padding(.horizontal, 8).padding(.vertical, 4).buttonStyle(.plain)
             Hairline()
         }.background(ZLTheme.background).foregroundStyle(ZLTheme.ink)
+    }
+
+    private var backButton: some View {
+        Button { composerFocused = false; dismiss() } label: {
+            Image(systemName: "arrow.left").frame(width: 44, height: 44)
+        }.accessibilityLabel("Back to sessions").accessibilityIdentifier("back-to-sessions")
+    }
+
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(lastKnownTitle.isEmpty ? "Agent thread" : lastKnownTitle)
+                .font(.headline).lineLimit(2)
+            if session.state != .live { ConnectionStatusView(state: session.state) }
+        }.accessibilityIdentifier("conversation-title")
+    }
+
+    private var workspaceButton: some View {
+        Button { composerFocused = false; showingContext = true } label: {
+            Image(systemName: "square.grid.2x2").frame(width: 44, height: 44)
+        }.accessibilityLabel("Workspace").accessibilityIdentifier("open-workspace")
+    }
+
+    private var headerActions: some View {
+        Menu {
+            Text("Connection: \(session.state.label)")
+            Button("Find in conversation", systemImage: "magnifyingglass") { showingConversationSearch = true }
+            if !session.delivery.isEmpty { Menu("Recent delivery status") { Text(session.delivery) } }
+            Button("Agent history", systemImage: "person.2") { composerFocused = false; showingAgentHistory = true }
+            Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
+            Button("Rename session", systemImage: "pencil") {
+                proposedTitle = session.snapshot?.title ?? ""; showingRename = true
+            }.disabled(!session.capabilities.contains("thread.rename"))
+            Button("Stop exposing", systemImage: "eye.slash", role: .destructive) { showingUnexposeConfirmation = true }
+                .disabled(!session.capabilities.contains("thread.unexpose"))
+        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+            .accessibilityLabel("Session actions")
     }
 
     private func conversation(_ snapshot: ThreadSnapshot) -> some View {
@@ -369,7 +459,7 @@ struct ConversationView: View {
                             Hairline()
                         }
                     }
-                    if snapshot.hasOlderEntries {
+                    if snapshot.hasOlderEntries && session.state == .live && session.snapshot?.threadID == snapshot.threadID {
                         Button("Load earlier conversation · \(snapshot.entryStartIndex) remaining") {
                             followsConversation = false
                             Task { await session.loadEarlierHistory() }
@@ -377,21 +467,21 @@ struct ConversationView: View {
                         .font(.footnote).foregroundStyle(ZLTheme.muted)
                         .padding(.horizontal, 16).padding(.vertical, 12)
                     }
-                    ForEach(Array(snapshot.entries.enumerated()).map {
-                        IndexedTranscriptEntry(id: snapshot.entryStartIndex + $0.offset, markdown: $0.element)
-                    }) { entry in
+                    ForEach(snapshot.entryStartIndex..<(snapshot.entryStartIndex + snapshot.entries.count), id: \.self) { entryIndex in
+                        let markdown = snapshot.entries[entryIndex - snapshot.entryStartIndex]
                         VStack(alignment: .leading, spacing: 0) {
                             NativeMessageView(
-                                message: NativeEntryPresentation(entry.markdown, index: entry.id),
-                                thinkingLive: snapshot.isBusy && entry.id == snapshot.totalEntries - 1
-                            )
-                            if !snapshot.isBusy, session.capabilities.contains("thread.rewind"),
-                               let point = snapshot.rewindPoints.first(where: { $0.entryIndex == entry.id }) {
+                                message: NativeEntryPresentation(markdown, index: entryIndex),
+                                thinkingLive: snapshot.isBusy && entryIndex == snapshot.totalEntries - 1
+                            ).equatable()
+                            if session.state == .live, session.snapshot?.threadID == snapshot.threadID,
+                               !snapshot.isBusy, session.capabilities.contains("thread.rewind"),
+                               let point = snapshot.rewindPoints.first(where: { $0.entryIndex == entryIndex }) {
                                 Button("Rewind conversation here", role: .destructive) { rewindPoint = point }
                                 .font(.caption).padding(.horizontal, 16).padding(.bottom, 8)
                             }
                         }
-                            .id(entry.id)
+                            .id(entryIndex)
                         Hairline().padding(.horizontal, 14)
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
@@ -404,7 +494,10 @@ struct ConversationView: View {
             .background(GeometryReader { geometry in Color.clear.preference(key: ConversationScrollMetrics.self, value: ["height": geometry.size.height]) })
             .onPreferenceChange(ConversationScrollMetrics.self) { metrics in
                 if let height = metrics["height"] { scrollHeight = height }
-                if userScrolling, let bottom = metrics["bottom"], scrollHeight > 0 { followsConversation = bottom >= 0 && bottom <= scrollHeight + 50 }
+                if userScrolling, let bottom = metrics["bottom"], scrollHeight > 0 {
+                    followsConversation = bottom >= 0 && bottom <= scrollHeight + 50
+                    if followsConversation { unreadEntries = 0; newActivityWhileReading = false }
+                }
             }
             .simultaneousGesture(DragGesture().onChanged { _ in userScrolling = true; followsConversation = false }.onEnded { _ in userScrolling = false })
             .defaultScrollAnchor(.bottom)
@@ -414,10 +507,16 @@ struct ConversationView: View {
                     HStack {
                         Spacer()
                         Button {
-                            followsConversation = true; dismissZedLinkKeyboard()
+                            followScrollTask?.cancel()
+                            followsConversation = true; unreadEntries = 0; newActivityWhileReading = false
+                            dismissZedLinkKeyboard()
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
-                        } label: { Label("Latest", systemImage: "arrow.down").font(.caption).frame(minHeight: 44) }
+                        } label: {
+                            Label(unreadEntries > 0 ? "Latest · \(unreadEntries) new" : newActivityWhileReading ? "Latest · new activity" : "Latest", systemImage: "arrow.down")
+                                .font(.caption).frame(minHeight: 44)
+                        }
                             .buttonStyle(.plain).accessibilityIdentifier("jump-to-latest")
+                            .accessibilityHint("Scrolls to the newest Agent message")
                     }.padding(.horizontal, 16).background(ZLTheme.background)
                         .overlay(alignment: .top) { Hairline() }
                 }
@@ -425,13 +524,26 @@ struct ConversationView: View {
             .task(id: [snapshot.instanceID, snapshot.epoch, snapshot.threadID]) {
                 // Explicit initial placement after restored transcript layout, without animation.
                 followsConversation = true
+                unreadEntries = 0; newActivityWhileReading = false
                 await Task.yield()
                 proxy.scrollTo("conversation-bottom", anchor: .bottom)
             }
-            .onChange(of: snapshot.entries) { _, _ in
-                if followsConversation {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+            .onChange(of: snapshot.totalEntries) { old, new in
+                if !followsConversation { unreadEntries += max(0, new - old) }
+            }
+            .onChange(of: snapshot.entries.last) { _, _ in
+                guard followsConversation else { newActivityWhileReading = true; return }
+                followScrollTask?.cancel()
+                followScrollTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(90))
+                    guard !Task.isCancelled, followsConversation else { return }
+                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
                 }
+            }
+            .onChange(of: searchJumpIndex) { _, index in
+                guard let index else { return }
+                proxy.scrollTo(index, anchor: .center)
+                searchJumpIndex = nil
             }
         }
     }
@@ -520,47 +632,18 @@ struct ConversationView: View {
                     session.insertCommand(command); dismissedSlashDraft = session.draft
                 }.task { await session.refreshCommands() }
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                Button { composerFocused = false; showingCommands = true } label: {
-                    Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
-                }
-                .foregroundStyle(.primary)
-                .accessibilityLabel("Zed Agent actions and commands")
-
-                PhotosPicker(selection: $composerPhoto, matching: .images) {
-                    Image(systemName: "photo.badge.plus").font(.title3).frame(width: 44, height: 44)
-                }
-                .disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
-                .accessibilityLabel("Attach or annotate image")
-
-                TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
-                    .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
-                    .focused($composerFocused)
-                    .submitLabel(.send)
-                    .onSubmit { sendAndDismissKeyboard() }
-                    .accessibilityLabel("Message to native Zed Agent")
-                    .accessibilityIdentifier("composer")
-
-                VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
-                if session.canCancel {
-                    HStack(spacing: 5) {
-                        ProgressView().controlSize(.small).tint(ZLTheme.focus)
-                            .accessibilityLabel(session.liveActivity.displayText)
-                        Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
-                            Image(systemName: "stop.fill").font(.headline).frame(width: 42, height: 42)
-                        }
-                        .foregroundStyle(.white).background(ZLTheme.danger)
-                        .clipShape(Circle())
-                        .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .bottom, spacing: 4) {
+                    composerExtras
+                    composerTextField.frame(minWidth: 110)
+                    sendOrStopButton
+                }.frame(minWidth: 350)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        composerTextField
+                        sendOrStopButton
                     }
-                } else {
-                    Button { sendAndDismissKeyboard() } label: {
-                        Image(systemName: "arrow.up").font(.headline).frame(width: 42, height: 42)
-                    }
-                    .foregroundStyle(ZLTheme.background).background(ZLTheme.ink)
-                    .clipShape(Circle())
-                    .disabled(!session.canSend || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.attachments.isEmpty && session.contextPaths.isEmpty)
-                    .accessibilityLabel("Send").accessibilityIdentifier("send-prompt")
+                    composerExtras
                 }
             }
             .padding(4)
@@ -570,6 +653,47 @@ struct ConversationView: View {
         .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
         .background(ZLTheme.background)
         .overlay(alignment: .top) { Hairline() }
+    }
+
+    private var composerExtras: some View {
+        HStack(spacing: 2) {
+            Button { composerFocused = false; showingCommands = true } label: {
+                Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
+            }.foregroundStyle(.primary)
+                .accessibilityLabel("Zed Agent actions and commands")
+            PhotosPicker(selection: $composerPhoto, matching: .images) {
+                Image(systemName: "photo.badge.plus").font(.title3).frame(width: 44, height: 44)
+            }.disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
+                .accessibilityLabel("Attach or annotate image")
+            VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
+        }
+    }
+
+    private var composerTextField: some View {
+        TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
+            .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
+            .focused($composerFocused)
+            .submitLabel(.send)
+            .onSubmit { sendAndDismissKeyboard() }
+            .accessibilityLabel("Message to native Zed Agent")
+            .accessibilityIdentifier("composer")
+    }
+
+    private var sendOrStopButton: some View {
+        Group {
+            if session.canCancel {
+                Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
+                    Image(systemName: "stop.fill").font(.headline).frame(width: 44, height: 44)
+                }.foregroundStyle(.white).background(ZLTheme.danger).clipShape(Circle())
+                    .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
+            } else {
+                Button { sendAndDismissKeyboard() } label: {
+                    Image(systemName: "arrow.up").font(.headline).frame(width: 44, height: 44)
+                }.foregroundStyle(ZLTheme.background).background(ZLTheme.ink).clipShape(Circle())
+                    .disabled(!session.canSend || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.attachments.isEmpty && session.contextPaths.isEmpty)
+                    .accessibilityLabel("Send").accessibilityIdentifier("send-prompt")
+            }
+        }
     }
 
     private func agentProgress(_ _: ThreadSnapshot) -> some View {
@@ -604,6 +728,77 @@ struct ConversationView: View {
             Button("Clear") { showingClearConfirmation = true }
         }
         .font(.caption)
+    }
+}
+
+private struct ConversationSearchSheet: View {
+    @EnvironmentObject private var session: SessionManager
+    let threadID: String
+    let onSelect: (Int) -> Void
+    @State private var query = ""
+    @State private var loadingHistory = false
+
+    private var snapshot: ThreadSnapshot? {
+        if let snapshot = session.snapshot, snapshot.threadID == threadID { return snapshot }
+        return session.cachedConversation(threadID)?.displaySnapshot
+    }
+
+    private var matches: [Int] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let snapshot, needle.count >= 2 else { return [] }
+        return Array(snapshot.entries.indices.filter {
+            snapshot.entries[$0].localizedCaseInsensitiveContains(needle)
+        }.prefix(100))
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let snapshot {
+                    Section {
+                        Text("Searching messages \(snapshot.entries.isEmpty ? 0 : snapshot.entryStartIndex + 1)–\(snapshot.entryStartIndex + snapshot.entries.count) of \(snapshot.totalEntries). \(snapshot.hasOlderEntries ? "Load earlier messages below." : "All messages are loaded.")")
+                            .font(.footnote).foregroundStyle(ZLTheme.muted)
+                    }
+                    if query.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 {
+                        Text("Enter at least two characters to search loaded messages.")
+                            .foregroundStyle(ZLTheme.muted)
+                    } else if matches.isEmpty {
+                        ContentUnavailableView("No matches in loaded messages", systemImage: "magnifyingglass")
+                    } else {
+                        ForEach(matches, id: \.self) { offset in
+                            Button {
+                                onSelect(snapshot.entryStartIndex + offset)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Message \(snapshot.entryStartIndex + offset + 1)")
+                                        .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                                    Text(snapshot.entries[offset]).lineLimit(3)
+                                        .foregroundStyle(ZLTheme.ink)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.accessibilityIdentifier("conversation-search-result-\(snapshot.entryStartIndex + offset)")
+                        }
+                    }
+                    if snapshot.hasOlderEntries && session.state == .live && session.selectedThreadID == threadID {
+                        Button {
+                            loadingHistory = true
+                            Task {
+                                await session.loadEarlierHistory()
+                                loadingHistory = false
+                            }
+                        } label: {
+                            if loadingHistory { ProgressView("Loading earlier messages…") }
+                            else { Label("Load earlier messages", systemImage: "arrow.up.doc") }
+                        }.disabled(loadingHistory).accessibilityIdentifier("search-earlier-messages")
+                    }
+                } else {
+                    ContentUnavailableView("Conversation unavailable", systemImage: "bubble.left")
+                }
+            }
+            .searchable(text: $query, prompt: "Search messages")
+            .navigationTitle("Find in conversation")
+            .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("conversation-search")
+        }
     }
 }
 
@@ -778,11 +973,6 @@ private struct NativeContextSheet: View {
     }
 }
 
-private struct IndexedTranscriptEntry: Identifiable {
-    let id: Int
-    let markdown: String
-}
-
 private struct ActivityPanel: View {
     @EnvironmentObject private var session: SessionManager
     let snapshot: ThreadSnapshot
@@ -845,11 +1035,43 @@ private struct ActivityPanel: View {
     }
 }
 
-struct NativeMessageView: View {
+struct NativeMessageView: View, Equatable {
     let message: NativeEntryPresentation
     let thinkingLive: Bool
+    @State private var showingTextSelection = false
+
+    static func == (left: Self, right: Self) -> Bool {
+        left.message == right.message && left.thinkingLive == right.thinkingLive
+    }
+
+    private var selectableText: String {
+        ([message.body] + message.reasoning).filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
 
     var body: some View {
+        content
+            .overlay(alignment: .topTrailing) {
+                if !selectableText.isEmpty {
+                    Menu {
+                        Button("Copy message", systemImage: "doc.on.doc") { UIPasteboard.general.string = selectableText }
+                        Button("Select text", systemImage: "text.cursor") { showingTextSelection = true }
+                    } label: {
+                        Image(systemName: "text.cursor")
+                            .font(.caption).foregroundStyle(ZLTheme.muted)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Message text actions")
+                    .accessibilityIdentifier("message-text-actions-\(message.id)")
+                }
+            }
+            .contextMenu {
+                Button("Copy message") { UIPasteboard.general.string = selectableText }
+                Button("Select text") { showingTextSelection = true }
+            }
+            .sheet(isPresented: $showingTextSelection) { SelectableMessageSheet(text: selectableText) }
+    }
+
+    @ViewBuilder private var content: some View {
         switch message.kind {
         case .user:
             HStack {
@@ -929,7 +1151,8 @@ private struct ToolMessageView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plain).frame(minHeight: 44)
+            .accessibilityLabel(expanded ? "Hide tool details" : "Show tool details")
             if expanded { Hairline(); NativeMarkdownView(markdown: message.body) }
         }
         .padding(12).background(ZLTheme.surface)
@@ -956,7 +1179,8 @@ struct NativeApprovalView: View {
                     Text(input).font(.caption.monospaced()).textSelection(.enabled)
                 }
             }
-            Button(expanded ? "Hide details" : "Review details") { expanded.toggle() }.font(.caption)
+            Button(expanded ? "Hide details" : "Review details") { expanded.toggle() }
+                .font(.caption).frame(minHeight: 44)
             if session.resolvingApprovals.contains(approval.id) { ProgressView("Sending decision…") }
             Text(approval.authorizationKind == "action_choice" ? "Choose an action" : "Permission requested")
                 .font(.caption2.monospaced()).foregroundStyle(ZLTheme.warning)
@@ -970,7 +1194,7 @@ struct NativeApprovalView: View {
                         Task { await session.respond(to: approval, with: decision) }
                     } label: {
                         Text(decision.displayLabel)
-                            .frame(maxWidth: .infinity)
+                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(decision.isRejecting ? ZLTheme.warning : ZLTheme.focus)

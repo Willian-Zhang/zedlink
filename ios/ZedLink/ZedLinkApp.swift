@@ -1,6 +1,7 @@
 import SwiftUI
 
 @main @MainActor struct ZedLinkApp: App {
+    @UIApplicationDelegateAdaptor(ZedLinkAPNsDelegate.self) private var pushDelegate
     init() { ApprovalNotifications.shared.configure() }
     @StateObject private var library = SessionLibrary()
     @StateObject private var profiles = ProfileStore()
@@ -21,24 +22,13 @@ import SwiftUI
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                switch selectedTab {
-                case 1: ConnectionsView(draft: $connectionDraft)
-                case 2: SettingsView()
-                default: SessionsView(navigationPath: $sessionsPath)
-                }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if selectedTab != 0 || sessionsPath.isEmpty {
-                    VStack(spacing: 0) {
-                        Hairline()
-                        HStack(spacing: 0) {
-                            navigationButton("Sessions", symbol: "bolt.horizontal", tab: 0)
-                            navigationButton("Connections", symbol: "network", tab: 1)
-                            navigationButton("Settings", symbol: "gearshape", tab: 2)
-                        }
-                    }.background(ZLTheme.background)
-                }
+            TabView(selection: $selectedTab) {
+                SessionsView(navigationPath: $sessionsPath)
+                    .tabItem { Label("Sessions", systemImage: "bolt.horizontal") }.tag(0)
+                ConnectionsView(draft: $connectionDraft)
+                    .tabItem { Label("Connections", systemImage: "network") }.tag(1)
+                SettingsView()
+                    .tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
             }
             .environmentObject(profiles)
             .environmentObject(session)
@@ -56,6 +46,8 @@ import SwiftUI
                 if ProcessInfo.processInfo.arguments.contains("--zedlink-demo") { session.loadDemoPreview(); return }
                 #endif
                 ApprovalNotifications.shared.configure()
+                ApprovalNotifications.shared.onRemoteToken = { _ = Task { await session.syncAPNs() } }
+                session.enterForeground()
                 if session.profile == nil, let profile = profiles.preferredProfile {
                     await session.connect(profile)
                     if session.state == .live { profiles.markUsed(profile) }
@@ -68,24 +60,14 @@ import SwiftUI
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active, session.profile != nil, !session.demoPreview {
+                    session.enterForeground()
                     Task { await session.refresh() }
+                } else if phase != .active {
+                    Task { await session.persistConversation() }
+                    if phase == .background { session.enterBackground() }
                 }
             }
         }
     }
 
-    private func navigationButton(_ title: String, symbol: String, tab: Int) -> some View {
-        Button { selectedTab = tab } label: {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.body)
-                Text(title).font(.caption)
-            }.frame(maxWidth: .infinity, minHeight: 52)
-                .foregroundStyle(selectedTab == tab ? ZLTheme.ink : ZLTheme.muted)
-                .overlay(alignment: .top) {
-                    if selectedTab == tab { Rectangle().fill(ZLTheme.ink).frame(height: 2) }
-                }
-        }.buttonStyle(.plain)
-            .accessibilityIdentifier(title.lowercased() + "-tab")
-            .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
-    }
 }

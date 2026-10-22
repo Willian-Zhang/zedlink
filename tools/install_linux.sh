@@ -4,9 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_root="$project_root/zed-source"
 patch="$project_root/patches/zed-native-agent-remote-control.patch"
-pinned_revision="c66312b200d113694fca08c1d468669028a09a0e"
-zed_fork="https://github.com/tjnull/zed.git"
-zed_branch="zedlink/native-agent-remote-control"
+pinned_revision="544780422affd11699fb531c49af5cc6e82a3fd7"
 zed_upstream="https://github.com/zed-industries/zed.git"
 
 if [[ ! -d "$source_root/.git" ]]; then
@@ -14,14 +12,14 @@ if [[ ! -d "$source_root/.git" ]]; then
     printf 'Refusing to replace existing non-Git path: %s\n' "$source_root" >&2
     exit 1
   fi
-  git clone --branch "$zed_branch" --single-branch "$zed_fork" "$source_root"
-  git -C "$source_root" remote add upstream "$zed_upstream"
+  git clone "$zed_upstream" "$source_root"
+  git -C "$source_root" checkout --detach "$pinned_revision"
 fi
 
 actual_revision="$(git -C "$source_root" rev-parse HEAD)"
 if [[ "$actual_revision" != "$pinned_revision" ]] &&
   ! git -C "$source_root" merge-base --is-ancestor "$pinned_revision" "$actual_revision"; then
-  printf 'Expected Zed revision %s or a ZedLink fork branch based on it; found %s. No changes made.\n' \
+  printf 'Expected Zed revision %s or a ZedLink branch based on it; found %s. No changes made.\n' \
     "$pinned_revision" "$actual_revision" >&2
   exit 1
 fi

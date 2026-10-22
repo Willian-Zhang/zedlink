@@ -1,23 +1,23 @@
 import XCTest
 
 final class OnboardingUITests: XCTestCase {
-    func testLightThemeAndFlatNavigation() {
+    func testLightThemeAndSystemTabs() {
         let app = XCUIApplication()
         app.launchArguments = ["-zedlink.appearance", "light"]
         app.launch()
-        XCTAssertTrue(app.buttons["settings-tab"].waitForExistence(timeout: 10))
-        app.buttons["settings-tab"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Settings"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Settings"].tap()
         XCTAssertTrue(app.staticTexts["Appearance"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Notifications"].exists || app.staticTexts["Notifications"].exists)
         let image = XCTAttachment(screenshot: app.screenshot())
-        image.name = "Light-settings-flat-navigation"; image.lifetime = .keepAlways; add(image)
+        image.name = "Light-settings-system-tabs"; image.lifetime = .keepAlways; add(image)
     }
 
     func testSessionsKeyboardDismissesWhenLeavingSearch() {
         let app = XCUIApplication()
         app.launch()
 
-        let search = app.textFields["session-search"]
+        let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 10))
         search.tap()
         search.typeText("agent")
@@ -28,7 +28,7 @@ final class OnboardingUITests: XCTestCase {
         searchKey.tap()
         XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
 
-        app.buttons["connections-tab"].tap()
+        app.tabBars.buttons["Connections"].tap()
         XCTAssertTrue(app.staticTexts["No connections"].waitForExistence(timeout: 5))
     }
 
@@ -37,7 +37,7 @@ final class OnboardingUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.staticTexts["Choose a connection"].waitForExistence(timeout: 10))
-        app.buttons["connections-tab"].tap()
+        app.tabBars.buttons["Connections"].tap()
         XCTAssertTrue(app.staticTexts["No connections"].waitForExistence(timeout: 5))
         app.buttons["add-connection"].tap()
 
@@ -59,14 +59,14 @@ final class OnboardingUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--zedlink-demo"]
         app.launch()
-        app.buttons["connections-tab"].tap()
+        app.tabBars.buttons["Connections"].tap()
         app.buttons["add-connection"].tap()
         let endpoint = app.textFields["gateway-endpoint"]
         XCTAssertTrue(endpoint.waitForExistence(timeout: 5))
         endpoint.tap(); endpoint.typeText("https://demo.invalid")
         app.buttons["Close"].tap()
-        app.buttons["settings-tab"].tap()
-        app.buttons["connections-tab"].tap()
+        app.tabBars.buttons["Settings"].tap()
+        app.tabBars.buttons["Connections"].tap()
         app.buttons["add-connection"].tap()
         XCTAssertEqual(app.textFields["gateway-endpoint"].value as? String, "https://demo.invalid")
     }

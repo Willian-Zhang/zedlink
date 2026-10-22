@@ -13,6 +13,12 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::SinkExt;
+use isahc::{
+    HttpClient,
+    config::{RedirectPolicy, VersionNegotiation},
+    prelude::*,
+};
+use jwt_simple::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -62,6 +68,13 @@ struct Inner {
     websocket_limit: Arc<Semaphore>,
     shutdown: Arc<Notify>,
     push_client: IsahcWebPushClient,
+    apns: Option<ApnsProvider>,
+}
+struct ApnsProvider {
+    team_id: String,
+    key_id: String,
+    key_pem: String,
+    client: HttpClient,
 }
 #[derive(Clone)]
 struct TlsIdentity {
@@ -78,6 +91,14 @@ struct Persisted {
     vapid_private_key: String,
     #[serde(default)]
     push_subscriptions: Vec<PushSubscription>,
+    #[serde(default)]
+    apns_devices: Vec<ApnsDevice>,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ApnsDevice {
+    device_id: Uuid,
+    token: String,
+    environment: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Device {
@@ -89,6 +110,12 @@ struct Device {
 struct PushSubscription {
     device_id: Uuid,
     subscription: SubscriptionInfo,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApnsRegistrationRequest {
+    token: String,
+    environment: String,
 }
 struct Pairing {
     id: Uuid,
@@ -239,6 +266,11 @@ fn application(state: Gateway) -> Router {
             post(notification_unsubscribe),
         )
         .route("/v1/notifications/test", post(notification_test))
+        .route(
+            "/v1/notifications/apns",
+            get(apns_status).post(apns_register).delete(apns_unregister),
+        )
+        .route("/v1/notifications/apns/test", post(apns_test))
         .layer(DefaultBodyLimit::max(MAX_RPC))
         .with_state(state)
 }
@@ -564,6 +596,100 @@ fn new_vapid_private_key() -> String {
     }
 }
 
+fn valid_apns_token(token: &str) -> bool {
+    (32..=512).contains(&token.len())
+        && token.len().is_multiple_of(2)
+        && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+impl ApnsProvider {
+    fn from_environment() -> Result<Option<Self>> {
+        let key_file = match std::env::var("ZEDLINK_APNS_KEY_FILE") {
+            Ok(path) => PathBuf::from(path),
+            Err(std::env::VarError::NotPresent) => return Ok(None),
+            Err(_) => bail!("invalid APNs key path"),
+        };
+        let team_id = std::env::var("ZEDLINK_APNS_TEAM_ID").context("APNs team ID missing")?;
+        let key_id = std::env::var("ZEDLINK_APNS_KEY_ID").context("APNs key ID missing")?;
+        if ![&team_id, &key_id].iter().all(|id| {
+            id.len() == 10
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        }) {
+            bail!("invalid APNs team or key ID");
+        }
+        let metadata = fs::metadata(&key_file).context("APNs key file unavailable")?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
+            bail!("APNs key file must be private");
+        }
+        let key_pem = fs::read_to_string(key_file).context("APNs key file unreadable")?;
+        ES256KeyPair::from_pem(&key_pem).context("invalid APNs signing key")?;
+        let client = HttpClient::builder()
+            .timeout(PUSH_TIMEOUT)
+            .redirect_policy(RedirectPolicy::None)
+            .version_negotiation(VersionNegotiation::http2())
+            .build()
+            .context("APNs HTTP/2 client unavailable")?;
+        Ok(Some(Self {
+            team_id,
+            key_id,
+            key_pem,
+            client,
+        }))
+    }
+
+    fn provider_token(&self) -> Result<String> {
+        let key = ES256KeyPair::from_pem(&self.key_pem)?;
+        let mut claims =
+            Claims::create(jwt_simple::prelude::Duration::from_mins(50)).with_issuer(&self.team_id);
+        claims.expires_at = None;
+        claims.invalid_before = None;
+        Ok(key.with_key_id(&self.key_id).sign(claims)?)
+    }
+
+    async fn send(
+        &self,
+        registration: &ApnsDevice,
+        body: &str,
+        gateway_id: &str,
+        target_id: Option<&str>,
+        thread_id: Option<&str>,
+    ) -> PushOutcome {
+        if !valid_apns_token(&registration.token) {
+            return PushOutcome::Failed;
+        }
+        let Ok(token) = self.provider_token() else {
+            return PushOutcome::Failed;
+        };
+        let host = if registration.environment == "sandbox" {
+            "api.sandbox.push.apple.com"
+        } else {
+            "api.push.apple.com"
+        };
+        let payload = json!({"aps": {"alert": {"title": "ZedLink", "body": body},
+            "sound": "default", "category": "ZEDLINK_REVIEW"},
+            "gateway": gateway_id, "target": target_id, "thread": thread_id,
+            "type": if thread_id.is_some() { "push" } else { "push_test" }});
+        let request =
+            isahc::Request::post(format!("https://{host}/3/device/{}", registration.token))
+                .header("authorization", format!("bearer {token}"))
+                .header("apns-topic", "dev.zedlink.app")
+                .header("apns-push-type", "alert")
+                .header("apns-expiration", "0")
+                .header("content-type", "application/json")
+                .body(payload.to_string());
+        let Ok(request) = request else {
+            return PushOutcome::Failed;
+        };
+        match tokio::time::timeout(PUSH_TIMEOUT, self.client.send_async(request)).await {
+            Ok(Ok(response)) if response.status().is_success() => PushOutcome::Sent,
+            Ok(Ok(response)) if response.status().as_u16() == 410 => PushOutcome::Stale,
+            _ => PushOutcome::Failed,
+        }
+    }
+}
+
 fn valid_subscription(subscription: &SubscriptionInfo) -> bool {
     let public_key = URL_SAFE_NO_PAD.decode(subscription.keys.p256dh.as_bytes());
     let auth = URL_SAFE_NO_PAD.decode(subscription.keys.auth.as_bytes());
@@ -663,6 +789,7 @@ impl Gateway {
                 devices: vec![],
                 vapid_private_key: new_vapid_private_key(),
                 push_subscriptions: vec![],
+                apns_devices: vec![],
             };
             save(&directory, &initial)?;
             initial
@@ -686,6 +813,7 @@ impl Gateway {
             websocket_limit: Arc::new(Semaphore::new(MAX_WEBSOCKETS)),
             shutdown: Arc::new(Notify::new()),
             push_client: IsahcWebPushClient::new().context("Web Push client unavailable")?,
+            apns: ApnsProvider::from_environment()?,
         })))
     }
     async fn authorize(&self, headers: &HeaderMap) -> Option<Uuid> {
@@ -877,6 +1005,7 @@ impl Gateway {
                         "id":device.id,
                         "name":device.name,
                         "notifications":persisted.push_subscriptions.iter().any(|subscription| subscription.device_id == device.id)
+                            || persisted.apns_devices.iter().any(|registration| registration.device_id == device.id)
                     })).collect::<Vec<_>>()})
             }
             Some("shutdown") => json!({"stopping":true}),
@@ -906,6 +1035,8 @@ impl Gateway {
                 next.devices.retain(|device| device.id != id);
                 next.push_subscriptions
                     .retain(|subscription| subscription.device_id != id);
+                next.apns_devices
+                    .retain(|registration| registration.device_id != id);
                 if next.devices.len() != before {
                     save(&self.0.directory, &next)?;
                     *persisted = next;
@@ -979,7 +1110,11 @@ impl Gateway {
     }
 
     async fn notify_all(&self, body: &'static str, target_id: &str, thread_id: &str) {
-        let subscriptions = self.0.persisted.lock().await.push_subscriptions.clone();
+        let persisted = self.0.persisted.lock().await;
+        let subscriptions = persisted.push_subscriptions.clone();
+        let apns_devices = persisted.apns_devices.clone();
+        let gateway_id = persisted.gateway_id.to_string();
+        drop(persisted);
         let mut stale = HashSet::new();
         for record in subscriptions {
             if matches!(
@@ -999,6 +1134,34 @@ impl Gateway {
                 *persisted = next;
             }
         }
+        if let Some(provider) = &self.0.apns {
+            let mut expired = HashSet::new();
+            for registration in apns_devices {
+                if matches!(
+                    provider
+                        .send(
+                            &registration,
+                            body,
+                            &gateway_id,
+                            Some(target_id),
+                            Some(thread_id)
+                        )
+                        .await,
+                    PushOutcome::Stale
+                ) {
+                    expired.insert(registration.token);
+                }
+            }
+            if !expired.is_empty() {
+                let mut persisted = self.0.persisted.lock().await;
+                let mut next = persisted.clone();
+                next.apns_devices
+                    .retain(|registration| !expired.contains(&registration.token));
+                if save(&self.0.directory, &next).is_ok() {
+                    *persisted = next;
+                }
+            }
+        }
     }
 
     async fn notification_monitor(&self) {
@@ -1006,7 +1169,11 @@ impl Gateway {
         let mut interval = tokio::time::interval(NOTIFICATION_POLL);
         loop {
             interval.tick().await;
-            if self.0.persisted.lock().await.push_subscriptions.is_empty() {
+            let persisted = self.0.persisted.lock().await;
+            let no_subscribers = persisted.push_subscriptions.is_empty()
+                && (self.0.apns.is_none() || persisted.apns_devices.is_empty());
+            drop(persisted);
+            if no_subscribers {
                 prior.clear();
                 continue;
             }
@@ -1486,6 +1653,144 @@ async fn notification_test(
     }
 }
 
+async fn apns_status(State(state): State<Gateway>, headers: HeaderMap) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    let enabled = state
+        .0
+        .persisted
+        .lock()
+        .await
+        .apns_devices
+        .iter()
+        .any(|record| record.device_id == device_id);
+    (
+        StatusCode::OK,
+        Json(json!({"supported":state.0.apns.is_some(), "enabled":enabled})),
+    )
+}
+
+async fn apns_register(
+    State(state): State<Gateway>,
+    headers: HeaderMap,
+    Json(request): Json<ApnsRegistrationRequest>,
+) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    if state.0.apns.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"APNS_NOT_CONFIGURED"})),
+        );
+    }
+    if !valid_apns_token(&request.token)
+        || !matches!(request.environment.as_str(), "sandbox" | "production")
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"INVALID_REQUEST"})),
+        );
+    }
+    let token = request.token.to_ascii_lowercase();
+    let mut persisted = state.0.persisted.lock().await;
+    let mut next = persisted.clone();
+    next.apns_devices
+        .retain(|record| record.device_id != device_id && record.token != token);
+    next.apns_devices.push(ApnsDevice {
+        device_id,
+        token,
+        environment: request.environment,
+    });
+    if save(&state.0.directory, &next).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"INTERNAL_ERROR"})),
+        );
+    }
+    *persisted = next;
+    (StatusCode::OK, Json(json!({"enabled":true})))
+}
+
+async fn apns_unregister(State(state): State<Gateway>, headers: HeaderMap) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    let mut persisted = state.0.persisted.lock().await;
+    let mut next = persisted.clone();
+    next.apns_devices
+        .retain(|record| record.device_id != device_id);
+    if save(&state.0.directory, &next).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"INTERNAL_ERROR"})),
+        );
+    }
+    *persisted = next;
+    (StatusCode::OK, Json(json!({"enabled":false})))
+}
+
+async fn apns_test(State(state): State<Gateway>, headers: HeaderMap) -> impl IntoResponse {
+    let Some(device_id) = state.authorize(&headers).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"UNAUTHENTICATED"})),
+        );
+    };
+    let Some(provider) = &state.0.apns else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"APNS_NOT_CONFIGURED"})),
+        );
+    };
+    let registration = state
+        .0
+        .persisted
+        .lock()
+        .await
+        .apns_devices
+        .iter()
+        .find(|record| record.device_id == device_id)
+        .cloned();
+    let Some(registration) = registration else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"NOTIFICATIONS_DISABLED"})),
+        );
+    };
+    let gateway_id = state.0.persisted.lock().await.gateway_id.to_string();
+    match provider
+        .send(
+            &registration,
+            "Native push is ready for this device.",
+            &gateway_id,
+            None,
+            None,
+        )
+        .await
+    {
+        PushOutcome::Sent => (StatusCode::OK, Json(json!({"delivered":true}))),
+        PushOutcome::Stale => (
+            StatusCode::GONE,
+            Json(json!({"error":"SUBSCRIPTION_EXPIRED"})),
+        ),
+        PushOutcome::Failed => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":"PUSH_FAILED"})),
+        ),
+    }
+}
+
 async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     let Some(device_id) = state.authorize(&headers).await else {
         return (
@@ -1517,6 +1822,7 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
     if !matches!(
         method.as_str(),
         "instance.list"
+            | "session.resume"
             | "instance.info"
             | "thread.list"
             | "thread.create"
@@ -1600,6 +1906,168 @@ async fn rpc(State(state): State<Gateway>, headers: HeaderMap, body: Bytes) -> i
     }
     if method == "instance.list" {
         let result = state.instance_list().await;
+        return (
+            StatusCode::OK,
+            Json(json!({"version":1,"request_id":original_request_id,"result":result})),
+        );
+    }
+    if method == "session.resume" {
+        let Some(target_id) = target_id.as_deref() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"INVALID_REQUEST"})),
+            );
+        };
+        let Ok(target) = state.target(Some(target_id)) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"UNKNOWN_TARGET"})),
+            );
+        };
+        let params = &request["params"];
+        let thread_id = params["thread_id"].as_str();
+        let pending_id = params["pending_request_id"].as_str();
+        if thread_id.is_some_and(|id| id.is_empty() || id.len() > 128)
+            || pending_id.is_some_and(|id| id.is_empty() || id.len() > 80)
+            || params
+                .get("thread_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            || params
+                .get("pending_request_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"INVALID_REQUEST"})),
+            );
+        }
+        let native_request = |method: &str, params: Value| {
+            json!({
+                "version": 1, "request_id": Uuid::new_v4().to_string(), "method": method, "params": params,
+            })
+        };
+        let info_response = state
+            .probe(Some(target_id), &native_request("instance.info", json!({})))
+            .await;
+        let Ok(info_response) = info_response else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+            );
+        };
+        let Some(info) = info_response.get("result") else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+            );
+        };
+        let list_response = state
+            .probe(Some(target_id), &native_request("thread.list", json!({})))
+            .await;
+        let Ok(list_response) = list_response else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+            );
+        };
+        let Some(list) = list_response.get("result") else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+            );
+        };
+        if !info["instance_id"].is_string()
+            || !info["epoch"].is_string()
+            || !list["threads"].is_array()
+            || info["instance_id"] != list["instance_id"]
+            || info["epoch"] != list["epoch"]
+        {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+            );
+        }
+        let mut snapshot = Value::Null;
+        if let Some(thread_id) = thread_id
+            && list["threads"].as_array().is_some_and(|threads| {
+                threads
+                    .iter()
+                    .any(|thread| thread["thread_id"] == thread_id)
+            })
+        {
+            let tail_count = if params["instance_id"] == info["instance_id"]
+                && params["epoch"] == info["epoch"]
+            {
+                16
+            } else {
+                64
+            };
+            let response = state
+                .probe(
+                    Some(target_id),
+                    &native_request(
+                        "thread.snapshot",
+                        json!({
+                            "thread_id": thread_id, "tail_entry_count": tail_count,
+                        }),
+                    ),
+                )
+                .await;
+            let Ok(response) = response else {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+                );
+            };
+            if let Some(result) = response.get("result") {
+                if result["instance_id"] != info["instance_id"]
+                    || result["epoch"] != info["epoch"]
+                    || result["thread_id"] != thread_id
+                {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"error":"INSTANCE_UNAVAILABLE"})),
+                    );
+                }
+                snapshot = result.clone();
+            }
+        }
+        let mut pending_status = Value::Null;
+        if let Some(pending_id) = pending_id {
+            let response = state
+                .probe(
+                    Some(target_id),
+                    &native_request(
+                        "request.status",
+                        json!({
+                            "instance_id": info["instance_id"], "epoch": info["epoch"],
+                            "original_request_id": format!("{device_id}:{pending_id}"),
+                        }),
+                    ),
+                )
+                .await;
+            if let Ok(response) = response
+                && let Some(result) = response.get("result")
+            {
+                pending_status = result.clone();
+            }
+        }
+        let mut result = json!({
+            "instance_id": info["instance_id"], "epoch": info["epoch"], "capabilities": info["capabilities"],
+            "target": {"target_id": target_id, "label": target.label, "available": true},
+            "threads": list["threads"], "snapshot": snapshot, "pending_status": pending_status,
+        });
+        // Leave room for the RPC envelope inside the client's 4 MiB response cap.
+        let max_result_size = MAX_PROBE_RESPONSE as usize - 512;
+        if serde_json::to_vec(&result).is_ok_and(|body| body.len() > max_result_size) {
+            result["snapshot"] = Value::Null;
+        }
+        if serde_json::to_vec(&result).is_ok_and(|body| body.len() > max_result_size) {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({"error":"RESPONSE_TOO_LARGE"})),
+            );
+        }
         return (
             StatusCode::OK,
             Json(json!({"version":1,"request_id":original_request_id,"result":result})),
@@ -1768,6 +2236,30 @@ mod tests {
     }
 
     #[test]
+    fn apns_tokens_are_bounded_and_provider_claims_are_scoped() -> Result<()> {
+        assert!(valid_apns_token(&"ab".repeat(32)));
+        assert!(!valid_apns_token("ab/../device"));
+        assert!(!valid_apns_token(&"ab".repeat(257)));
+        let provider = ApnsProvider {
+            team_id: "ABCDEFGHIJ".into(),
+            key_id: "KLMNOPQRST".into(),
+            key_pem: ES256KeyPair::generate().to_pem()?,
+            client: HttpClient::new()?,
+        };
+        let signed = provider.provider_token()?;
+        let parts = signed.split('.').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3);
+        let header: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0])?)?;
+        let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1])?)?;
+        assert_eq!(header["alg"], "ES256");
+        assert_eq!(header["kid"], "KLMNOPQRST");
+        assert_eq!(claims["iss"], "ABCDEFGHIJ");
+        assert!(claims["iat"].is_number());
+        assert!(claims.get("exp").is_none());
+        Ok(())
+    }
+
+    #[test]
     fn loads_state_from_before_notifications() {
         let gateway_id = Uuid::new_v4();
         let state: Persisted = serde_json::from_value(json!({
@@ -1778,6 +2270,7 @@ mod tests {
         assert_eq!(state.gateway_id, gateway_id);
         assert!(state.vapid_private_key.is_empty());
         assert!(state.push_subscriptions.is_empty());
+        assert!(state.apns_devices.is_empty());
     }
 
     #[test]

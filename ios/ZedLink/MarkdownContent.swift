@@ -14,6 +14,48 @@ enum MarkdownBlock: Equatable {
 
 /// Block layout is explicit; SwiftUI Text only renders the inline Markdown styles.
 enum MarkdownDocument {
+    private final class BlocksBox: NSObject {
+        let value: [MarkdownBlock]
+        init(_ value: [MarkdownBlock]) { self.value = value }
+    }
+    private final class InlineBox: NSObject {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+    private static let blockCache: NSCache<NSString, BlocksBox> = {
+        let cache = NSCache<NSString, BlocksBox>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
+    private static let inlineCache: NSCache<NSString, InlineBox> = {
+        let cache = NSCache<NSString, InlineBox>()
+        cache.countLimit = 512
+        cache.totalCostLimit = 2 * 1024 * 1024
+        return cache
+    }()
+
+    static func cachedBlocks(_ markdown: String) -> [MarkdownBlock] {
+        let key = markdown as NSString
+        if let cached = blockCache.object(forKey: key) { return cached.value }
+        let blocks = parse(markdown)
+        if markdown.utf8.count <= 512 * 1024 {
+            blockCache.setObject(BlocksBox(blocks), forKey: key, cost: markdown.utf8.count)
+        }
+        return blocks
+    }
+
+    static func cachedInline(_ value: String) -> AttributedString {
+        let key = value as NSString
+        if let cached = inlineCache.object(forKey: key) { return cached.value }
+        let parsed = (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(value)
+        if value.utf8.count <= 128 * 1024 {
+            inlineCache.setObject(InlineBox(parsed), forKey: key, cost: value.utf8.count)
+        }
+        return parsed
+    }
+
     static func cells(_ line: String) -> [String] {
         var parts: [String] = [], cell = "", escaped = false, inCode = false
         let text = line.trimmingCharacters(in: .whitespaces)
@@ -107,11 +149,10 @@ enum MarkdownDocument {
 struct NativeMarkdownView: View {
     let markdown: String
     private func inline(_ value: String) -> Text {
-        let parsed = try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-        return Text(parsed ?? AttributedString(value))
+        Text(MarkdownDocument.cachedInline(value))
     }
     var body: some View {
-        let blocks = MarkdownDocument.parse(markdown)
+        let blocks = MarkdownDocument.cachedBlocks(markdown)
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {

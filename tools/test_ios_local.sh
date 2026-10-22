@@ -3,7 +3,7 @@
 set -euo pipefail
 mode="${1:-build}"
 destination="${2:-}"
-case "$mode" in build|unit|session) ;; *) echo 'Usage: bash tools/test_ios_local.sh build|unit|session [simulator destination]' >&2; exit 2 ;; esac
+case "$mode" in build|unit|ui|session) ;; *) echo 'Usage: bash tools/test_ios_local.sh build|unit|ui|session [simulator destination]' >&2; exit 2 ;; esac
 if [[ "$(uname -s)" != Darwin ]]; then
   echo 'NOT RUN: iOS compilation and UI tests require a Mac with Xcode.' >&2
   exit 2
@@ -25,6 +25,7 @@ if [[ "$mode" == session ]]; then
   # Apple documents TEST_RUNNER_ forwarding for xcodebuild's test runner.
   export TEST_RUNNER_ZEDLINK_E2E_THREAD_ID="$ZEDLINK_E2E_THREAD_ID"
   export TEST_RUNNER_ZEDLINK_E2E_SEARCH_TEXT="$ZEDLINK_E2E_SEARCH_TEXT"
+  export TEST_RUNNER_ZEDLINK_E2E_TRANSCRIPT_TEXT="${ZEDLINK_E2E_TRANSCRIPT_TEXT:-}"
   export TEST_RUNNER_ZEDLINK_E2E_ALLOW_SEND="${ZEDLINK_E2E_ALLOW_SEND:-0}"
 fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,6 +41,11 @@ case "$mode" in
     ;;
   unit)
     xcodebuild "${arguments[@]}" -destination "$destination" -parallel-testing-enabled NO -only-testing:ZedLinkTests test
+    ;;
+  ui)
+    xcodebuild "${arguments[@]}" -destination "$destination" -parallel-testing-enabled NO \
+      -only-testing:ZedLinkUITests/OnboardingUITests \
+      -only-testing:ZedLinkUITests/SessionsPreviewUITests test
     ;;
   session)
     xcodebuild "${arguments[@]}" -destination "$destination" -parallel-testing-enabled NO -only-testing:ZedLinkUITests/SessionWorkspaceUITests test

@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Network
 
 @MainActor final class SessionManager: ObservableObject {
     @Published private(set) var profile: ConnectionProfile?
@@ -8,6 +9,7 @@ import Combine
     @Published private(set) var state: LinkState = .offline
     @Published private(set) var threads: [NativeThread] = []
     @Published private(set) var snapshot: ThreadSnapshot?
+    @Published private(set) var cachedConversations: [CachedConversation] = []
     @Published private(set) var instanceID: String?
     @Published private(set) var epoch: String?
     @Published private(set) var capabilities: Set<String> = []
@@ -54,7 +56,7 @@ import Combine
     private var workspaceRequest = UUID()
     private var searchRequest = UUID()
     var operationScope: [String] { [generation.uuidString, profile?.id.uuidString ?? "", targetID ?? "", instanceID ?? "", epoch ?? "", selectedThreadID ?? ""] }
-    func clearIssue() { issue = "" }
+    func clearIssue() { issue = ""; notificationNeedsWorkspace = false }
     func reportIssue(_ message: String) { issue = message }
     func addImage(_ data: Data) {
         guard capabilities.contains("thread.attachments"), supportsImages != false else { issue = "This thread or model does not support image attachments."; return }
@@ -66,6 +68,7 @@ import Combine
     @Published var notificationThreadID: String?
     @Published private(set) var delivery = ""
     @Published private(set) var issue = ""
+    @Published private(set) var notificationNeedsWorkspace = false
     @Published private(set) var pending: PendingSend?
     @Published var draft = "" {
         didSet {
@@ -79,31 +82,51 @@ import Combine
     private var client: GatewayClient?
     private var pollTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
+    private var cacheTask: Task<Void, Never>?
     private var eventStreamLive = false
     private var lastFastSnapshot = Date.distantPast
     private var lastAuxiliaryRefresh = Date.distantPast
     private var generation = UUID()
+    private var resumeTrace: ResumeTrace?
+    private var pathMonitor: NWPathMonitor?
+    private var pathRetryTask: Task<Void, Never>?
+    private var pathMonitorGeneration = UUID()
+    private var foregroundActive = true
+    private var sawInitialPath = false
     private let threadExposureIssue = "The selected thread is no longer exposed in desktop Zed."
 
     var canSend: Bool { state == .live && capabilities.contains("thread.send") && selectedThreadID != nil && snapshot?.threadID == selectedThreadID && pending == nil }
+    var visibleThreads: [NativeThread] {
+        if state == .live || !threads.isEmpty { return threads }
+        return cachedConversations.map { NativeThread(id: $0.threadID, title: $0.title, status: "Saved copy", currentTurnID: nil) }
+    }
+    func cachedConversation(_ id: String) -> CachedConversation? {
+        cachedConversations.first { $0.threadID == id }
+    }
+    func markConversationVisible() { resumeTrace?.mark("Conversation visible") }
     var canCancel: Bool {
         state == .live && capabilities.contains("thread.cancel") && snapshot?.threadID == selectedThreadID
             && snapshot?.currentTurnID != nil
     }
 
     func disconnect() {
+        pathRetryTask?.cancel(); pathRetryTask = nil
         summaryCache = [:]
         attachments = []; diffContent = ""; diffLoading = false; workspaceLoading = false; supportsImages = nil
         diffRequest = UUID(); workspaceRequest = UUID(); searchRequest = UUID()
         requestedTerminalID = nil
         generation = UUID()
+        resumeTrace?.finish(); resumeTrace = nil
         pollTask?.cancel()
         eventTask?.cancel()
+        cacheTask?.cancel()
         pollTask = nil
         eventTask = nil
+        cacheTask = nil
         eventStreamLive = false
         lastFastSnapshot = .distantPast
         lastAuxiliaryRefresh = .distantPast
+        lastCommandsRefresh = .distantPast
         liveActivity = .ready
         client = nil
         profile = nil
@@ -112,6 +135,7 @@ import Combine
         state = .offline
         threads = []
         snapshot = nil
+        cachedConversations = []
         selectedThreadID = nil
         instanceID = nil
         epoch = nil
@@ -130,11 +154,19 @@ import Combine
         pending = nil
         delivery = ""
         issue = ""
+        notificationNeedsWorkspace = false
     }
 
     func connect(_ nextProfile: ConnectionProfile, target requestedTargetID: String? = nil) async {
         let sameProfile = profile?.gatewayID.caseInsensitiveCompare(nextProfile.gatewayID) == .orderedSame
-        let previousThread = sameProfile ? selectedThreadID : nil
+        let sameTarget = requestedTargetID == nil || requestedTargetID == targetID
+        let previousThread = sameProfile && sameTarget ? selectedThreadID : nil
+        let previousSnapshot = sameProfile && (requestedTargetID == nil || requestedTargetID == targetID) ? snapshot : nil
+        let previousThreads = sameProfile && (requestedTargetID == nil || requestedTargetID == targetID) ? threads : []
+        let previousTargets = sameProfile ? targets : []
+        let previousActivity = liveActivity
+        let previousInstance = instanceID
+        let previousEpoch = epoch
         let previousPending = sameProfile ? pending : nil
         let previousTarget = sameProfile ? targetID : nil
         let previousScope = operationScope
@@ -145,14 +177,56 @@ import Combine
         let current = generation
         profile = nextProfile
         state = .connecting
+        resumeTrace = ResumeTrace()
+        let savedTarget = UserDefaults.standard.string(forKey: targetKey(nextProfile))
+        let initialTarget = requestedTargetID ?? previousTarget ?? savedTarget
+        if let initialTarget {
+            targetID = initialTarget
+            if initialTarget == previousTarget {
+                selectedThreadID = previousThread
+                snapshot = previousSnapshot
+                threads = previousThreads
+                targets = previousTargets
+                liveActivity = previousActivity
+            }
+            cachedConversations = await ConversationCache.shared.list(gatewayID: nextProfile.gatewayID, targetID: initialTarget)
+            guard current == generation else { return }
+            resumeTrace?.mark("Saved conversation ready")
+        }
         do {
             guard let token = await CredentialVault.shared.read(nextProfile) else {
                 throw GatewayFailure.native("Pair this device first.")
             }
             guard current == generation else { return }
             let discoveryClient = GatewayClient(profile: nextProfile, token: token)
+            if let initialTarget {
+                let rememberedThread = previousThread ?? UserDefaults.standard.string(forKey: selectedThreadKey(nextProfile, targetID: initialTarget))
+                var params: [String: Any] = [:]
+                if let rememberedThread { params["thread_id"] = rememberedThread }
+                if sameTarget, let previousInstance, let previousEpoch {
+                    params["instance_id"] = previousInstance
+                    params["epoch"] = previousEpoch
+                }
+                let persistedPending = UserDefaults.standard.data(forKey: pendingKey(nextProfile))
+                    .flatMap { try? JSONDecoder().decode(PendingSend.self, from: $0) }
+                if let pendingID = (previousPending ?? persistedPending)?.id { params["pending_request_id"] = pendingID }
+                do {
+                    let resumed = try await GatewayClient(profile: nextProfile, token: token, targetID: initialTarget)
+                        .rpc("session.resume", params: params)
+                    guard current == generation else { return }
+                    try await applyResume(resumed, profile: nextProfile, token: token, targetID: initialTarget,
+                                          rememberedThread: rememberedThread, previousPending: previousPending,
+                                          previousTarget: previousTarget, previousScope: previousScope,
+                                          previousAttachments: previousAttachments, previousContextPaths: previousContextPaths,
+                                          current: current)
+                    return
+                } catch GatewayFailure.native("UNSUPPORTED_CAPABILITY"), GatewayFailure.native("UNKNOWN_TARGET") {
+                    // Older gateways use the established discovery and snapshot flow.
+                }
+            }
             try await discoveryClient.verifyIdentity()
             guard current == generation else { return }
+            resumeTrace?.mark("Gateway identity verified")
             let registry = try await discoveryClient.rpc("instance.list")
             guard current == generation else { return }
             guard let rows = registry["targets"] as? [[String: Any]], !rows.isEmpty else {
@@ -162,14 +236,28 @@ import Combine
                 guard let id = row["target_id"] as? String, let label = row["label"] as? String else { return nil }
                 return ZedTarget(id: id, label: label, available: row["available"] as? Bool ?? false)
             }
-            let savedTarget = UserDefaults.standard.string(forKey: targetKey(nextProfile))
             let preferredTarget = requestedTargetID ?? previousTarget ?? savedTarget
                 ?? registry["default_target_id"] as? String
-            guard let selectedTarget = targets.first(where: { $0.id == preferredTarget })
-                    ?? targets.first(where: { $0.available }) ?? targets.first else {
-                throw GatewayFailure.native("This gateway has no configured Zed targets.")
+            let selectedTarget: ZedTarget
+            if let preferredTarget {
+                guard let configured = targets.first(where: { $0.id == preferredTarget }) else {
+                    throw GatewayFailure.native("The saved workspace is no longer configured. Choose a workspace in Connections.")
+                }
+                selectedTarget = configured
+            } else {
+                guard let configured = targets.first(where: { $0.available }) ?? targets.first else {
+                    throw GatewayFailure.native("This gateway has no configured Zed targets.")
+                }
+                selectedTarget = configured
             }
             targetID = selectedTarget.id
+            if selectedTarget.id != initialTarget {
+                selectedThreadID = nil
+                snapshot = nil
+                threads = []
+                cachedConversations = await ConversationCache.shared.list(gatewayID: nextProfile.gatewayID, targetID: selectedTarget.id)
+                guard current == generation else { return }
+            }
             UserDefaults.standard.set(selectedTarget.id, forKey: targetKey(nextProfile))
             let nextClient = GatewayClient(profile: nextProfile, token: token, targetID: selectedTarget.id)
             let info = try await nextClient.rpc("instance.info")
@@ -179,6 +267,8 @@ import Combine
             client = nextClient
             instanceID = instance
             epoch = nextEpoch
+            resumeTrace?.mark("Native instance verified")
+            if previousInstance != instance || previousEpoch != nextEpoch { snapshot = nil }
             capabilities = Set(info["capabilities"] as? [String] ?? [])
             restorePending(for: nextProfile)
             if let previousPending, selectedTarget.id == previousTarget,
@@ -195,36 +285,233 @@ import Combine
                 persistPending(for: nextProfile)
                 delivery = "Delivery unknown. Reconcile before retrying; the request was not resent."
             }
-            try await loadThreads()
+            let rememberedThread = previousThread ?? UserDefaults.standard.string(forKey: selectedThreadKey(nextProfile, targetID: selectedTarget.id))
+            selectedThreadID = rememberedThread
+            try await loadThreads(includeSummaries: false)
             guard current == generation else { return }
-            if let previousThread, threads.contains(where: { $0.id == previousThread }) {
-                selectedThreadID = previousThread
+            resumeTrace?.mark("Thread list ready")
+            if let rememberedThread, threads.contains(where: { $0.id == rememberedThread }) {
+                selectedThreadID = rememberedThread
                 if Array(operationScope.dropFirst(2)) == Array(previousScope.dropFirst(2)) {
                     attachments = previousAttachments
                     contextPaths = previousContextPaths
                 }
-                try await loadSnapshot(previousThread)
-                try await loadCommands(previousThread)
+                try await loadSnapshot(rememberedThread, refreshAuxiliary: false)
+                resumeTrace?.mark("Native snapshot ready")
             }
             guard current == generation else { return }
             state = .live
+            resumeTrace?.mark("Live ready")
+            resumeTrace?.finish(); resumeTrace = nil
+            lastAuxiliaryRefresh = Date()
             issue = ""
             pollTask = Task { [weak self] in
                 guard let self else { return }
                 await self.pollLoop(current)
             }
             startEventStream(current)
+            if let rememberedThread { Task { [weak self] in await self?.refreshAuxiliaryAfterResume(rememberedThread, current: current) } }
+            Task { [weak self] in await self?.syncAPNs() }
         } catch {
             guard current == generation else { return }
             state = .offline
             issue = error.localizedDescription
+            resumeTrace?.finish(); resumeTrace = nil
         }
+    }
+
+    private func applyResume(_ result: [String: Any], profile: ConnectionProfile, token: String, targetID resumedTarget: String,
+                             rememberedThread: String?, previousPending: PendingSend?, previousTarget: String?,
+                             previousScope: [String], previousAttachments: [PromptAttachment],
+                             previousContextPaths: Set<String>, current: UUID) async throws {
+        guard let instance = result["instance_id"] as? String,
+              let nextEpoch = result["epoch"] as? String,
+              let target = result["target"] as? [String: Any],
+              target["target_id"] as? String == resumedTarget,
+              let label = target["label"] as? String,
+              let rows = result["threads"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
+        targetID = resumedTarget
+        targets = [ZedTarget(id: resumedTarget, label: label, available: true)]
+        UserDefaults.standard.set(resumedTarget, forKey: targetKey(profile))
+        client = GatewayClient(profile: profile, token: token, targetID: resumedTarget)
+        guard current == generation else { return }
+        if snapshot?.instanceID != instance || snapshot?.epoch != nextEpoch { snapshot = nil }
+        instanceID = instance
+        epoch = nextEpoch
+        capabilities = Set(result["capabilities"] as? [String] ?? [])
+        resumeTrace?.mark("Gateway and native instance verified")
+        restorePending(for: profile)
+        if let previousPending, resumedTarget == previousTarget {
+            pending = previousPending
+            persistPending(for: profile)
+            delivery = "Delivery unknown. Reconcile before retrying; the request was not resent."
+        }
+        if let pending, pending.instanceID == instance, pending.epoch == nextEpoch,
+           let status = result["pending_status"] as? [String: Any], status["known"] as? Bool == true {
+            delivery = "Zed knows this request (\(status["outcome"] as? String ?? "unknown")); native acceptance remains provisional."
+        }
+        selectedThreadID = rememberedThread
+        try await loadThreads(prefetched: ["instance_id": instance, "epoch": nextEpoch, "threads": rows], includeSummaries: false)
+        guard current == generation else { return }
+        resumeTrace?.mark("Thread list ready")
+        if let rememberedThread, threads.contains(where: { $0.id == rememberedThread }) {
+            if Array(operationScope.dropFirst(2)) == Array(previousScope.dropFirst(2)) {
+                attachments = previousAttachments
+                contextPaths = previousContextPaths
+            }
+            try await loadSnapshot(rememberedThread, refreshAuxiliary: false,
+                                   prefetched: result["snapshot"] as? [String: Any])
+            resumeTrace?.mark("Native snapshot ready")
+        }
+        guard current == generation else { return }
+        state = .live
+        issue = ""
+        resumeTrace?.mark("Live ready")
+        resumeTrace?.finish(); resumeTrace = nil
+        lastAuxiliaryRefresh = Date()
+        pollTask = Task { [weak self] in
+            guard let self else { return }
+            await self.pollLoop(current)
+        }
+        startEventStream(current)
+        if let rememberedThread { Task { [weak self] in await self?.refreshAuxiliaryAfterResume(rememberedThread, current: current) } }
+        Task { [weak self] in await self?.refreshTargets(current: current) }
+        Task { [weak self] in await self?.syncAPNs() }
+    }
+
+    func syncAPNs() async {
+        guard state == .live, let client, !demoPreview else { return }
+        let current = generation
+        let notifications = ApprovalNotifications.shared
+        await notifications.refreshStatus()
+        do {
+            let status = try await client.apnsStatus()
+            guard current == generation else { return }
+            if !notifications.enabled {
+                if status.enabled { try await client.unregisterAPNs() }
+                if current == generation { notifications.setNativePushStatus("Disabled") }
+                return
+            }
+            guard status.supported else {
+                notifications.setNativePushStatus("Gateway APNs provider is not configured")
+                return
+            }
+            guard notifications.permitted else {
+                notifications.setNativePushStatus("Allow iPhone notifications first")
+                return
+            }
+            guard let token = notifications.remoteToken else {
+                notifications.requestRemoteRegistration()
+                return
+            }
+            #if DEBUG
+            let environment = "sandbox"
+            #else
+            let environment = "production"
+            #endif
+            try await client.registerAPNs(token: token, environment: environment)
+            if current == generation { notifications.setNativePushStatus("Registered with gateway; delivery unverified") }
+        } catch {
+            if current == generation { notifications.setNativePushStatus("Native push unavailable: \(error.localizedDescription)") }
+        }
+    }
+
+    func testAPNs() async throws {
+        guard state == .live, let client else { throw GatewayFailure.native("Reconnect to test native push.") }
+        try await client.testAPNs()
+    }
+
+    private func refreshAuxiliaryAfterResume(_ id: String, current: UUID) async {
+        guard current == generation, selectedThreadID == id else { return }
+        do {
+            try await loadAuxiliaryState(id)
+            if current == generation { lastAuxiliaryRefresh = Date() }
+        } catch {
+            if current == generation { issue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)" }
+        }
+    }
+
+    private func refreshTargets(current: UUID) async {
+        guard let client, let profile else { return }
+        do {
+            let result = try await GatewayClient(profile: profile, token: client.token).rpc("instance.list")
+            guard current == generation, let rows = result["targets"] as? [[String: Any]] else { return }
+            targets = rows.compactMap { row in
+                guard let id = row["target_id"] as? String, let label = row["label"] as? String else { return nil }
+                return ZedTarget(id: id, label: label, available: row["available"] as? Bool ?? false)
+            }
+        } catch { /* The selected, verified target stays usable. */ }
     }
 
     func refresh() async {
         guard !demoPreview else { return }
+        guard foregroundActive else { return }
+        guard state != .connecting else { return }
         guard let profile else { return }
         await connect(profile)
+    }
+
+    func enterForeground() {
+        foregroundActive = true
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        let monitorGeneration = UUID()
+        pathMonitorGeneration = monitorGeneration
+        sawInitialPath = false
+        monitor.pathUpdateHandler = { [weak self] path in
+            let reachable = path.status == .satisfied
+            Task { @MainActor in
+                guard self?.pathMonitorGeneration == monitorGeneration else { return }
+                self?.networkPathChanged(reachable: reachable)
+            }
+        }
+        pathMonitor = monitor
+        monitor.start(queue: DispatchQueue(label: "dev.zedlink.network-path"))
+    }
+
+    func enterBackground() {
+        foregroundActive = false
+        resumeTrace?.finish(); resumeTrace = nil
+        pathRetryTask?.cancel(); pathRetryTask = nil
+        pathMonitorGeneration = UUID()
+        pathMonitor?.cancel(); pathMonitor = nil
+        generation = UUID()
+        pollTask?.cancel(); pollTask = nil
+        eventTask?.cancel(); eventTask = nil
+        eventStreamLive = false
+        if state == .live || state == .connecting || state == .reconnecting { state = .stale }
+    }
+
+    private func networkPathChanged(reachable: Bool) {
+        guard foregroundActive, profile != nil, !demoPreview else { return }
+        let initial = !sawInitialPath
+        sawInitialPath = true
+        if !reachable {
+            pathRetryTask?.cancel(); pathRetryTask = nil
+            if state == .live || state == .reconnecting {
+                generation = UUID()
+                pollTask?.cancel(); pollTask = nil
+                eventTask?.cancel(); eventTask = nil
+                eventStreamLive = false
+                state = .reconnecting
+            }
+            return
+        }
+        if initial { return }
+        pathRetryTask?.cancel()
+        let wasConnecting = state == .connecting
+        pathRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, !Task.isCancelled else { return }
+            if wasConnecting {
+                for _ in 0..<24 where self.state == .connecting {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if Task.isCancelled { return }
+                }
+                if self.state == .live { return }
+            }
+            await self.refresh()
+        }
     }
 
     func selectTarget(_ id: String) async {
@@ -298,10 +585,12 @@ import Combine
         }
     }
 
-    private func loadThreads() async throws {
+    private func loadThreads(prefetched: [String: Any]? = nil, includeSummaries: Bool = true) async throws {
         guard let client else { return }
         let scope = operationScope
-        let result = try await client.rpc("thread.list")
+        let result: [String: Any]
+        if let prefetched { result = prefetched }
+        else { result = try await client.rpc("thread.list") }
         guard scope == operationScope else { return }
         try checkIdentity(result)
         guard let rows = result["threads"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
@@ -316,7 +605,7 @@ import Combine
             thread.failed = row["had_error"] as? Bool == true || row["agent_error"] is [String: Any]
             return thread
         }
-        if selectedThreadID == nil {
+        if selectedThreadID == nil && includeSummaries {
             // Read-only counts, cached for five seconds; no new adapter operation.
             for index in loaded.indices {
                 guard scope == operationScope else { return }
@@ -348,6 +637,7 @@ import Combine
             snapshot = nil
             liveActivity = .ready
             commands = []
+            lastCommandsRefresh = .distantPast
             issue = threadExposureIssue
         }
     }
@@ -358,6 +648,9 @@ import Combine
         if selectedThreadID != id {
             childHistory.removeAll()
             selectedThreadID = id
+            if let profile, let targetID {
+                UserDefaults.standard.set(id, forKey: selectedThreadKey(profile, targetID: targetID))
+            }
             attachments = []; contextPaths = []; supportsImages = nil; threadSettings = nil
             diffContent = ""; diffLoading = false; diffRequest = UUID()
             previewRequest = UUID(); previewReadable = false; previewLoading = false; previewContent = ""; previewTitle = ""
@@ -366,6 +659,7 @@ import Combine
             snapshot = nil
             liveActivity = threads.first(where: { $0.id == id })?.activity ?? .ready
             commands = []
+            lastCommandsRefresh = .distantPast
             if let profile {
                 draft = UserDefaults.standard.string(forKey: draftKey(profileID: profile.id, targetID: targetID, threadID: id)) ?? ""
             }
@@ -373,8 +667,6 @@ import Combine
         let scope = operationScope
         do {
             try await loadSnapshot(id)
-            guard scope == operationScope else { return }
-            try await loadCommands(id)
             guard scope == operationScope else { return }
             issue = ""
             startEventStream(generation)
@@ -395,10 +687,10 @@ import Combine
             while !Task.isCancelled && current == generation && selectedThreadID == threadID {
                 do {
                     let stream = try client.eventStream(threadID: threadID, afterSequence: snapshot?.lastSequence ?? 0)
-                    eventStreamLive = true
                     delay = 1
                     for try await result in stream {
                         guard current == generation, selectedThreadID == threadID else { return }
+                        if !eventStreamLive { eventStreamLive = true; ResumeTrace.streamReady() }
                         try checkIdentity(result)
                         let events = result["events"] as? [[String: Any]] ?? []
                         applyEventActivity(events)
@@ -461,6 +753,12 @@ import Combine
                 "instance_id": instanceID, "epoch": epoch, "thread_id": threadID,
             ])
             guard result["outcome"] as? String == "unexposed" else { throw GatewayFailure.invalidResponse }
+            cacheTask?.cancel(); cacheTask = nil
+            if let profile, let targetID {
+                await ConversationCache.shared.remove(gatewayID: profile.gatewayID, targetID: targetID, threadID: threadID)
+                cachedConversations.removeAll { $0.threadID == threadID }
+                UserDefaults.standard.removeObject(forKey: selectedThreadKey(profile, targetID: targetID))
+            }
             selectedThreadID = nil
             snapshot = nil
             liveActivity = .ready
@@ -475,12 +773,25 @@ import Combine
         }
     }
 
-    private func loadSnapshot(_ id: String, refreshAuxiliary: Bool = true) async throws {
+    private func loadSnapshot(_ id: String, refreshAuxiliary: Bool = true,
+                              prefetched: [String: Any]? = nil) async throws {
         guard let client else { return }
         let scope = operationScope
         var params: [String: Any] = ["thread_id": id]
-        if snapshot?.threadID == id { params["tail_entry_count"] = 16 }
-        let result = try await client.rpc("thread.snapshot", params: params)
+        if let old = snapshot, old.threadID == id {
+            params["tail_entry_count"] = 16
+            if capabilities.contains("thread.snapshot.delta"),
+               old.instanceID == instanceID, old.epoch == epoch {
+                params["instance_id"] = old.instanceID
+                params["epoch"] = old.epoch
+                params["after_sequence"] = old.lastSequence
+                params["entry_start_index"] = old.entryStartIndex
+                params["entry_end_index"] = old.entryStartIndex + old.entries.count
+            }
+        }
+        let result: [String: Any]
+        if let prefetched { result = prefetched }
+        else { result = try await client.rpc("thread.snapshot", params: params) }
         guard scope == operationScope else { return }
         try checkIdentity(result)
         guard result["thread_id"] as? String == id,
@@ -497,11 +808,19 @@ import Combine
         }
         var mergedEntries = entries
         var mergedStart = pageStart
-        if let old = snapshot, old.threadID == id,
+        let delta = result["delta"] as? Bool == true
+        if delta, snapshot?.threadID != id { throw GatewayFailure.invalidResponse }
+        if delta, let old = snapshot, old.threadID == id,
            pageStart >= old.entryStartIndex,
            pageStart <= old.entryStartIndex + old.entries.count {
-            mergedEntries = Array(old.entries.prefix(pageStart - old.entryStartIndex)) + entries
+            if entries.isEmpty && pageStart == old.entryStartIndex + old.entries.count {
+                mergedEntries = old.entries
+            } else {
+                mergedEntries = Array(old.entries.prefix(pageStart - old.entryStartIndex)) + entries
+            }
             mergedStart = old.entryStartIndex
+        } else if delta {
+            throw GatewayFailure.native("RESYNC_REQUIRED")
         }
         let childApprovalRows = (result["subagents"] as? [[String: Any]] ?? []).flatMap { child in
             child["pending_approvals"] as? [[String: Any]] ?? []
@@ -562,9 +881,12 @@ import Combine
             ?? threads.first(where: { $0.id == id })?.title ?? "Untitled Agent thread"
         let nativeStatus = result["status"] as? String ?? "Unknown"
         let nativeTurnID = result["current_turn_id"] as? Int
-        liveActivity = NativeAgentActivity(result["activity"], status: nativeStatus, currentTurnID: nativeTurnID)
-        if let index = threads.firstIndex(where: { $0.id == id }) { threads[index].activity = liveActivity }
-        snapshot = ThreadSnapshot(threadID: id,
+        let nextActivity = NativeAgentActivity(result["activity"], status: nativeStatus, currentTurnID: nativeTurnID)
+        if liveActivity != nextActivity { liveActivity = nextActivity }
+        if let index = threads.firstIndex(where: { $0.id == id }), threads[index].activity != nextActivity {
+            threads[index].activity = nextActivity
+        }
+        let nextSnapshot = ThreadSnapshot(threadID: id,
                                   title: title,
                                   status: nativeStatus,
                                   currentTurnID: nativeTurnID,
@@ -572,11 +894,15 @@ import Combine
                                   lastSequence: sequence, entries: mergedEntries,
                                   entryStartIndex: mergedStart, totalEntries: totalEntries,
                                   hasOlderEntries: mergedStart > 0,
-                                  activityEntries: result["activity_entries_markdown"] as? [String] ?? entries,
+                                  activityEntries: delta ? mergedEntries : (result["activity_entries_markdown"] as? [String] ?? entries),
                                   truncated: result["truncated"] as? Bool ?? false,
-                                  activityTruncated: result["activity_truncated"] as? Bool ?? false,
+                                  activityTruncated: delta ? mergedStart > 0 : (result["activity_truncated"] as? Bool ?? false),
                                   pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: uniqueSubagents,
                                   agentError: NativeAgentError(snapshot: result))
+        if snapshot != nextSnapshot {
+            snapshot = nextSnapshot
+            scheduleCacheSave()
+        }
         if let profile, let targetID, let instanceID, let epoch {
             ApprovalNotifications.shared.update(gateway: profile.gatewayID, target: targetID,
                 instance: instanceID, epoch: epoch, thread: id, approvals: approvals, allowActions: capabilities.contains("approval.respond"),
@@ -591,9 +917,11 @@ import Combine
 
     private func applyEventActivity(_ events: [[String: Any]]) {
         guard let row = events.reversed().compactMap({ $0["activity"] as? [String: Any] }).first else { return }
-        liveActivity = NativeAgentActivity(row, status: snapshot?.status ?? "Unknown", currentTurnID: snapshot?.currentTurnID)
-        if let id = selectedThreadID, let index = threads.firstIndex(where: { $0.id == id }) {
-            threads[index].activity = liveActivity
+        let nextActivity = NativeAgentActivity(row, status: snapshot?.status ?? "Unknown", currentTurnID: snapshot?.currentTurnID)
+        if liveActivity != nextActivity { liveActivity = nextActivity }
+        if let id = selectedThreadID, let index = threads.firstIndex(where: { $0.id == id }),
+           threads[index].activity != nextActivity {
+            threads[index].activity = nextActivity
         }
     }
 
@@ -1197,6 +1525,7 @@ import Combine
                                       truncated: start > 0, activityTruncated: current.activityTruncated,
                                       pendingApprovals: current.pendingApprovals, rewindPoints: current.rewindPoints,
                                       subagents: current.subagents, agentError: current.agentError)
+            scheduleCacheSave()
         } catch {
             if scope == operationScope { issue = error.localizedDescription }
         }
@@ -1258,7 +1587,7 @@ import Combine
                     } else if snapshot == nil || snapshot?.isBusy == true || (snapshot?.subagents.isEmpty == false && Date().timeIntervalSince(lastChildSnapshot) > 3) {
                         try await loadSnapshot(id, refreshAuxiliary: false)
                     } else if let sequence = result["last_sequence"] as? Int,
-                              var old = snapshot, sequence >= old.lastSequence {
+                              var old = snapshot, sequence > old.lastSequence {
                         old = ThreadSnapshot(threadID: old.threadID, title: old.title, status: old.status,
                                              currentTurnID: old.currentTurnID,
                                              instanceID: old.instanceID, epoch: old.epoch,
@@ -1345,12 +1674,27 @@ import Combine
         guard state != .connecting else { issue = "Connection is still restoring. Open the session to review current requests."; return }
         if state != .live { await refresh() }
         guard state == .live else { issue = "Reconnect before reviewing this notification."; return }
+        if data["type"] == "push_test" { return }
+        if data["type"] == "push" {
+            guard data["gateway"]?.caseInsensitiveCompare(profile?.gatewayID ?? "") == .orderedSame,
+                  data["target"] == targetID,
+                  let thread = data["thread"], threads.contains(where: { $0.id == thread }) else {
+                issue = "Choose the notification's paired workspace, then refresh to review its current state."
+                notificationNeedsWorkspace = true
+                return
+            }
+            if notificationNeedsWorkspace { clearIssue() }
+            notificationThreadID = thread
+            return
+        }
         guard data["gateway"] == profile?.gatewayID, data["target"] == targetID,
               data["instance"] == instanceID, data["epoch"] == epoch,
               let thread = data["thread"], threads.contains(where: { $0.id == thread }) else {
             issue = "This notification belongs to an older or different connection. Open the session to review current requests."
+            notificationNeedsWorkspace = true
             return
         }
+        if notificationNeedsWorkspace { clearIssue() }
         await select(thread)
         guard state == .live, issue.isEmpty, data["gateway"] == profile?.gatewayID, data["target"] == targetID,
               data["instance"] == instanceID, data["epoch"] == epoch, thread == selectedThreadID else { return }
@@ -1505,6 +1849,31 @@ import Combine
     }
 
     private func targetKey(_ profile: ConnectionProfile) -> String { "zedlink.target.\(profile.id)" }
+
+    private func selectedThreadKey(_ profile: ConnectionProfile, targetID: String) -> String {
+        "zedlink.selected.\(profile.gatewayID.lowercased()).\(targetID)"
+    }
+
+    private func scheduleCacheSave() {
+        guard cacheTask == nil else { return }
+        cacheTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, !Task.isCancelled else { return }
+            await self.persistConversation()
+            self.cacheTask = nil
+        }
+    }
+
+    func persistConversation() async {
+        guard let profile, let targetID, let snapshot,
+              let cached = CachedConversation(gatewayID: profile.gatewayID, targetID: targetID, snapshot: snapshot) else { return }
+        await ConversationCache.shared.save(cached)
+        guard self.profile?.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame,
+              self.targetID == targetID else { return }
+        var next = cachedConversations.filter { $0.threadID != cached.threadID }
+        next.insert(cached, at: 0)
+        cachedConversations = Array(next.prefix(12))
+    }
 
     private func pendingKey(_ profile: ConnectionProfile) -> String {
         "zedlink.pending.\(profile.id).\(targetID ?? "default")"

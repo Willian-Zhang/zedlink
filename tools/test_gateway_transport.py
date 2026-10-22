@@ -735,6 +735,15 @@ def main():
                              {"code": code1, "device_name": "reused"})
             assert status == 403
             token1 = device1["token"]
+            status, unauthenticated_apns = http(base, context, "/v1/notifications/apns")
+            assert status == 401 and unauthenticated_apns["error"] == "UNAUTHENTICATED"
+            status, apns_state = http(base, context, "/v1/notifications/apns", token=token1)
+            assert status == 200 and apns_state == {"supported": False, "enabled": False}
+            status, apns_registration = http(
+                base, context, "/v1/notifications/apns", "POST",
+                {"token": "ab" * 32, "environment": "sandbox"}, token1,
+            )
+            assert status == 503 and apns_registration["error"] == "APNS_NOT_CONFIGURED"
             instance_request = {"version": 1, "request_id": "instances", "method": "instance.list", "params": {}}
             status, instances = http(base, context, "/v1/rpc", "POST", instance_request, token1)
             assert status == 200
@@ -744,6 +753,24 @@ def main():
                         "target_id": "primary", "params": {}}
             status, targeted_result = http(base, context, "/v1/rpc", "POST", targeted, token1)
             assert status == 200 and targeted_result["result"]["threads"][0]["thread_id"] == "fixture-thread"
+            resume = {"version": 1, "request_id": "resume", "method": "session.resume",
+                      "target_id": "primary", "params": {"thread_id": "fixture-thread"}}
+            status, _ = http(base, context, "/v1/rpc", "POST", resume)
+            assert status == 401
+            status, resumed = http(base, context, "/v1/rpc", "POST", resume, token1)
+            assert status == 200 and resumed["request_id"] == "resume"
+            assert resumed["result"]["target"]["target_id"] == "primary"
+            assert resumed["result"]["instance_id"] == "fixture-instance"
+            assert resumed["result"]["epoch"] == "fixture-epoch"
+            assert resumed["result"]["threads"][0]["thread_id"] == "fixture-thread"
+            assert resumed["result"]["snapshot"]["thread_id"] == "fixture-thread"
+            assert resumed["result"]["snapshot"]["last_sequence"] == probe.sequence
+            hidden_resume = dict(resume, request_id="resume-hidden", params={"thread_id": "unexposed"})
+            status, hidden = http(base, context, "/v1/rpc", "POST", hidden_resume, token1)
+            assert status == 200 and hidden["result"]["snapshot"] is None
+            malformed_resume = dict(resume, request_id="resume-malformed", params={"thread_id": ["fixture-thread"]})
+            status, malformed = http(base, context, "/v1/rpc", "POST", malformed_resume, token1)
+            assert status == 400 and malformed["error"] == "INVALID_REQUEST"
             unknown = dict(targeted, request_id="unknown-target", target_id="missing")
             status, unknown_result = http(base, context, "/v1/rpc", "POST", unknown, token1)
             assert status == 503 and unknown_result["error"] == "INSTANCE_UNAVAILABLE"
@@ -878,6 +905,11 @@ def main():
                       "params": {"original_request_id": "stable-send"}}
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token1)
             assert status == 200 and response["result"]["known"]
+            status, resumed_delivery = http(base, context, "/v1/rpc", "POST",
+                                            dict(resume, request_id="resume-delivery",
+                                                 params={"thread_id": "fixture-thread", "pending_request_id": "stable-send",
+                                                         "instance_id": "fixture-instance", "epoch": "fixture-epoch"}), token1)
+            assert status == 200 and resumed_delivery["result"]["pending_status"]["known"]
             code2 = admin(state, "pair-code")["code"]
             status, device2 = http(base, context, "/v1/pair", "POST",
                                    {"code": code2, "device_name": "fixture two"})
@@ -887,6 +919,10 @@ def main():
             assert status == 200 and other_device_terminal["result"]["terminal"]["terminal_id"] != created_terminal["result"]["terminal"]["terminal_id"]
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token2)
             assert status == 200 and not response["result"]["known"]
+            status, other_resume = http(base, context, "/v1/rpc", "POST",
+                                        dict(resume, request_id="resume-other-device",
+                                             params={"pending_request_id": "stable-send"}), token2)
+            assert status == 200 and not other_resume["result"]["pending_status"]["known"]
             status, _ = http(base, context, "/v1/rpc", "POST", sent, token2)
             assert status == 200 and probe.accepted == 2
             status, response = http(base, context, "/v1/rpc", "POST", lookup, token2)

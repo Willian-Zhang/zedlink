@@ -124,7 +124,10 @@ actor CredentialVault {
         let stillUsesCredential = profiles.contains {
             $0.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame
         }
-        if !stillUsesCredential { await CredentialVault.shared.delete(profile) }
+        if !stillUsesCredential {
+            await CredentialVault.shared.delete(profile)
+            await ConversationCache.shared.remove(gatewayID: profile.gatewayID)
+        }
     }
 
     private func persist() {

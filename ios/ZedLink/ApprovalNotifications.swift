@@ -2,8 +2,19 @@ import Foundation
 import UserNotifications
 import Combine
 import CryptoKit
+import UIKit
 
-/// Local delivery while the client receives native snapshots. APNs is not configured.
+final class ZedLinkAPNsDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        Task { @MainActor in ApprovalNotifications.shared.receivedRemoteToken(token) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        Task { @MainActor in ApprovalNotifications.shared.remoteRegistrationFailed(error.localizedDescription) }
+    }
+}
+
 @MainActor final class ApprovalNotifications: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = ApprovalNotifications()
     var handler: (([String: String], String) async -> Void)? {
@@ -23,7 +34,28 @@ import CryptoKit
     @Published private(set) var lastError = ""
     @Published private(set) var permitted = false
     @Published private(set) var blocked = false
+    @Published private(set) var nativePushStatus = "Checking gateway…"
+    private(set) var remoteToken: String?
+    var onRemoteToken: (() -> Void)?
     var enabled: Bool { UserDefaults.standard.bool(forKey: "zedlink.approvalNotifications") }
+
+    func requestRemoteRegistration() {
+        guard enabled, permitted else { return }
+        nativePushStatus = "Waiting for iPhone registration…"
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    func receivedRemoteToken(_ token: String) {
+        remoteToken = token
+        nativePushStatus = "Registering with gateway…"
+        onRemoteToken?()
+    }
+
+    func remoteRegistrationFailed(_ message: String) {
+        nativePushStatus = "iPhone push registration failed: \(message)"
+    }
+
+    func setNativePushStatus(_ message: String) { nativePushStatus = message }
 
     func refreshStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
@@ -90,6 +122,9 @@ import CryptoKit
 
     func disable() {
         UserDefaults.standard.set(false, forKey: "zedlink.approvalNotifications")
+        UIApplication.shared.unregisterForRemoteNotifications()
+        remoteToken = nil
+        nativePushStatus = "Removal pending gateway reconnect…"
         status = blocked ? "Blocked in iPhone Settings" : "Local Agent alerts disabled"
         responses.clear()
         clear()

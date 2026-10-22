@@ -16,7 +16,19 @@ struct SessionIssueBanner: View {
                             if help.action == .connections { session.showConnections = true }
                             else { Task { await session.refresh() } }
                         }.font(.caption).frame(minHeight: 44)
-                    } else { Text(session.issue).font(.caption).textSelection(.enabled) }
+                    } else {
+                        Text(session.issue).font(.caption).textSelection(.enabled)
+                        if session.notificationNeedsWorkspace || session.profile == nil {
+                            Button("Open Connections") {
+                                session.clearIssue()
+                                session.showConnections = true
+                            }.font(.caption).frame(minHeight: 44)
+                        } else if session.state != .live {
+                            Button("Reconnect") { Task { await session.refresh() } }
+                                .font(.caption).frame(minHeight: 44)
+                                .disabled(session.state == .connecting || session.state == .reconnecting)
+                        }
+                    }
                 }
                 Spacer(minLength: 0)
                 Button { session.clearIssue() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }

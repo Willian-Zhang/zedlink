@@ -13,8 +13,8 @@ final class SessionWorkspaceUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 20), "Disposable test thread is unavailable; verify pairing, route, and exposure.")
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "composer").firstMatch.waitForExistence(timeout: 15))
-        XCTAssertFalse(app.buttons["connections-tab"].exists)
-        XCTAssertFalse(app.buttons["settings-tab"].exists)
+        XCTAssertFalse(app.tabBars.buttons["Connections"].exists)
+        XCTAssertFalse(app.tabBars.buttons["Settings"].exists)
         return app
     }
 
@@ -31,7 +31,7 @@ final class SessionWorkspaceUITests: XCTestCase {
         app.buttons["close-workspace"].tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "composer").firstMatch.waitForExistence(timeout: 5))
         app.buttons["back-to-sessions"].tap()
-        XCTAssertTrue(app.buttons["connections-tab"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Connections"].waitForExistence(timeout: 5))
     }
 
     func testComposerKeyboardDismissesOnWorkspaceNavigation() throws {
@@ -73,5 +73,21 @@ final class SessionWorkspaceUITests: XCTestCase {
         XCTAssertTrue(app.textFields["find-in-file"].waitForExistence(timeout: 10))
         app.textFields["find-in-file"].tap(); app.textFields["find-in-file"].typeText(query)
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Search-file-contents"; capture.lifetime = .keepAlways; add(capture)
+    }
+
+    func testConversationSearchOpensLoadedMessage() throws {
+        guard let phrase = ProcessInfo.processInfo.environment["ZEDLINK_E2E_TRANSCRIPT_TEXT"], phrase.count >= 2 else {
+            throw XCTSkip("Set ZEDLINK_E2E_TRANSCRIPT_TEXT to text in the disposable thread's loaded page.")
+        }
+        let app = try openDisposableSession()
+        app.buttons["Session actions"].tap()
+        app.buttons["Find in conversation"].tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap(); search.typeText(phrase)
+        let result = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-search-result-")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 10), "The phrase must be present in the loaded native transcript page.")
+        result.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "composer").firstMatch.waitForExistence(timeout: 5))
     }
 }

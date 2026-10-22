@@ -134,7 +134,12 @@ def main():
                                        env=environment, stdout=log, stderr=log)
             socket_path = str(probe / 'zedlink.sock')
             until(lambda: Path(socket_path).exists())
-            info = rpc(socket_path, 'instance.info', {})
+            def ready_info():
+                try: return rpc(socket_path, 'instance.info', {})
+                except RuntimeError as error:
+                    if 'INSTANCE_UNAVAILABLE' in str(error): return None
+                    raise
+            info = until(ready_info)
             base = {'instance_id': info['instance_id'], 'epoch': info['epoch']}
             time.sleep(1)
             request_id = str(uuid.uuid4())
@@ -206,11 +211,23 @@ def main():
                 raise AssertionError('Unsafe directory access was accepted')
             print('PASS: native per-folder browsing beyond global limit, file contents and hidden/traversal/symlink exclusions')
             for script in ['test_native_fixture.py', 'test_native_cancel.py']:
+                if script == 'test_native_cancel.py':
+                    until(lambda: rpc(socket_path, 'thread.snapshot', identity)['status'] == 'Idle', timeout=30)
                 subprocess.run(['python3', str(ROOT / 'tools' / script), '--socket', socket_path,
                                 '--fixture-url', url], check=True, timeout=60)
             identity = {**base, 'thread_id': thread_id}
             sentinel = project / 'approval_sentinel.txt'
+            initial_page = rpc(socket_path, 'thread.snapshot', {**identity, 'tail_entry_count': 16})
+            delta_params = {**identity, 'tail_entry_count': 16,
+                            'after_sequence': initial_page['last_sequence'],
+                            'entry_start_index': initial_page['entry_start_index'],
+                            'entry_end_index': initial_page['entry_end_index']}
+            unchanged = rpc(socket_path, 'thread.snapshot', delta_params)
+            assert unchanged['delta'] and unchanged['entries_markdown'] == []
+            stale = rpc(socket_path, 'thread.snapshot', {**delta_params, 'after_sequence': 999999})
+            assert not stale['delta']
             for decision in ['deny_once', 'approve_once']:
+                before_page = rpc(socket_path, 'thread.snapshot', {**identity, 'tail_entry_count': 16})
                 rpc(socket_path, 'thread.send', {**identity, 'text': 'ZEDLINK_FIXTURE_APPROVAL ' + str(uuid.uuid4())})
                 def pending():
                     return rpc(socket_path, 'thread.approvals', identity)['approvals']
@@ -222,6 +239,14 @@ def main():
                 rpc(socket_path, 'approval.respond', {**identity, 'approval_id': approval['approval_id'],
                     'turn_id': approval['turn_id'], 'decision': decision})
                 until(lambda: rpc(socket_path, 'thread.snapshot', identity)['status'] == 'Idle')
+                delta_page = rpc(socket_path, 'thread.snapshot', {
+                    **identity, 'tail_entry_count': 16, 'after_sequence': before_page['last_sequence'],
+                    'entry_start_index': before_page['entry_start_index'],
+                    'entry_end_index': before_page['entry_end_index']})
+                full_page = rpc(socket_path, 'thread.snapshot', {**identity, 'tail_entry_count': 128})
+                assert delta_page['delta'] and delta_page['entries_markdown']
+                assert delta_page['entry_start_index'] <= before_page['entry_end_index']
+                assert delta_page['entries_markdown'][-1] == full_page['entries_markdown'][-1]
                 assert sentinel.exists() == (decision == 'approve_once'), 'Native decision was not respected'
             assert sentinel.read_text() == 'approved'
             print('PASS: isolated native Zed stream/replay, cancellation and deny/allow tool authorization')

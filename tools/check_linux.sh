@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pinned_zed_revision="c66312b200d113694fca08c1d468669028a09a0e"
+pinned_zed_revision="544780422affd11699fb531c49af5cc6e82a3fd7"
 
 actual_revision="$(git -C "$project_root/zed-source" rev-parse HEAD)"
 if [[ "$actual_revision" != "$pinned_zed_revision" ]] &&

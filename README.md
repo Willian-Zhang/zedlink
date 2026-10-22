@@ -128,7 +128,7 @@ python3 tools/test_gateway_transport.py
 python3 tools/check_public_release.py
 ```
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md), [development and testing](wiki/Development.md), and the [Zed upstream proposal](wiki/Zed-Upstream-Proposal.md). The bridge is based on pinned upstream revision `c66312b200d113694fca08c1d468669028a09a0e`; see the proposal for the extension API gaps and core contribution path.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), [development and testing](wiki/Development.md), and the [Zed upstream proposal](wiki/Zed-Upstream-Proposal.md). The bridge is based on pinned upstream revision `544780422affd11699fb531c49af5cc6e82a3fd7`; see the proposal for the extension API gaps and core contribution path.
 
 ## Credits
 

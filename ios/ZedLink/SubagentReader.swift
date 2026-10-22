@@ -28,8 +28,8 @@ struct SubagentReader: View {
                             } else if child.entriesTruncated {
                                 Text("Earlier activity requires an updated desktop bridge.").font(.caption).foregroundStyle(ZLTheme.muted).padding(16)
                             }
-                            ForEach(Array(child.entries.enumerated()).map { ChildTranscriptEntry(id: child.entryStartIndex + $0.offset, markdown: $0.element) }) { entry in
-                                NativeMessageView(message: NativeEntryPresentation(entry.markdown, index: entry.id), thinkingLive: child.isActive && entry.id == child.entryStartIndex + child.entries.count - 1)
+                            ForEach(child.entryStartIndex..<(child.entryStartIndex + child.entries.count), id: \.self) { entryIndex in
+                                NativeMessageView(message: NativeEntryPresentation(child.entries[entryIndex - child.entryStartIndex], index: entryIndex), thinkingLive: child.isActive && entryIndex == child.entryStartIndex + child.entries.count - 1).equatable()
                                 Hairline().padding(.horizontal, 16)
                             }
                             if child.entries.isEmpty { Text("Waiting for the first activity…").foregroundStyle(ZLTheme.muted).padding(16) }
@@ -40,7 +40,7 @@ struct SubagentReader: View {
                         }
                     }.defaultScrollAnchor(.bottom)
                         .simultaneousGesture(DragGesture().onChanged { _ in following = false })
-                        .onChange(of: child.entries) { _, _ in if following { proxy.scrollTo("child-bottom", anchor: .bottom) } }
+                        .onChange(of: child.entries.last) { _, _ in if following { proxy.scrollTo("child-bottom", anchor: .bottom) } }
                     if !following {
                         Button("Latest ↓") { following = true; proxy.scrollTo("child-bottom", anchor: .bottom) }.frame(maxWidth: .infinity, minHeight: 44)
                     }
@@ -60,8 +60,6 @@ struct SubagentReader: View {
         }.background(ZLTheme.background).foregroundStyle(ZLTheme.ink).buttonStyle(.plain)
     }
 }
-
-private struct ChildTranscriptEntry: Identifiable { let id: Int; let markdown: String }
 
 struct SubagentHistoryView: View {
     @EnvironmentObject private var session: SessionManager
