@@ -35,11 +35,15 @@ struct CachedConversation: Codable, Identifiable {
         self.updatedAt = Date()
     }
 
-    var displaySnapshot: ThreadSnapshot {
-        ThreadSnapshot(threadID: threadID, title: title, status: "Saved copy", currentTurnID: nil,
-                       instanceID: "", epoch: "", lastSequence: 0, entries: entries,
-                       entryStartIndex: entryStartIndex, totalEntries: totalEntries,
-                       hasOlderEntries: entryStartIndex > 0, activityEntries: [], truncated: entryStartIndex > 0,
+    var displaySnapshot: ThreadSnapshot { displaySnapshot(visibleCount: 24) }
+
+    func displaySnapshot(visibleCount: Int) -> ThreadSnapshot {
+        let visible = Array(entries.suffix(max(1, visibleCount)))
+        let visibleStart = entryStartIndex + entries.count - visible.count
+        return ThreadSnapshot(threadID: threadID, title: title, status: "Saved copy", currentTurnID: nil,
+                       instanceID: "", epoch: "", lastSequence: 0, entries: visible,
+                       entryStartIndex: visibleStart, totalEntries: totalEntries,
+                       hasOlderEntries: visibleStart > 0, activityEntries: [], truncated: visibleStart > 0,
                        activityTruncated: false, pendingApprovals: [], rewindPoints: [], subagents: [])
     }
 }

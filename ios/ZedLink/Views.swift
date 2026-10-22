@@ -34,8 +34,8 @@ struct SessionsView: View {
                     connectionHeader
                     if session.demoPreview { Text("DEMO PREVIEW · Sample sessions, no live connection").font(.caption).foregroundStyle(ZLTheme.warning).padding(.horizontal, 16).padding(.vertical, 8) }
                     if !session.issue.isEmpty { SessionIssueBanner() }
-                    if session.state != .live && !session.visibleThreads.isEmpty {
-                        Text(session.state == .connecting ? "Saved sessions · reconciling with desktop Zed" : "Saved sessions · reconnect to update")
+                    if session.visibleThreads.contains(where: { thread in !session.threads.contains(where: { $0.id == thread.id }) }) {
+                        Text(session.state == .live ? "Saved sessions · expose in desktop Zed to update" : session.state == .connecting ? "Saved sessions · reconciling with desktop Zed" : "Saved sessions · reconnect to update")
                             .font(.caption).foregroundStyle(ZLTheme.warning).padding(.horizontal, 16).padding(.vertical, 8)
                     }
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -73,7 +73,7 @@ struct SessionsView: View {
                             ForEach(rows) { thread in
                                 HStack(spacing: 0) {
                                     NavigationLink(value: thread.id) {
-                                        SessionRow(thread: thread, live: session.state == .live, updated: library.updated.contains(key(thread)))
+                                        SessionRow(thread: thread, live: session.state == .live && session.threads.contains(where: { $0.id == thread.id }), updated: library.updated.contains(key(thread)))
                                     }.buttonStyle(.plain).accessibilityIdentifier("thread-" + thread.id)
                                         .allowsHitTesting(!session.demoPreview)
                                         .simultaneousGesture(TapGesture().onEnded { dismissZedLinkKeyboard(); library.seen(key(thread)) })
@@ -186,7 +186,7 @@ private struct SessionRow: View {
     private var activity: SessionActivity { SessionActivity(thread) }
     private var tint: Color { activity.attention ? ZLTheme.warning : activity.running ? ZLTheme.focus : ZLTheme.muted }
     private var activityLabel: String {
-        activity.running && thread.activity.isWorking ? thread.activity.displayText : activity.rawValue
+        thread.status == "Saved copy" ? "Saved conversation" : activity.running && thread.activity.isWorking ? thread.activity.displayText : activity.rawValue
     }
     var body: some View {
         HStack(spacing: 10) {
@@ -231,6 +231,7 @@ struct ConversationView: View {
     @State private var proposedTitle = ""
     @State private var rewindPoint: NativeRewindPoint?
     @State private var composerPhoto: PhotosPickerItem?
+    @State private var cachedVisibleCount = 24
     @State private var imageToReview: UIImage?
     @State private var editingAttachmentID: UUID?
     @FocusState private var composerFocused: Bool
@@ -253,20 +254,30 @@ struct ConversationView: View {
                 if session.state == .live && !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
                 if session.state == .live && !session.elicitations.isEmpty { elicitationStack }
                 if session.state == .live && (session.editReview != nil || !session.queuedMessages.isEmpty) { nativeControls }
-            } else if (session.state != .live || session.selectedThreadID != threadID),
-                      let cached = session.cachedConversation(threadID) {
+            } else if let cached = session.cachedConversation(threadID) {
                 let detail = session.state != .live ? "Reconnect for current state and earlier messages."
                     : session.threads.contains(where: { $0.id == threadID }) ? "Loading current state from desktop Zed."
                     : "This thread is not currently exposed."
                 savedConversationBanner("Saved copy from \(cached.updatedAt.formatted(date: .abbreviated, time: .shortened)). \(detail)")
-                conversation(cached.displaySnapshot)
+                if cached.entries.count > cachedVisibleCount {
+                    Button("Show earlier saved messages · \(cached.entries.count - cachedVisibleCount) remaining") {
+                        followsConversation = false
+                        cachedVisibleCount += 24
+                    }
+                    .font(.footnote).padding(.horizontal, 16).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                conversation(cached.displaySnapshot(visibleCount: cachedVisibleCount))
                     .onAppear { session.markConversationVisible() }
             } else {
                 VStack(spacing: 12) {
                     ContentUnavailableView(session.state == .live && !session.threads.contains(where: { $0.id == threadID }) ? "Session is not exposed" : "Loading native thread", systemImage: "bubble.left", description: Text("Keep this conversation exposed with /remote-control in desktop Zed. Its contents will reload when it becomes available."))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if session.state != .live { recoveryAction.padding(.bottom, 16) }
-                    else { Button("Back to sessions") { dismiss() }.buttonStyle(.bordered).padding(.bottom, 16) }
+                    else if session.threads.contains(where: { $0.id == threadID }) {
+                        Button("Reload conversation") { Task { await session.select(threadID) } }
+                            .buttonStyle(.bordered).padding(.bottom, 16)
+                    } else { Button("Back to sessions") { dismiss() }.buttonStyle(.bordered).padding(.bottom, 16) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -410,6 +421,25 @@ struct ConversationView: View {
             Text(lastKnownTitle.isEmpty ? "Agent thread" : lastKnownTitle)
                 .font(.headline).lineLimit(2)
             if session.state != .live { ConnectionStatusView(state: session.state) }
+            if let settings = session.threadSettings, session.selectedThreadID == threadID,
+               let used = settings.usedTokens, let maximum = settings.maxTokens, maximum > 0 {
+                Button { showingModelControls = true } label: {
+                    HStack(spacing: 8) {
+                        Label("\(used.formatted()) / \(maximum.formatted())", systemImage: "circle.lefthalf.filled")
+                        if let input = settings.inputTokens {
+                            Label(input.formatted(), systemImage: "arrow.down")
+                        }
+                        if let output = settings.outputTokens {
+                            Label(output.formatted(), systemImage: "arrow.up")
+                        }
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Double(used) / Double(maximum) >= 0.8 ? ZLTheme.warning : ZLTheme.muted)
+                    .lineLimit(1)
+                }
+                .accessibilityLabel("Context used \(used) of \(maximum) tokens. Input \(settings.inputTokens ?? 0), output \(settings.outputTokens ?? 0). Open Agent settings")
+                .accessibilityIdentifier("context-usage")
+            }
         }.accessibilityIdentifier("conversation-title")
     }
 
@@ -439,6 +469,11 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if snapshot.entries.isEmpty {
+                        ContentUnavailableView(snapshot.totalEntries == 0 ? "No messages yet" : "Conversation is loading", systemImage: "bubble.left", description: Text(snapshot.totalEntries == 0 ? "Send a message to begin this native Zed session." : "The latest messages will appear here when desktop Zed returns them."))
+                            .frame(maxWidth: .infinity, minHeight: 260)
+                            .accessibilityIdentifier("conversation-empty-state")
+                    }
                     let activeChildren = snapshot.subagents.filter { child in child.isActive || snapshot.pendingApprovals.contains { $0.subagentID == child.id } }
                     if !activeChildren.isEmpty {
                         Text("PARALLEL AGENTS · \(snapshot.subagents.filter(\.isActive).count) ACTIVE")
@@ -500,7 +535,6 @@ struct ConversationView: View {
                 }
             }
             .simultaneousGesture(DragGesture().onChanged { _ in userScrolling = true; followsConversation = false }.onEnded { _ in userScrolling = false })
-            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !followsConversation {
@@ -522,10 +556,10 @@ struct ConversationView: View {
                 }
             }
             .task(id: [snapshot.instanceID, snapshot.epoch, snapshot.threadID]) {
-                // Explicit initial placement after restored transcript layout, without animation.
                 followsConversation = true
                 unreadEntries = 0; newActivityWhileReading = false
-                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled, !snapshot.entries.isEmpty else { return }
                 proxy.scrollTo("conversation-bottom", anchor: .bottom)
             }
             .onChange(of: snapshot.totalEntries) { old, new in
@@ -632,46 +666,42 @@ struct ConversationView: View {
                     session.insertCommand(command); dismissedSlashDraft = session.draft
                 }.task { await session.refreshCommands() }
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .bottom, spacing: 4) {
-                    composerExtras
-                    composerTextField.frame(minWidth: 110)
-                    sendOrStopButton
-                }.frame(minWidth: 350)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        composerTextField
-                        sendOrStopButton
+            VStack(alignment: .leading, spacing: 2) {
+                composerTextField.frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    Menu {
+                        PhotosPicker(selection: $composerPhoto, matching: .images) {
+                            Label("Add image", systemImage: "photo.badge.plus")
+                        }.disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
+                        Button("Agent commands", systemImage: "terminal") {
+                            composerFocused = false; showingCommands = true
+                        }
+                        Button("Project context", systemImage: "folder.badge.plus") {
+                            composerFocused = false; showingContext = true
+                        }
+                    } label: {
+                        Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
                     }
-                    composerExtras
-                }
+                    .accessibilityLabel("Add image, command, or project context")
+                    .accessibilityIdentifier("composer-add")
+                    VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
+                    Spacer(minLength: 0)
+                    sendOrStopButton
+                }.padding(.horizontal, 4)
             }
-            .padding(4)
+            .padding(6)
             .background(ZLTheme.surface)
-            .overlay(Rectangle().stroke(ZLTheme.line, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(ZLTheme.line, lineWidth: 1))
         }
         .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
         .background(ZLTheme.background)
         .overlay(alignment: .top) { Hairline() }
     }
 
-    private var composerExtras: some View {
-        HStack(spacing: 2) {
-            Button { composerFocused = false; showingCommands = true } label: {
-                Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
-            }.foregroundStyle(.primary)
-                .accessibilityLabel("Zed Agent actions and commands")
-            PhotosPicker(selection: $composerPhoto, matching: .images) {
-                Image(systemName: "photo.badge.plus").font(.title3).frame(width: 44, height: 44)
-            }.disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
-                .accessibilityLabel("Attach or annotate image")
-            VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
-        }
-    }
-
     private var composerTextField: some View {
         TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
-            .lineLimit(1...6).padding(.horizontal, 11).padding(.vertical, 10)
+            .lineLimit(2...8).padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 3)
             .focused($composerFocused)
             .submitLabel(.send)
             .onSubmit { sendAndDismissKeyboard() }
@@ -740,7 +770,7 @@ private struct ConversationSearchSheet: View {
 
     private var snapshot: ThreadSnapshot? {
         if let snapshot = session.snapshot, snapshot.threadID == threadID { return snapshot }
-        return session.cachedConversation(threadID)?.displaySnapshot
+        return session.cachedConversation(threadID)?.displaySnapshot(visibleCount: 128)
     }
 
     private var matches: [Int] {

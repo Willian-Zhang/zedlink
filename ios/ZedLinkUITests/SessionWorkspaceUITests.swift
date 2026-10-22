@@ -45,6 +45,24 @@ final class SessionWorkspaceUITests: XCTestCase {
         XCTAssertFalse(app.keyboards.firstMatch.exists)
     }
 
+    func testConversationAndComposerAfterSessionRefresh() throws {
+        guard let phrase = ProcessInfo.processInfo.environment["ZEDLINK_E2E_TRANSCRIPT_TEXT"], phrase.count >= 2 else {
+            throw XCTSkip("Set ZEDLINK_E2E_TRANSCRIPT_TEXT to visible text in the exposed disposable thread.")
+        }
+        let app = try openDisposableSession()
+        let composer = app.descendants(matching: .any).matching(identifier: "composer").firstMatch
+        XCTAssertGreaterThan(composer.frame.width, app.frame.width * 0.65, "The prompt field should span the conversation width.")
+        let message = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", phrase)).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 20), "The latest native transcript should appear after opening the session.")
+        app.buttons["back-to-sessions"].tap()
+        app.buttons["reconnect"].tap()
+        let thread = ProcessInfo.processInfo.environment["ZEDLINK_E2E_THREAD_ID"]!
+        app.buttons["thread-" + thread].tap()
+        XCTAssertTrue(message.waitForExistence(timeout: 20), "Refreshing should retain or reload the native transcript.")
+        app.buttons["composer-add"].tap()
+        XCTAssertTrue(app.buttons["Add image"].waitForExistence(timeout: 5))
+    }
+
     func testNativePromptRoundTrip() throws {
         guard ProcessInfo.processInfo.environment["ZEDLINK_E2E_ALLOW_SEND"] == "1" else {
             throw XCTSkip("Set ZEDLINK_E2E_ALLOW_SEND=1 only for the explicitly exposed disposable thread.")

@@ -93,12 +93,19 @@ import Network
     private var pathMonitorGeneration = UUID()
     private var foregroundActive = true
     private var sawInitialPath = false
+    private var refreshingLive = false
     private let threadExposureIssue = "The selected thread is no longer exposed in desktop Zed."
+
+    private func isCancelledRequest(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
 
     var canSend: Bool { state == .live && capabilities.contains("thread.send") && selectedThreadID != nil && snapshot?.threadID == selectedThreadID && pending == nil }
     var visibleThreads: [NativeThread] {
-        if state == .live || !threads.isEmpty { return threads }
-        return cachedConversations.map { NativeThread(id: $0.threadID, title: $0.title, status: "Saved copy", currentTurnID: nil) }
+        guard profile != nil else { return [] }
+        let exposed = Set(threads.map(\.id))
+        return threads + cachedConversations.filter { !exposed.contains($0.threadID) }
+            .map { NativeThread(id: $0.threadID, title: $0.title, status: "Saved copy", currentTurnID: nil) }
     }
     func cachedConversation(_ id: String) -> CachedConversation? {
         cachedConversations.first { $0.threadID == id }
@@ -111,6 +118,7 @@ import Network
 
     func disconnect() {
         pathRetryTask?.cancel(); pathRetryTask = nil
+        refreshingLive = false
         summaryCache = [:]
         attachments = []; diffContent = ""; diffLoading = false; workspaceLoading = false; supportsImages = nil
         diffRequest = UUID(); workspaceRequest = UUID(); searchRequest = UUID()
@@ -314,6 +322,17 @@ import Network
             Task { [weak self] in await self?.syncAPNs() }
         } catch {
             guard current == generation else { return }
+            if isCancelledRequest(error) {
+                state = .reconnecting
+                issue = ""
+                pathRetryTask?.cancel()
+                pathRetryTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard let self, !Task.isCancelled, current == self.generation else { return }
+                    await self.refresh()
+                }
+                return
+            }
             state = .offline
             issue = error.localizedDescription
             resumeTrace?.finish(); resumeTrace = nil
@@ -427,7 +446,9 @@ import Network
             try await loadAuxiliaryState(id)
             if current == generation { lastAuxiliaryRefresh = Date() }
         } catch {
-            if current == generation { issue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)" }
+            if current == generation && !isCancelledRequest(error) {
+                issue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -448,6 +469,25 @@ import Network
         guard foregroundActive else { return }
         guard state != .connecting else { return }
         guard let profile else { return }
+        if state == .live, client != nil {
+            guard !refreshingLive else { return }
+            refreshingLive = true
+            defer { refreshingLive = false }
+            let current = generation
+            do {
+                try await loadThreads(includeSummaries: false)
+                guard current == generation else { return }
+                if let id = selectedThreadID, threads.contains(where: { $0.id == id }) {
+                    try await loadSnapshot(id, refreshAuxiliary: false)
+                }
+                guard current == generation else { return }
+                if issue != threadExposureIssue { issue = "" }
+            } catch {
+                // The poll loop keeps the authenticated route under observation.
+                // A canceled foreground refresh is not evidence that Zed went offline.
+            }
+            return
+        }
         await connect(profile)
     }
 
@@ -488,13 +528,8 @@ import Network
         sawInitialPath = true
         if !reachable {
             pathRetryTask?.cancel(); pathRetryTask = nil
-            if state == .live || state == .reconnecting {
-                generation = UUID()
-                pollTask?.cancel(); pollTask = nil
-                eventTask?.cancel(); eventTask = nil
-                eventStreamLive = false
-                state = .reconnecting
-            }
+            // NWPath is a reachability hint, not proof that the paired gateway is down.
+            // Existing authenticated polling decides whether to change the visible state.
             return
         }
         if initial { return }
@@ -666,14 +701,16 @@ import Network
         }
         let scope = operationScope
         do {
-            try await loadSnapshot(id)
+            try await loadSnapshot(id, refreshAuxiliary: false)
             guard scope == operationScope else { return }
             issue = ""
             startEventStream(generation)
+            let current = generation
+            Task { [weak self] in await self?.refreshAuxiliaryAfterResume(id, current: current) }
         }
         catch {
             guard scope == operationScope else { return }
-            issue = error.localizedDescription; state = .stale
+            if !isCancelledRequest(error) { issue = "Conversation could not refresh: \(error.localizedDescription)" }
         }
     }
 
@@ -777,7 +814,7 @@ import Network
                               prefetched: [String: Any]? = nil) async throws {
         guard let client else { return }
         let scope = operationScope
-        var params: [String: Any] = ["thread_id": id]
+        var params: [String: Any] = ["thread_id": id, "tail_entry_count": 24]
         if let old = snapshot, old.threadID == id {
             params["tail_entry_count"] = 16
             if capabilities.contains("thread.snapshot.delta"),
@@ -806,6 +843,9 @@ import Network
         guard pageStart >= 0, pageEnd == pageStart + entries.count, totalEntries >= pageEnd else {
             throw GatewayFailure.invalidResponse
         }
+        if entries.isEmpty && totalEntries > 0 && result["delta"] as? Bool != true {
+            throw GatewayFailure.invalidResponse
+        }
         var mergedEntries = entries
         var mergedStart = pageStart
         let delta = result["delta"] as? Bool == true
@@ -821,6 +861,10 @@ import Network
             mergedStart = old.entryStartIndex
         } else if delta {
             throw GatewayFailure.native("RESYNC_REQUIRED")
+        }
+        if snapshot?.threadID != id && mergedEntries.count > 24 {
+            mergedStart += mergedEntries.count - 24
+            mergedEntries = Array(mergedEntries.suffix(24))
         }
         let childApprovalRows = (result["subagents"] as? [[String: Any]] ?? []).flatMap { child in
             child["pending_approvals"] as? [[String: Any]] ?? []
@@ -967,7 +1011,11 @@ import Network
             threadSettings = NativeThreadSettings(modelID: selected?["id"] as? String,
                                                   providerID: selected?["provider_id"] as? String,
                                                   models: models, usedTokens: usage?["used_tokens"] as? Int,
-                                                  maxTokens: usage?["max_tokens"] as? Int, profileID: result["profile_id"] as? String,
+                                                  maxTokens: usage?["max_tokens"] as? Int,
+                                                  inputTokens: usage?["input_tokens"] as? Int,
+                                                  outputTokens: usage?["output_tokens"] as? Int,
+                                                  remainingTokens: usage?["remaining_tokens"] as? Int,
+                                                  profileID: result["profile_id"] as? String,
                                                   profiles: (result["profiles"] as? [[String: Any]] ?? []).compactMap { row in
                                                       guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }; return NativeAgentProfile(id: id, name: name)
                                                   }, thinkingEnabled: result["thinking_enabled"] as? Bool, thinkingSupported: result["thinking_supported"] as? Bool ?? false, thinkingCanDisable: result["thinking_can_disable"] as? Bool ?? false)
@@ -1568,6 +1616,7 @@ import Network
     }
 
     private func pollLoop(_ current: UUID) async {
+        var consecutiveFailures = 0
         while !Task.isCancelled && current == generation {
             var auxiliaryIssue: String?
             do {
@@ -1613,6 +1662,7 @@ import Network
                 }
                 if pending != nil { await reconcilePending() }
                 if current == generation {
+                    consecutiveFailures = 0
                     state = .live
                     if issue != threadExposureIssue { issue = auxiliaryIssue ?? "" }
                 }
@@ -1637,9 +1687,12 @@ import Network
                         state = .reconnecting
                         issue = error.localizedDescription
                     }
-                } else if current == generation {
-                    state = .reconnecting
-                    issue = error.localizedDescription
+                } else if current == generation && !isCancelledRequest(error) {
+                    consecutiveFailures += 1
+                    if consecutiveFailures >= 2 {
+                        state = .reconnecting
+                        issue = error.localizedDescription
+                    }
                 }
             }
             do { try await Task.sleep(for: .seconds(state == .live ? (eventStreamLive ? 10 : 1) : 3)) }

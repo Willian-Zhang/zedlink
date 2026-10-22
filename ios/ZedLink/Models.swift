@@ -174,6 +174,9 @@ struct NativeThreadSettings: Equatable {
     let models: [NativeModelOption]
     let usedTokens: Int?
     let maxTokens: Int?
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let remainingTokens: Int?
     var profileID: String? = nil
     var profiles: [NativeAgentProfile] = []
     var thinkingEnabled: Bool? = nil

@@ -216,7 +216,33 @@ struct SessionModelControls: View {
                                 }
                             }.disabled(session.state != .live || session.snapshot?.status != "Idle" || session.updatingModel || !session.capabilities.contains("thread.settings.update"))
                         }
-                        if let used = settings.usedTokens, let max = settings.maxTokens { LabeledContent("Context", value: "\(used) / \(max)") }
+                    }
+                    Section("Context · last reported by Zed") {
+                        if let used = settings.usedTokens, let maximum = settings.maxTokens, maximum > 0 {
+                            LabeledContent("Used", value: "\(used.formatted()) / \(maximum.formatted()) tokens")
+                            ProgressView(value: min(Double(used) / Double(maximum), 1))
+                                .tint(Double(used) / Double(maximum) >= 0.8 ? ZLTheme.warning : ZLTheme.focus)
+                            if let input = settings.inputTokens {
+                                LabeledContent { Text("\(input.formatted()) tokens") } label: {
+                                    Label("Input", systemImage: "arrow.down")
+                                }
+                            }
+                            if let output = settings.outputTokens {
+                                LabeledContent { Text("\(output.formatted()) tokens") } label: {
+                                    Label("Output", systemImage: "arrow.up")
+                                }
+                            }
+                            if let remaining = settings.remainingTokens {
+                                LabeledContent("Remaining", value: "\(remaining.formatted()) tokens")
+                            }
+                            if Double(used) / Double(maximum) >= 0.8 {
+                                Text("Context is filling up. Check desktop Zed's compaction state before sending a long prompt.")
+                                    .font(.caption).foregroundStyle(ZLTheme.warning)
+                            }
+                        } else {
+                            Text("Zed has not reported context usage for this thread yet.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 } else { Text("Model selection is not advertised by this Agent. Its configuration stays in desktop Zed.") }
             }.navigationTitle("Agent settings").navigationBarTitleDisplayMode(.inline)
