@@ -43,10 +43,18 @@ internal val Warning: Color @Composable get() = LocalPalette.current.warning
         activity?.enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
     }
     val scheme = if (useDark) darkColorScheme(primary = palette.ink, onPrimary = palette.background,
+        primaryContainer = palette.raised, onPrimaryContainer = palette.ink,
+        secondary = palette.blue, onSecondary = palette.background,
+        secondaryContainer = palette.raised, onSecondaryContainer = palette.ink,
         background = palette.background, onBackground = palette.ink, surface = palette.surface,
-        onSurface = palette.ink, outline = palette.line, secondary = palette.blue)
+        onSurface = palette.ink, surfaceVariant = palette.raised, onSurfaceVariant = palette.muted,
+        outline = palette.line)
     else lightColorScheme(primary = palette.ink, onPrimary = palette.background,
+        primaryContainer = palette.raised, onPrimaryContainer = palette.ink,
+        secondary = palette.blue, onSecondary = palette.background,
+        secondaryContainer = palette.raised, onSecondaryContainer = palette.ink,
         background = palette.background, onBackground = palette.ink, surface = palette.surface,
-        onSurface = palette.ink, outline = palette.line, secondary = palette.blue)
+        onSurface = palette.ink, surfaceVariant = palette.raised, onSurfaceVariant = palette.muted,
+        outline = palette.line)
     CompositionLocalProvider(LocalPalette provides palette) { MaterialTheme(colorScheme = scheme, typography = Typography(), content = content) }
 }

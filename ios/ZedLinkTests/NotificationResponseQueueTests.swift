@@ -57,4 +57,17 @@ import XCTest
         XCTAssertNil(restored.claim())
     }
 
+    func testTurnAndInputAlertsCanOnlyOpenReview() throws {
+        let suite = "notification-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let queue = NotificationResponseQueue(defaults: defaults, now: { 1000 })
+        for type in ["turn_status", "input_needed", "compaction"] {
+            let data = ["gateway": "gateway", "target": "target", "instance": "instance", "epoch": "epoch",
+                        "thread": "thread", "type": type, "created": "1000"]
+            queue.enqueue(id: type, data: data, action: "approve")
+            XCTAssertEqual(queue.claim()?.action, "review")
+        }
+    }
+
 }

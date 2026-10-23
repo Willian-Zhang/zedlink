@@ -1,6 +1,7 @@
 package dev.zedlink.app
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -19,6 +20,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.border
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
@@ -57,25 +61,31 @@ data class ConnectionDraft(
             }
             state.profiles.forEach { profile ->
                 val active = state.profile?.id == profile.id
-                Row(Modifier.fillMaxWidth().clickable { selected = profile.id }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                val shape = RoundedCornerShape(16.dp)
+                Row(Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(shape).background(Surface)
+                    .border(1.dp, if (active) Blue.copy(alpha = 0.45f) else Line, shape)
+                    .clickable { selected = profile.id }.padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(profile.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                             Text(if (active) state.status else "Saved", color = if (active && state.live) Green else Muted, fontSize = 11.sp, modifier = Modifier.widthIn(max = 140.dp))
                         }
-                        Text(profile.route, color = Muted, fontSize = 11.sp)
+                        Text(profile.route, color = Muted, fontSize = 12.sp)
                         Text(profile.endpoint, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     }
                     Icon(Icons.Default.ChevronRight, "Connection details", tint = Muted, modifier = Modifier.padding(start = 8.dp).size(18.dp))
                 }
-                HorizontalDivider(color = Line)
             }
             state.profile?.let { profile ->
                 ConnectionSection("Workspaces · ${profile.name}")
                 if (state.targets.isEmpty()) Text("Connect to load workspaces.", color = Muted)
                 state.targets.forEach { target ->
-                    val canSwitch = state.live && target.available && target.id != state.targetId && !state.connectionBusy && !state.connecting
-                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(enabled = canSwitch) { model.selectTarget(target.id) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val canSwitch = (state.live || state.targetId == null) && target.available && target.id != state.targetId && !state.connectionBusy && !state.connecting
+                    val shape = RoundedCornerShape(14.dp)
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).heightIn(min = 56.dp).clip(shape).background(Surface)
+                        .clickable(enabled = canSwitch) { model.selectTarget(target.id) }.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(target.label)
                             Text((if (state.live) "" else "Last known · ") + if (target.available) "Available" else "Unavailable", color = Muted, fontSize = 12.sp)
@@ -84,7 +94,6 @@ data class ConnectionDraft(
                             if (target.id == state.targetId) "Selected workspace" else "Switch workspace",
                             tint = if (target.id == state.targetId) Blue else Muted, modifier = Modifier.size(20.dp))
                     }
-                    HorizontalDivider(color = Line)
                 }
             }
             Spacer(Modifier.height(16.dp))

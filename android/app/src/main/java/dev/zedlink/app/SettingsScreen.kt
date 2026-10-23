@@ -6,9 +6,12 @@ import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,7 +35,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
     // Refresh after system Settings, and after the activity's permission result.
-    val permission = remember(notificationRevision, state.notificationsEnabled, model.notificationRevision) { model.approvalNotifications.deliveryStatus() }
+    val permission = remember(notificationRevision, state.notificationsEnabled, model.notificationRevision) { model.approvalNotifications.generalDeliveryStatus() }
     removing?.let { profile -> ForgetAccessDialog(profile, { removing = null }) { model.forget(profile); removing = null } }
     if (diagnostics) SettingsDetailDialog("Diagnostics", { diagnostics = false }) {
         SettingsValue("Connection", state.status)
@@ -55,20 +58,22 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
         TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/tjnull/zedlink/blob/main/LICENSE"))) }) { Text("License") }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 16.dp))
+        Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 18.dp))
         SettingsSection("This device")
         SettingsValue("Appearance", state.appearance.replaceFirstChar { it.uppercase() })
-        Row(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("system", "dark", "light").forEach { value ->
-                TextButton(onClick = { model.setAppearance(value) }, modifier = Modifier.weight(1f)) {
-                    Text((if (state.appearance == value) "✓ " else "") + value.replaceFirstChar { it.uppercase() })
-                }
+                FilterChip(selected = state.appearance == value, onClick = { model.setAppearance(value) },
+                    label = { Text(value.replaceFirstChar { it.uppercase() }) }, modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp))
             }
         }
         SettingsSection("Notifications")
-        SettingsValue("Local approval alerts", if (!permission.allowed) permission.message else if (state.notificationsEnabled) "Enabled" else "Disabled")
+        SettingsValue("Local Agent alerts", if (!permission.allowed) permission.message else if (state.notificationsEnabled) "Enabled" else "Disabled")
+        Text("Approvals, input requests, completed or cancelled turns, request failures, and context compaction while the app receives Zed updates.", color = Muted, fontSize = 12.sp)
         if (permission.allowed && state.notificationsEnabled) {
             TextButton(onClick = { feedback = runCatching { model.approvalNotifications.sendTest(); "Test sent. Check Notification Center if no banner appears." }.getOrElse { it.message ?: "Test failed." } }) { Text("Send test notification") }
+            TextButton(onClick = { feedback = runCatching { model.approvalNotifications.sendActivityTest(); "Activity test sent. Check Notification Center if no banner appears." }.getOrElse { it.message ?: "Test failed." } }) { Text("Test activity alert") }
             TextButton(onClick = { model.disableNotifications(); feedback = "" }) { Text("Disable alerts") }
         } else {
             if (permission.allowed || permission.requestable) TextButton(onClick = { activity?.enableApprovalNotifications(); feedback = "" }, enabled = activity != null) { Text("Enable alerts") }
@@ -79,9 +84,13 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
         }) { Text("System notification settings") }
         if (feedback.isNotBlank()) Text(feedback, fontSize = 12.sp)
         if (model.notificationMessage.isNotBlank()) Text(model.notificationMessage, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+        if (state.notificationsEnabled) {
+            SettingsValue("Agent approvals channel", model.approvalNotifications.deliveryStatus().message)
+            SettingsValue("Agent activity channel", model.approvalNotifications.activityDeliveryStatus().message)
+        }
         SettingsValue("Native push", "Not configured")
         SettingsValue("Watch alerts", "Phone mirroring only")
-        Text("Local alerts need incoming app updates. They cannot guarantee delivery while suspended or force-stopped. Browser push is the available background option.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+        Text("Local alerts need incoming app updates. They cannot guarantee delivery while suspended or force-stopped. FCM is not configured; browser push is the available background option.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
         state.profile?.let { profile ->
             TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(profile.endpoint))) }) { Text("Set up browser push") }
         }
@@ -97,11 +106,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 }
 
 @Composable private fun SettingsSection(title: String) {
-    HorizontalDivider(color = Line)
-    Text(title, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+    Text(title.uppercase(), color = Muted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
 }
 @Composable private fun SettingsValue(label: String, value: String) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(14.dp)).background(Surface)
+        .padding(horizontal = 14.dp, vertical = 12.dp)) {
         Text(label, fontWeight = FontWeight.Medium)
         Text(value, color = Muted, fontSize = 13.sp)
     }
@@ -109,13 +119,13 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 @Composable private fun SettingsDetailDialog(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
         Column(Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()), content = content)
-    }, confirmButton = { TextButton(onClick = close) { Text("Close") } }, shape = androidx.compose.ui.graphics.RectangleShape)
+    }, confirmButton = { TextButton(onClick = close) { Text("Close") } })
 }
 @Composable internal fun ForgetAccessDialog(profile: ConnectionProfile, close: () -> Unit, confirm: () -> Unit) {
     AlertDialog(onDismissRequest = close, title = { Text("Remove local access?") }, text = {
         Text("This removes the saved credential and every local address for ${profile.name}'s gateway. You will need to pair again. It does not revoke the device on the gateway or stop Zed.")
     }, confirmButton = { TextButton(onClick = confirm) { Text("Remove", color = MaterialTheme.colorScheme.error) } },
-        dismissButton = { TextButton(onClick = close) { Text("Cancel") } }, shape = androidx.compose.ui.graphics.RectangleShape)
+        dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
 }
 @Composable internal fun AgentSettingsDialog(state: AppState, model: ZedLinkViewModel, close: () -> Unit) {
     SettingsDetailDialog("Agent settings", close) {

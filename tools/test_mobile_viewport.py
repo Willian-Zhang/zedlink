@@ -18,6 +18,7 @@ source = (ROOT / 'gateway/web/app.js').read_text()
 viewport = source[source.index('function appViewportHeight('):source.index('window.addEventListener("keydown", (event) => {', source.index('function appViewportHeight('))]
 html = (ROOT / 'gateway/web/index.html').read_text()
 html = html.replace('<script src="/app.js" defer></script>', '')
+html = html.replace('<script src="/ui.js" defer></script>', '')
 fixture_script = '''
 const UI_BUILD = 'layout-test';
 window.addEventListener('error', event => { document.body.dataset.result = 'ERROR: '+event.message; });
@@ -51,9 +52,22 @@ setTimeout(() => {
  if (Math.abs(tabs.getBoundingClientRect().bottom - allocatedHeight) > 1) errors.push('dead space below tabs');
  if (Math.abs(document.body.getBoundingClientRect().height - allocatedHeight) > 1) errors.push('body does not fill allocated viewport');
  if (sidebar.getBoundingClientRect().bottom > tabs.getBoundingClientRect().top + 1) errors.push('sidebar under tabs');
- if (innerWidth === 393 && params.get('font') === '16' && document.querySelectorAll('.thread-item')[1].getBoundingClientRect().bottom > tabs.getBoundingClientRect().top) errors.push('two cards do not fit phone viewport');
+ const actions = document.querySelector('#sessions-panel #refresh').getBoundingClientRect();
+ const heading = document.querySelector('#sessions-panel h1').getBoundingClientRect();
+ if (actions.right > sidebar.getBoundingClientRect().right - 8 || heading.right > actions.left - 4) errors.push('session header controls overlap');
+ if (document.querySelector('.session-search-field').getBoundingClientRect().right > sidebar.getBoundingClientRect().right - 8) errors.push('session search exceeds rail');
+ const filters = [...document.querySelectorAll('#session-filters button')].map(button => button.getBoundingClientRect());
+ if (filters.some(box => Math.abs(box.top - filters[0].top) > 1)) errors.push('mobile filters stack vertically');
+ if (getComputedStyle(document.querySelector('.session-search-field')).borderTopWidth === '0px') errors.push('session search has no visible field');
+ if (getComputedStyle(document.querySelector('.sidebar-project')).display !== 'none') errors.push('duplicate project tools occupy session list');
+ if (getComputedStyle(document.querySelector('.sidebar-footer')).display !== 'none') errors.push('duplicate navigation occupies session list');
+ if (document.querySelectorAll('.mobile-tabs .mobile-tab-icon svg').length !== 3) errors.push('mobile tab icons missing');
+ if (allocatedHeight >= 500 && document.querySelector('.thread-item').getBoundingClientRect().top > tabs.getBoundingClientRect().top - 75) errors.push('session list starts below visible area');
+ if (document.documentElement.scrollWidth > innerWidth + 1) errors.push('sessions overflow viewport horizontally');
+ document.querySelectorAll('.thread-item')[1].scrollIntoView({block:'end'});
+ if (document.querySelectorAll('.thread-item')[1].getBoundingClientRect().bottom > tabs.getBoundingClientRect().top) errors.push('recent sessions inaccessible');
  sidebar.scrollTop = sidebar.scrollHeight;
- if (document.querySelector('.sidebar-tip').getBoundingClientRect().bottom > tabs.getBoundingClientRect().top - 4) errors.push('last content obscured');
+ if (document.querySelector('.sidebar-footer').getBoundingClientRect().bottom > tabs.getBoundingClientRect().top - 4) errors.push('last content obscured');
  for (const page of ['mobile-connections','mobile-settings']) {
   document.body.className = page;
   if (sidebar.getBoundingClientRect().bottom > tabs.getBoundingClientRect().top + 1) errors.push(page+' under tabs');
@@ -68,6 +82,8 @@ setTimeout(() => {
  if (title.scrollHeight > title.clientHeight + 1) errors.push('title is line clamped');
  if (title.getBoundingClientRect().top < back.getBoundingClientRect().bottom) errors.push('title overlaps controls');
  if (title.getBoundingClientRect().bottom > toolbar.getBoundingClientRect().bottom) errors.push('title exceeds header');
+ const headerActions = ['back-sessions','context-budget','edit-review','thread-search','show-context'].map(id => document.getElementById(id).getBoundingClientRect());
+ if (headerActions.some((box, index) => box.left < 0 || box.right > innerWidth + 1 || (index && box.left < headerActions[index-1].right - 1))) errors.push('chat header actions overlap or clip');
  if (toolbar.getBoundingClientRect().top < 0) errors.push('header outside viewport');
  if (getComputedStyle(toolbar).flexShrink !== '0') errors.push('header can shrink');
  if (parseFloat(getComputedStyle(toolbar).paddingTop) !== 8 + expectedTop) errors.push('wrong chat header clearance');

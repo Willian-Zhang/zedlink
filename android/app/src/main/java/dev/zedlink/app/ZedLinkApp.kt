@@ -8,7 +8,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -68,7 +67,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 
 private enum class Tab { Sessions, Connections, Settings }
 
@@ -76,20 +76,36 @@ private enum class Tab { Sessions, Connections, Settings }
 fun ZedLinkApp(model: ZedLinkViewModel) {
     val state = model.state
     var tab by rememberSaveable { mutableStateOf(Tab.Sessions) }
-    LaunchedEffect(model.pairingImportRevision) { if (model.pairingImportRevision > 0) tab = Tab.Connections }
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    fun selectTab(next: Tab) {
+        focus.clearFocus()
+        keyboard?.hide()
+        tab = next
+    }
+    LaunchedEffect(model.pairingImportRevision) { if (model.pairingImportRevision > 0) selectTab(Tab.Connections) }
+    BackHandler(state.selectedThreadId == null && tab != Tab.Sessions) { selectTab(Tab.Sessions) }
     ZedLinkTheme(state.appearance) {
         Surface(modifier = Modifier.fillMaxSize(), color = Black) {
-            Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                Box(Modifier.weight(1f)) {
+            BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding()) {
+                val wide = maxWidth >= 600.dp
+                val destination: @Composable () -> Unit = {
                     when {
                         state.selectedThreadId != null -> ConversationScreen(state, model)
-                        tab == Tab.Sessions -> SessionsScreen(state, model) { tab = Tab.Connections }
+                        tab == Tab.Sessions -> SessionsScreen(state, model) { selectTab(Tab.Connections) }
                         tab == Tab.Connections -> ConnectionsScreen(state, model)
-                        else -> SettingsScreen(state, model) { tab = Tab.Connections }
+                        else -> SettingsScreen(state, model) { selectTab(Tab.Connections) }
                     }
                 }
-                if (state.selectedThreadId == null) {
-                    BottomTabs(tab, false) { next -> tab = next }
+                if (state.selectedThreadId != null) destination()
+                else if (wide) Row(Modifier.fillMaxSize()) {
+                    PrimaryRail(tab, ::selectTab)
+                    Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+                        Box(Modifier.widthIn(max = 900.dp).fillMaxSize()) { destination() }
+                    }
+                } else Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) { destination() }
+                    PrimaryBar(tab, ::selectTab)
                 }
             }
         }
@@ -97,27 +113,33 @@ fun ZedLinkApp(model: ZedLinkViewModel) {
 }
 
 @Composable
-private fun BottomTabs(selected: Tab, inThread: Boolean, onSelect: (Tab) -> Unit) {
-    Column(Modifier.fillMaxWidth().background(Black).navigationBarsPadding()) {
-        Rule()
-        Row(Modifier.fillMaxWidth().height(66.dp)) {
-            listOf(Triple(Tab.Sessions, Icons.Default.Forum, "Sessions"), Triple(Tab.Connections, Icons.Default.Language, "Connections"),
-                Triple(Tab.Settings, Icons.Default.Settings, "Settings")).forEach { (tab, icon, label) ->
-                val active = !inThread && selected == tab || inThread && tab == Tab.Sessions
-                Column(Modifier.weight(1f).fillMaxHeight().selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
-                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Icon(icon, null, tint = if (active) Blue else Subtle, modifier = Modifier.size(21.dp))
-                    Text(label, color = if (active) Blue else Subtle, fontSize = 11.sp)
-                }
-            }
+private fun PrimaryBar(selected: Tab, onSelect: (Tab) -> Unit) {
+    HorizontalDivider(color = Line)
+    NavigationBar(containerColor = Surface, tonalElevation = 0.dp) {
+        listOf(Triple(Tab.Sessions, Icons.Default.Forum, "Sessions"), Triple(Tab.Connections, Icons.Default.Language, "Connections"),
+            Triple(Tab.Settings, Icons.Default.Settings, "Settings")).forEach { (tab, icon, label) ->
+            NavigationBarItem(selected = selected == tab, onClick = { onSelect(tab) },
+                icon = { Icon(icon, contentDescription = null) }, label = { Text(label) })
+        }
+    }
+}
+
+@Composable
+private fun PrimaryRail(selected: Tab, onSelect: (Tab) -> Unit) {
+    NavigationRail(Modifier.navigationBarsPadding(), containerColor = Surface, windowInsets = WindowInsets(0, 0, 0, 0)) {
+        Spacer(Modifier.height(16.dp))
+        listOf(Triple(Tab.Sessions, Icons.Default.Forum, "Sessions"), Triple(Tab.Connections, Icons.Default.Language, "Connections"),
+            Triple(Tab.Settings, Icons.Default.Settings, "Settings")).forEach { (tab, icon, label) ->
+            NavigationRailItem(selected = selected == tab, onClick = { onSelect(tab) },
+                icon = { Icon(icon, contentDescription = null) }, label = { Text(label) })
         }
     }
 }
 
 @Composable
 private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnections: () -> Unit) {
-    var query by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf("All") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var filter by rememberSaveable { mutableStateOf("All") }
     var showingNew by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val threads = state.threads.filter {
@@ -135,16 +157,17 @@ private fun SessionsScreen(state: AppState, model: ZedLinkViewModel, showConnect
             }
             if (state.profile == null) TextButton(onClick = showConnections) { Text("Choose a connection") } else ConnectionStrip(state, model)
             if (state.issue.isNotBlank()) Notice(state.issue)
-            FlatInput(query, { query = it }, "Search sessions or agents", Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp)) {
+            OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                placeholder = { Text("Search sessions or agents") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+                singleLine = true, shape = RoundedCornerShape(16.dp))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("All", "Needs attention", "Running", "Pinned").forEach { label ->
-                    val selected = filter == label
-                    val underline = Ink
-                    TextButton(onClick = { filter = label; focusManager.clearFocus() }, shape = RectangleShape,
-                        modifier = Modifier.drawBehind { if (selected) drawRect(underline, topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()), size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx())) }) { Text(label, color = if (selected) Ink else Muted, fontSize = 12.sp) }
+                    FilterChip(selected = filter == label, onClick = { filter = label; focusManager.clearFocus() },
+                        label = { Text(label) }, shape = RoundedCornerShape(12.dp))
                 }
             }
-            Rule()
+            Spacer(Modifier.height(6.dp))
         }
         if (threads.isEmpty()) item {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -209,7 +232,8 @@ private fun NewSessionDialog(state: AppState, model: ZedLinkViewModel, dismiss: 
 @Composable
 private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
     var expanded by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+        .clip(RoundedCornerShape(14.dp)).background(Surface).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) {
             TextButton(onClick = { expanded = true }) {
                 Text("${state.profile?.name} › ${state.targets.firstOrNull { it.id == state.targetId }?.label ?: "Workspace"} ▾", color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -219,7 +243,11 @@ private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
                 state.targets.forEach { target -> DropdownMenuItem(text = { Text(target.label + if (target.available) "" else " · unavailable") }, enabled = target.available, onClick = { expanded = false; model.selectTarget(target.id) }) }
             }
         }
-        Text(if (state.live) "Connected" else state.status, color = if (state.live) Green else Warning, fontSize = 10.sp)
+        Box(Modifier.size(7.dp).background(if (state.live) Green else Warning, CircleShape))
+        Spacer(Modifier.width(6.dp))
+        Text(if (state.live) "Live" else state.status, color = if (state.live) Green else Warning,
+            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 104.dp))
+        Spacer(Modifier.width(8.dp))
     }
 }
 
@@ -227,11 +255,11 @@ private fun ConnectionStrip(state: AppState, model: ZedLinkViewModel) {
 internal fun ThreadRow(thread: NativeThread, live: Boolean, pinned: Boolean, updated: Boolean, togglePin: () -> Unit, open: () -> Unit) {
     val activity = SessionActivity.from(thread)
     val tint = if (activity.attention) Warning else if (activity.running) Blue else Muted
-    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth()
-        .background(tint.copy(alpha = if (activity.attention || activity.running) 0.07f else 0.03f))
-        .drawBehind { drawRect(tint, size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height)) },
+    val shape = RoundedCornerShape(16.dp)
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth()
+        .clip(shape).background(Surface).border(1.dp, Line, shape),
         verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f).clickable(onClick = open).padding(start = 12.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+        Column(Modifier.weight(1f).clickable(onClick = open).padding(start = 16.dp, end = 4.dp, top = 14.dp, bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp)) {
             val count = when {
                 activity == SessionActivity.APPROVAL && thread.approvalCount != null -> " (${thread.approvalCount})"
@@ -239,16 +267,16 @@ internal fun ThreadRow(thread: NativeThread, live: Boolean, pinned: Boolean, upd
                 else -> ""
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(7.dp).background(tint, CircleShape))
                 Text(thread.agentName.uppercase(), style = monoLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (live && activity.running) CircularProgressIndicator(color = tint, strokeWidth = 1.5.dp, modifier = Modifier.size(12.dp))
                 Text("${if (live) "" else "Last known · "}${activity.label}$count", color = tint, fontSize = 11.sp, modifier = Modifier.widthIn(max = 150.dp))
             }
             Text(thread.title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-            if (updated) Text("New activity", color = Blue, fontSize = 10.sp)
+            if (updated) Text("New activity", color = Blue, fontSize = 12.sp)
         }
         IconButton(onClick = togglePin) { Icon(Icons.Default.PushPin, if (pinned) "Unpin session" else "Pin session", tint = if (pinned) Blue else Subtle, modifier = Modifier.size(18.dp)) }
     }
-    Rule(16.dp)
 }
 
 @Composable
@@ -543,24 +571,59 @@ internal fun ProjectContextScreen(state: AppState, model: ZedLinkViewModel, clos
 private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier: Modifier = Modifier) {
     var selectedChildId by remember(snapshot.threadId) { mutableStateOf<String?>(null) }
     val list = rememberLazyListState()
+    val scrollScope = rememberCoroutineScope()
     var rewindPoint by remember { mutableStateOf<NativeRewindPoint?>(null) }
     var following by remember(snapshot.threadId) { mutableStateOf(true) }
+    var lastReadTotal by remember(snapshot.threadId) { mutableIntStateOf(snapshot.totalEntries) }
+    var searchOpen by rememberSaveable(snapshot.threadId) { mutableStateOf(false) }
+    var searchQuery by rememberSaveable(snapshot.threadId) { mutableStateOf("") }
+    var chosenMatch by remember(snapshot.threadId) { mutableIntStateOf(-1) }
+    val matches = remember(snapshot.entries, snapshot.entryStartIndex, searchQuery) {
+        if (searchQuery.isBlank()) emptyList() else snapshot.entries.indices
+            .filter { snapshot.entries[it].contains(searchQuery, ignoreCase = true) }
+            .map { snapshot.entryStartIndex + it }
+    }
+    val activeChildren = snapshot.subagents.filter { child -> child.isActive || snapshot.approvals.any { it.subagentId == child.id } }
+    val headerCount = (if (snapshot.hasOlderEntries) 1 else 0) + (if (activeChildren.isNotEmpty()) 1 else 0) + activeChildren.size
+    fun jumpToMatch(index: Int) {
+        val absolute = matches.getOrNull(index) ?: return
+        chosenMatch = absolute
+        following = false
+        scrollScope.launch { list.scrollToItem(headerCount + absolute - snapshot.entryStartIndex) }
+    }
     LaunchedEffect(list) {
         snapshotFlow { list.isScrollInProgress to list.canScrollForward }.collect { (scrolling, canScroll) ->
             if (scrolling) following = !canScroll
         }
     }
+    LaunchedEffect(snapshot.totalEntries, following) { if (following) lastReadTotal = snapshot.totalEntries }
     LaunchedEffect(snapshot.entries, following) {
         if (following && snapshot.entries.isNotEmpty()) list.scrollToItem(maxOf(0, list.layoutInfo.totalItemsCount - 1))
     }
     Column(modifier.fillMaxWidth()) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) { searchQuery = ""; chosenMatch = -1 } }) {
+            Text(if (searchOpen) "Close search" else "Search conversation")
+        }
+        if (searchOpen) Text("Loaded entries only", color = Muted, fontSize = 11.sp)
+    }
+    if (searchOpen) {
+        OutlinedTextField(searchQuery, { searchQuery = it; chosenMatch = -1 }, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            label = { Text("Find in loaded conversation") }, singleLine = true)
+        if (searchQuery.isNotBlank()) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            val selected = matches.indexOf(chosenMatch)
+            Text(if (matches.isEmpty()) "No matches in loaded entries" else "${if (selected < 0) 0 else selected + 1} of ${matches.size}",
+                color = Muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = { jumpToMatch(if (selected <= 0) matches.lastIndex else selected - 1) }, enabled = matches.isNotEmpty()) { Text("Previous") }
+            TextButton(onClick = { jumpToMatch(if (selected < 0 || selected == matches.lastIndex) 0 else selected + 1) }, enabled = matches.isNotEmpty()) { Text("Next") }
+        }
+    }
     LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, contentPadding = PaddingValues(bottom = 10.dp)) {
         if (snapshot.hasOlderEntries) item {
             TextButton(onClick = model::loadEarlierHistory, shape = androidx.compose.ui.graphics.RectangleShape) {
                 Text("LOAD EARLIER CONVERSATION · ${snapshot.entryStartIndex} REMAINING", color = Muted)
             }
         }
-        val activeChildren = snapshot.subagents.filter { child -> child.isActive || snapshot.approvals.any { it.subagentId == child.id } }
         if (activeChildren.isNotEmpty()) item("child-heading") {
             Text("PARALLEL AGENTS · ${snapshot.subagents.count { it.isActive }} ACTIVE", color = Muted, style = monoLabel(), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
@@ -591,7 +654,10 @@ private fun Messages(snapshot: ThreadSnapshot, model: ZedLinkViewModel, modifier
         model.state.editReview?.let { review -> item("edit-review") { EditReviewCard(review, model) } }
         if (model.state.queuedMessages.isNotEmpty()) item("queue") { QueueCard(model.state.queuedMessages, model) }
     }
-    if (!following) TextButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Latest ↓") }
+    if (!following) TextButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) {
+        val unread = (snapshot.totalEntries - lastReadTotal).coerceAtLeast(0)
+        Text(if (unread > 0) "Latest ↓ · $unread new" else "Latest ↓")
+    }
     }
     selectedChildId?.let { id ->
         SubagentReader(id, model) { selectedChildId = null }
@@ -817,38 +883,55 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
             model.send()
         }
     }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
-        .border(1.dp, Line).background(Surface).padding(5.dp),
-        verticalAlignment = Alignment.Bottom) {
-        IconButton(onClick = commands) { Icon(Icons.Default.Add, "Commands and context", tint = Ink) }
-        IconButton(onClick = attachImage, enabled = !imageLoading && "thread.attachments" in state.capabilities && state.supportsImages != false) {
-            if (imageLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Default.AddPhotoAlternate, "Attach or annotate image", tint = Ink)
+    val canCancel = state.live && state.snapshot?.currentTurnId != null && "thread.cancel" in state.capabilities
+    val sendEnabled = state.live && (state.draft.isNotBlank() || state.attachments.isNotEmpty() || state.contextPaths.isNotEmpty()) && !state.sending
+    val shape = RoundedCornerShape(22.dp)
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
+        val narrow = maxWidth < 420.dp
+        val actions: @Composable () -> Unit = {
+            IconButton(onClick = commands) { Icon(Icons.Default.Add, "Commands and context", tint = Ink) }
+            IconButton(onClick = attachImage, enabled = !imageLoading && "thread.attachments" in state.capabilities && state.supportsImages != false) {
+                if (imageLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Default.AddPhotoAlternate, "Attach or annotate image", tint = Ink)
+            }
         }
-        BasicTextField(state.draft, model::setDraft, Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp).padding(11.dp),
-            textStyle = TextStyle(color = Ink, fontSize = 16.sp), cursorBrush = SolidColor(Ink),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { submit() }),
-            decorationBox = { inner ->
-                Box { if (state.draft.isEmpty()) Text("Message Zed Agent…", color = Subtle); inner() }
-            })
-        VoiceDraftButton(state.draft, "${state.targetId}.${state.instanceId}.${state.epoch}.${state.selectedThreadId}", model::setDraft)
-        val canCancel = state.live && state.snapshot?.currentTurnId != null && "thread.cancel" in state.capabilities
-        val sendEnabled = state.live && (state.draft.isNotBlank() || state.attachments.isNotEmpty() || state.contextPaths.isNotEmpty()) && !state.sending
-        IconButton(onClick = { if (canCancel) model.cancel() else submit() }, enabled = if (canCancel) !state.sending else sendEnabled,
-            modifier = Modifier.size(44.dp).background(if (canCancel || sendEnabled) Ink else Line, RoundedCornerShape(50))) {
-            Icon(if (canCancel) Icons.Default.Stop else Icons.Default.ArrowUpward, if (canCancel) "Stop current turn" else "Send",
-                tint = if (canCancel || sendEnabled) Black else Subtle)
+        val finish: @Composable () -> Unit = {
+            VoiceDraftButton(state.draft, "${state.targetId}.${state.instanceId}.${state.epoch}.${state.selectedThreadId}", model::setDraft)
+            IconButton(onClick = { if (canCancel) model.cancel() else submit() }, enabled = if (canCancel) !state.sending else sendEnabled,
+                modifier = Modifier.size(44.dp).background(if (canCancel || sendEnabled) Ink else Line, CircleShape)) {
+                Icon(if (canCancel) Icons.Default.Stop else Icons.Default.ArrowUpward, if (canCancel) "Stop current turn" else "Send",
+                    tint = if (canCancel || sendEnabled) Black else Subtle)
+            }
+        }
+        if (narrow) Column(Modifier.fillMaxWidth().clip(shape).background(Surface).border(1.dp, Line, shape).padding(5.dp)) {
+            ComposerDraftField(state, model, Modifier.fillMaxWidth().heightIn(min = 44.dp, max = 140.dp).padding(horizontal = 12.dp, vertical = 8.dp), submit)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                actions()
+                Spacer(Modifier.weight(1f))
+                finish()
+            }
+        } else Row(Modifier.fillMaxWidth().clip(shape).background(Surface).border(1.dp, Line, shape).padding(5.dp),
+            verticalAlignment = Alignment.Bottom) {
+            actions()
+            ComposerDraftField(state, model, Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp).padding(11.dp), submit)
+            finish()
         }
     }
 }
 
+@Composable
+private fun ComposerDraftField(state: AppState, model: ZedLinkViewModel, modifier: Modifier, submit: () -> Unit) {
+    BasicTextField(state.draft, model::setDraft, modifier, textStyle = TextStyle(color = Ink, fontSize = 16.sp),
+        cursorBrush = SolidColor(Ink), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+        keyboardActions = KeyboardActions(onSend = { submit() }),
+        decorationBox = { inner -> Box { if (state.draft.isEmpty()) Text("Message Zed Agent…", color = Subtle); inner() } })
+}
+
 @Composable internal fun Header(title: String, subtitle: String, action: @Composable () -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) { Text(title, fontSize = 24.sp, fontWeight = FontWeight.SemiBold); if (subtitle.isNotBlank()) Text(subtitle, color = Muted, fontSize = 12.sp) }
+    Row(Modifier.fillMaxWidth().heightIn(min = 68.dp).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) { Text(title, fontSize = 28.sp, fontWeight = FontWeight.SemiBold); if (subtitle.isNotBlank()) Text(subtitle, color = Muted, fontSize = 12.sp) }
         action()
     }
-    Rule()
 }
 @Composable private fun SectionHeading(label: String, value: String) { Row(Modifier.fillMaxWidth().padding(16.dp, 14.dp, 16.dp, 7.dp)) { Text(label, style = monoLabel()); Spacer(Modifier.weight(1f)); Text(value, color = Subtle, style = monoLabel()) } }
 @Composable internal fun Notice(text: String) {
@@ -862,7 +945,6 @@ private fun Composer(state: AppState, model: ZedLinkViewModel, commands: () -> U
     }
 }
 @Composable private fun Rule(start: androidx.compose.ui.unit.Dp = 0.dp) { HorizontalDivider(Modifier.padding(start = start), color = Line, thickness = 1.dp) }
-@Composable private fun FlatInput(value: String, change: (String) -> Unit, hint: String, modifier: Modifier = Modifier) { BasicTextField(value, change, modifier.fillMaxWidth().heightIn(min = 48.dp).border(1.dp, Line).background(Surface).padding(13.dp), textStyle = TextStyle(color = Ink), cursorBrush = SolidColor(Ink), decorationBox = { inner -> Box { if (value.isEmpty()) Text(hint, color = Subtle); inner() } }) }
 @Composable private fun FlatButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, action: () -> Unit) { Button(action, modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = enabled, shape = androidx.compose.ui.graphics.RectangleShape, colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Black)) { Text(label, fontWeight = FontWeight.Bold) } }
 @Composable private fun FlatIconButton(label: String, action: () -> Unit) { Box(Modifier.size(44.dp).border(1.dp, Line).clickable(onClick = action), contentAlignment = Alignment.Center) { Text(label, fontFamily = FontFamily.Monospace, fontSize = 20.sp) } }
 @Composable private fun monoLabel() = TextStyle(color = Subtle, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, letterSpacing = 1.sp)

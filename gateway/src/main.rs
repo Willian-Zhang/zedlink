@@ -164,12 +164,15 @@ struct NotificationTestRequest {
 struct ThreadObservation {
     status: String,
     approvals: HashSet<String>,
+    inputs: HashSet<String>,
     had_error: bool,
+    last_sequence: u64,
 }
 
 fn thread_notification(
     previous: &ThreadObservation,
     current: &ThreadObservation,
+    stop_reason: Option<&str>,
 ) -> Option<&'static str> {
     if current
         .approvals
@@ -177,10 +180,27 @@ fn thread_notification(
         .any(|id| !previous.approvals.contains(id))
     {
         Some("A Zed Agent session needs your approval.")
+    } else if current
+        .inputs
+        .iter()
+        .any(|id| !previous.inputs.contains(id))
+    {
+        Some("A Zed Agent session needs your input.")
+    } else if let Some(reason) = stop_reason {
+        match reason {
+            "completed" if current.had_error => Some("A Zed Agent session failed."),
+            "completed" => Some("A Zed Agent session completed."),
+            "cancelled" => Some("A Zed Agent session was cancelled."),
+            "max_turn_requests" => Some("A Zed Agent session reached its turn request limit."),
+            "max_tokens" => Some("A Zed Agent session reached its output limit."),
+            "refusal" => Some("A Zed Agent request was refused."),
+            "error" => Some("A Zed Agent session stopped with an error."),
+            _ => Some("A Zed Agent session stopped. Open it to review the reason."),
+        }
     } else if !previous.had_error && current.had_error {
         Some("A Zed Agent session failed.")
     } else if previous.status == "Generating" && current.status == "Idle" {
-        Some("A Zed Agent session finished.")
+        Some("A Zed Agent session stopped. Open it to review the result.")
     } else {
         None
     }
@@ -206,6 +226,20 @@ fn pending_approval_keys(snapshot: &Value) -> HashSet<String> {
         );
     }
     keys
+}
+
+fn latest_stop_reason(events: &Value, through_sequence: u64) -> Option<&str> {
+    events
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|event| {
+            event["kind"] == "turn.stopped"
+                && event["sequence"]
+                    .as_u64()
+                    .is_some_and(|sequence| sequence <= through_sequence)
+        })
+        .and_then(|event| event["stop_reason"].as_str())
 }
 
 enum PushOutcome {
@@ -247,6 +281,7 @@ fn application(state: Gateway) -> Router {
     Router::new()
         .route("/", get(browser_page))
         .route("/app.js", get(browser_script))
+        .route("/ui.js", get(browser_ui_bundle))
         .route("/style.css", get(browser_style))
         .route("/manifest.webmanifest", get(browser_manifest))
         .route("/service-worker.js", get(browser_service_worker))
@@ -529,6 +564,12 @@ async fn browser_script() -> Response {
     static_response(
         "text/javascript; charset=utf-8",
         include_str!("../web/app.js"),
+    )
+}
+async fn browser_ui_bundle() -> Response {
+    static_response(
+        "text/javascript; charset=utf-8",
+        include_str!("../web/ui.js"),
     )
 }
 async fn browser_style() -> Response {
@@ -1191,11 +1232,15 @@ impl Gateway {
                 let Some(threads) = response["result"]["threads"].as_array() else {
                     continue;
                 };
+                let (Some(instance), Some(epoch)) = (
+                    response["result"]["instance_id"].as_str(),
+                    response["result"]["epoch"].as_str(),
+                ) else {
+                    continue;
+                };
                 current.retain(|key, _| !key.starts_with(&format!("{}:", target.id)));
                 for thread in threads {
-                    let (Some(thread_id), Some(status)) =
-                        (thread["thread_id"].as_str(), thread["status"].as_str())
-                    else {
+                    let Some(thread_id) = thread["thread_id"].as_str() else {
                         continue;
                     };
                     let snapshot_request = json!({
@@ -1204,36 +1249,80 @@ impl Gateway {
                         "method": "thread.snapshot",
                         "params": {"thread_id": thread_id},
                     });
-                    let key = format!("{}:{thread_id}", target.id);
-                    let approvals = match self.probe(Some(&target.id), &snapshot_request).await {
-                        Ok(snapshot) => {
-                            let Some(result) = snapshot
-                                .get("result")
-                                .filter(|result| result["pending_approvals"].is_array())
-                            else {
+                    let key = format!("{}:{instance}:{epoch}:{thread_id}", target.id);
+                    let (approvals, last_sequence, status, had_error) =
+                        match self.probe(Some(&target.id), &snapshot_request).await {
+                            Ok(snapshot) => {
+                                let Some(result) = snapshot.get("result").filter(|result| {
+                                    result["pending_approvals"].is_array()
+                                        && result["instance_id"].as_str() == Some(instance)
+                                        && result["epoch"].as_str() == Some(epoch)
+                                }) else {
+                                    if let Some(previous) = prior.get(&key) {
+                                        current.insert(key, previous.clone());
+                                    }
+                                    continue;
+                                };
+                                (
+                                    pending_approval_keys(result),
+                                    result["last_sequence"].as_u64().unwrap_or(0),
+                                    result["status"].as_str().unwrap_or("Unknown").to_owned(),
+                                    result["had_error"].as_bool().unwrap_or(false),
+                                )
+                            }
+                            Err(_) => {
                                 if let Some(previous) = prior.get(&key) {
                                     current.insert(key, previous.clone());
                                 }
                                 continue;
-                            };
-                            pending_approval_keys(result)
-                        }
-                        Err(_) => {
-                            if let Some(previous) = prior.get(&key) {
-                                current.insert(key, previous.clone());
                             }
-                            continue;
-                        }
-                    };
+                        };
+                    let inputs = self.probe(Some(&target.id), &json!({
+                            "version": 1,
+                            "request_id": Uuid::new_v4().to_string(),
+                            "method": "thread.elicitations",
+                            "params": {"thread_id": thread_id, "instance_id": instance, "epoch": epoch},
+                        })).await.ok()
+                        .and_then(|response| response["result"]["elicitations"].as_array().map(|rows| rows.iter()
+                                .take(128)
+                                .filter(|row| row["status"] == "pending")
+                                .filter_map(|row| row["elicitation_id"].as_str().map(str::to_owned))
+                                .collect::<HashSet<_>>()))
+                        .unwrap_or_else(|| prior.get(&key).map(|previous| previous.inputs.clone()).unwrap_or_default());
                     let observation = ThreadObservation {
-                        status: status.to_owned(),
+                        status,
                         approvals,
-                        had_error: thread["had_error"].as_bool().unwrap_or(false),
+                        inputs,
+                        had_error,
+                        last_sequence,
+                    };
+                    let stop_reason = if let Some(previous) = prior.get(&key) {
+                        let events_request = json!({
+                            "version": 1,
+                            "request_id": Uuid::new_v4().to_string(),
+                            "method": "thread.events",
+                            "params": {"thread_id": thread_id, "after_sequence": previous.last_sequence},
+                        });
+                        self.probe(Some(&target.id), &events_request)
+                            .await
+                            .ok()
+                            .filter(|events| {
+                                events["result"]["instance_id"].as_str() == Some(instance)
+                                    && events["result"]["epoch"].as_str() == Some(epoch)
+                            })
+                            .and_then(|events| {
+                                latest_stop_reason(&events["result"]["events"], last_sequence)
+                                    .map(str::to_owned)
+                            })
+                    } else {
+                        None
                     };
                     let initial = ThreadObservation::default();
-                    if let Some(body) =
-                        thread_notification(prior.get(&key).unwrap_or(&initial), &observation)
-                    {
+                    if let Some(body) = thread_notification(
+                        prior.get(&key).unwrap_or(&initial),
+                        &observation,
+                        stop_reason.as_deref(),
+                    ) {
                         self.notify_all(body, &target.id, thread_id).await;
                     }
                     current.insert(key, observation);
@@ -2287,12 +2376,12 @@ mod tests {
         };
         assert_eq!(previous.approvals.len(), current.approvals.len());
         assert_eq!(
-            thread_notification(&previous, &current),
+            thread_notification(&previous, &current, None),
             Some("A Zed Agent session needs your approval.")
         );
-        assert_eq!(thread_notification(&current, &current), None);
+        assert_eq!(thread_notification(&current, &current, None), None);
         assert_eq!(
-            thread_notification(&ThreadObservation::default(), &current),
+            thread_notification(&ThreadObservation::default(), &current, None),
             Some("A Zed Agent session needs your approval.")
         );
     }
@@ -2302,17 +2391,77 @@ mod tests {
         let generating = ThreadObservation {
             status: "Generating".into(),
             approvals: HashSet::new(),
+            inputs: HashSet::new(),
             had_error: false,
+            last_sequence: 1,
         };
         let failed = ThreadObservation {
             status: "Idle".into(),
             approvals: HashSet::new(),
+            inputs: HashSet::new(),
             had_error: true,
+            last_sequence: 2,
         };
         assert_eq!(
-            thread_notification(&generating, &failed),
-            Some("A Zed Agent session failed.")
+            thread_notification(&generating, &failed, Some("error")),
+            Some("A Zed Agent session stopped with an error.")
         );
-        assert_eq!(thread_notification(&failed, &failed), None);
+        assert_eq!(thread_notification(&failed, &failed, None), None);
+    }
+
+    #[test]
+    fn distinguishes_native_completion_cancellation_and_unknown_stop() {
+        let running = ThreadObservation {
+            status: "Generating".into(),
+            last_sequence: 4,
+            ..Default::default()
+        };
+        let idle = ThreadObservation {
+            status: "Idle".into(),
+            last_sequence: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            thread_notification(&running, &idle, Some("completed")),
+            Some("A Zed Agent session completed.")
+        );
+        assert_eq!(
+            thread_notification(&running, &idle, Some("cancelled")),
+            Some("A Zed Agent session was cancelled.")
+        );
+        assert_eq!(
+            thread_notification(&running, &idle, Some("max_turn_requests")),
+            Some("A Zed Agent session reached its turn request limit.")
+        );
+        assert_eq!(
+            thread_notification(&running, &idle, None),
+            Some("A Zed Agent session stopped. Open it to review the result.")
+        );
+        assert_eq!(thread_notification(&idle, &idle, None), None);
+    }
+
+    #[test]
+    fn detects_new_input_without_repeating_existing_request() {
+        let waiting = ThreadObservation {
+            inputs: HashSet::from(["request-a".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            thread_notification(&ThreadObservation::default(), &waiting, None),
+            Some("A Zed Agent session needs your input.")
+        );
+        assert_eq!(thread_notification(&waiting, &waiting, None), None);
+    }
+
+    #[test]
+    fn stop_reason_is_bounded_by_authoritative_snapshot_sequence() {
+        let events = json!([
+            {"sequence": 4, "kind": "turn.stopped", "stop_reason": "completed"},
+            {"sequence": 5, "kind": "status.changed"},
+            {"sequence": 6, "kind": "turn.stopped", "stop_reason": "cancelled"},
+        ]);
+        assert_eq!(latest_stop_reason(&events, 5), Some("completed"));
+        assert_eq!(latest_stop_reason(&events, 6), Some("cancelled"));
+        assert_eq!(latest_stop_reason(&events, 3), None);
     }
 }

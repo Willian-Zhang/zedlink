@@ -242,9 +242,18 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                 }
                 if (targets.isEmpty()) throw GatewayException("This gateway has no configured Zed targets.")
                 val savedTarget = preferences.getString("target.${profile.gatewayId}", null)
-                val preferredTarget = state.targetId ?: savedTarget ?: registry.optString("default_target_id")
-                val selectedTarget = targets.firstOrNull { it.id == preferredTarget }
-                    ?: targets.firstOrNull { it.available } ?: targets.first()
+                val preferredTarget = state.targetId ?: savedTarget ?: registry.optString("default_target_id").takeIf { it.isNotBlank() }
+                // Show the discovered choices even when a formerly selected workspace was removed.
+                state = state.copy(targets = targets)
+                val selectedTarget = if (preferredTarget != null) {
+                    targets.firstOrNull { it.id == preferredTarget }
+                        ?: run {
+                            state = state.clearProjectAccess().copy(targetId = null, instanceId = null, epoch = null,
+                                selectedThreadId = null, threads = emptyList(), snapshot = null, capabilities = emptySet(),
+                                commands = emptyList(), elicitations = emptyList(), queuedMessages = emptyList(), editReview = null)
+                            throw GatewayException("The saved workspace is no longer configured. Choose a workspace in Connections.")
+                        }
+                } else targets.firstOrNull { it.available } ?: targets.first()
                 preferences.edit().putString("target.${profile.gatewayId}", selectedTarget.id).apply()
                 val next = GatewayClient(profile, token, selectedTarget.id)
                 val info = next.rpc("instance.info")
@@ -399,7 +408,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             viewModelScope.launch {
                 if (streamGeneration != eventStreamGeneration || generation != connectionGeneration || activeClient !== client || state.selectedThreadId != threadId) return@launch
                 eventStreamLive = true
-                runCatching { checkIdentity(result); loadSnapshot(threadId) }
+                runCatching {
+                    checkIdentity(result)
+                    approvalNotifications.notifyTurnEvents(state, threadId, result.optJSONArray("events").objects())
+                    loadSnapshot(threadId)
+                }
                     .onFailure { state = state.copy(issue = it.message.orEmpty()) }
             }
         }, { error -> viewModelScope.launch {
@@ -672,6 +685,7 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     if (generation != connectionGeneration) return
                     checkIdentity(events)
                     val eventRows = events.optJSONArray("events").objects()
+                    approvalNotifications.notifyTurnEvents(state, selected, eventRows)
                     if (eventRows.any { it.optString("kind") == "entry.removed" }) {
                         state = state.copy(snapshot = null)
                     }
@@ -806,6 +820,8 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
             }, agentError = NativeAgentError.decode(result)))
         lastChildSnapshot = System.currentTimeMillis()
         approvalNotifications.update(state)
+        approvalNotifications.notifyCompaction(state, id, state.snapshot?.currentTurnId,
+            result.optJSONObject("activity")?.optString("phase").orEmpty())
         loadAuxiliaryState(id)
     }
 
@@ -877,8 +893,11 @@ class ZedLinkViewModel(application: Application) : AndroidViewModel(application)
                     val profileId = row.optString("id"); if (profileId.isBlank()) null else NativeAgentProfile(profileId, row.optString("name", profileId))
                 }, if (result.isNull("thinking_enabled")) null else result.optBoolean("thinking_enabled"), result.optBoolean("thinking_supported"), result.optBoolean("thinking_can_disable"))
         }
-        if (current()) state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review,
-            threadSettings = settings, supportsImages = supportsImages)
+        if (current()) {
+            state = state.copy(elicitations = elicitations, queuedMessages = queued, editReview = review,
+                threadSettings = settings, supportsImages = supportsImages)
+            approvalNotifications.notifyInputs(state, id, elicitations.map { it.id })
+        }
     }
 
     fun respondElicitation(item: NativeElicitation, action: String, content: JSONObject = JSONObject()) = viewModelScope.launch {

@@ -754,6 +754,7 @@ import Network
                         if !eventStreamLive { eventStreamLive = true; ResumeTrace.streamReady() }
                         try checkIdentity(result)
                         let events = result["events"] as? [[String: Any]] ?? []
+                        notifyTurnEvents(events, threadID: threadID)
                         applyEventActivity(events)
                         if events.contains(where: { $0["kind"] as? String == "entry.removed" }) { snapshot = nil }
                         let heartbeatDue = snapshot?.isBusy == true && Date().timeIntervalSince(lastFastSnapshot) >= 1
@@ -997,6 +998,12 @@ import Network
         }
     }
 
+    private func notifyTurnEvents(_ events: [[String: Any]], threadID: String) {
+        guard let profile, let targetID, let instanceID, let epoch else { return }
+        ApprovalNotifications.shared.notifyTurnEvents(gateway: profile.gatewayID, target: targetID,
+            instance: instanceID, epoch: epoch, thread: threadID, events: events)
+    }
+
     private func applyEventActivity(_ events: [[String: Any]]) {
         guard let row = events.reversed().compactMap({ $0["activity"] as? [String: Any] }).first else { return }
         let nextActivity = NativeAgentActivity(row, status: snapshot?.status ?? "Unknown", currentTurnID: snapshot?.currentTurnID)
@@ -1017,6 +1024,10 @@ import Network
             guard scope == operationScope else { return }
             let rows = result["elicitations"] as? [[String: Any]] ?? []
             elicitations = rows.compactMap(Self.decodeElicitation)
+            if let profile, let targetID, let instanceID, let epoch {
+                ApprovalNotifications.shared.notifyInputs(gateway: profile.gatewayID, target: targetID,
+                    instance: instanceID, epoch: epoch, thread: id, inputIDs: elicitations.map(\.id))
+            }
         } else { elicitations = [] }
         if capabilities.contains("thread.queue") {
             let result = try await client.rpc("thread.queue", params: base)
@@ -1665,6 +1676,7 @@ import Network
                     try checkIdentity(result)
                     guard result["thread_id"] as? String == id else { throw GatewayFailure.invalidResponse }
                     if let events = result["events"] as? [[String: Any]], !events.isEmpty {
+                        notifyTurnEvents(events, threadID: id)
                         applyEventActivity(events)
                         if events.contains(where: { $0["kind"] as? String == "entry.removed" }) {
                             snapshot = nil

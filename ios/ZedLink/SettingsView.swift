@@ -97,7 +97,7 @@ private struct NotificationSettingsView: View {
         List {
             Section("Local Agent alerts") {
                 Text(notifications.status).foregroundStyle(ZLTheme.muted)
-                Text("Shows approvals, request failures, and context compaction while this app is receiving native Zed updates.")
+                Text("Shows approvals, input requests, completed or cancelled turns, request failures, and context compaction while this app is receiving native Zed updates.")
                     .font(.footnote).foregroundStyle(ZLTheme.muted)
                 if notifications.blocked {
                     Button("Open iPhone notification settings", action: openSystemSettings)
@@ -151,7 +151,7 @@ private struct NotificationSettingsView: View {
                         }
                     }.disabled(busy).accessibilityIdentifier("test-apple-watch-notification")
                 }
-                Text("Local alerts need incoming app updates. Native push requires a signed app, an APNs-enabled gateway, and a physical-device test. Browser push is a separate option.").font(.footnote).foregroundStyle(ZLTheme.muted)
+                Text("Local alerts need incoming app updates. Background completion, stop, approval, input, and failure alerts require a signed app, an APNs-enabled gateway, and a physical-device test. Browser push is a separate option.").font(.footnote).foregroundStyle(ZLTheme.muted)
                 if let profile = session.profile, let url = URL(string: profile.endpoint), url.scheme == "https" {
                     Link("Set up browser push", destination: url)
                 }

@@ -29,6 +29,8 @@ final class ZedLinkAPNsDelegate: NSObject, UIApplicationDelegate {
         while let response = responses.claim() { await handler(response.data, response.action) }
     }
     private var currentIDs: Set<String> = []
+    private var turnIDs: Set<String> = []
+    private let turnReceipts = TurnNotificationReceipts()
     private var scope = ""
     @Published private(set) var status = "Checking permission…"
     @Published private(set) var lastError = ""
@@ -143,11 +145,73 @@ final class ZedLinkAPNsDelegate: NSObject, UIApplicationDelegate {
         ])
     }
 
-    func clear() {
-        let ids = Array(currentIDs) + ["zedlink-test", "zedlink-watch-test"]
+    func clear(removeTurnAlerts: Bool = true) {
+        let ids = Array(currentIDs.union(removeTurnAlerts ? turnIDs : Set<String>())) + ["zedlink-test", "zedlink-watch-test"]
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
-        currentIDs = []; scope = ""
+        currentIDs = []
+        if removeTurnAlerts { turnIDs = [] }
+        scope = ""
+    }
+
+    func notifyTurnEvents(gateway: String, target: String, instance: String, epoch: String,
+                          thread: String, events: [[String: Any]]) {
+        guard enabled, permitted else { return }
+        let eventScope = [gateway, target, instance, epoch, thread].joined(separator: ":")
+        if eventScope != scope { clear(removeTurnAlerts: false); scope = eventScope }
+        let center = UNUserNotificationCenter.current()
+        for event in events where event["kind"] as? String == "turn.stopped" {
+            guard let sequence = event["sequence"] as? Int,
+                  let reason = event["stop_reason"] as? String,
+                  turnReceipts.claim(scope: eventScope, sequence: sequence, reason: reason) else { continue }
+            let content = UNMutableNotificationContent()
+            switch reason {
+            case "completed":
+                content.title = "ZedLink · Session completed"
+                content.body = "The Zed Agent finished its turn. Open the session to review the result."
+            case "cancelled":
+                content.title = "ZedLink · Session stopped"
+                content.body = "The Zed Agent turn was cancelled. Open the session to review its current state."
+            default:
+                content.title = "ZedLink · Session stopped"
+                content.body = "The Agent reached its turn request limit. Open the session to review its current state."
+            }
+            content.sound = .default
+            configurePresentation(content, gateway: gateway, target: target, thread: thread)
+            content.categoryIdentifier = "ZEDLINK_REVIEW"
+            content.userInfo = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
+                "thread": thread, "type": "turn_status", "created": String(Date().timeIntervalSince1970)]
+            let id = "zedlink:\(eventScope):turn:\(sequence)"
+            turnIDs.insert(id)
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
+                guard let error else { return }
+                Task { @MainActor in self.lastError = error.localizedDescription; self.turnIDs.remove(id) }
+            }
+        }
+    }
+
+    func notifyInputs(gateway: String, target: String, instance: String, epoch: String,
+                      thread: String, inputIDs: [String]) {
+        guard enabled, permitted else { return }
+        let inputScope = [gateway, target, instance, epoch, thread].joined(separator: ":")
+        if inputScope != scope { clear(removeTurnAlerts: false); scope = inputScope }
+        let center = UNUserNotificationCenter.current()
+        for inputID in inputIDs where turnReceipts.claim(scope: inputScope, inputID: inputID) {
+            let content = UNMutableNotificationContent()
+            content.title = "ZedLink · Input needed"
+            content.body = "The Zed Agent is waiting for your response. Open the session to review the request."
+            content.sound = .default
+            configurePresentation(content, gateway: gateway, target: target, thread: thread)
+            content.categoryIdentifier = "ZEDLINK_REVIEW"
+            content.userInfo = ["gateway": gateway, "target": target, "instance": instance, "epoch": epoch,
+                "thread": thread, "type": "input_needed", "created": String(Date().timeIntervalSince1970)]
+            let id = "zedlink:\(inputScope):input:\(inputID)"
+            turnIDs.insert(id)
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
+                guard let error else { return }
+                Task { @MainActor in self.lastError = error.localizedDescription; self.turnIDs.remove(id) }
+            }
+        }
     }
 
     func update(gateway: String, target: String, instance: String, epoch: String, thread: String,
@@ -155,7 +219,7 @@ final class ZedLinkAPNsDelegate: NSObject, UIApplicationDelegate {
                 turnID: Int?, agentError: NativeAgentError? = nil) {
         guard enabled else { clear(); return }
         let nextScope = [gateway, target, instance, epoch, thread].joined(separator: ":")
-        if nextScope != scope { clear(); scope = nextScope }
+        if nextScope != scope { clear(removeTurnAlerts: false); scope = nextScope }
         let center = UNUserNotificationCenter.current()
         var nextIDs: Set<String> = []
         for approval in approvals {
@@ -212,8 +276,26 @@ final class ZedLinkAPNsDelegate: NSObject, UIApplicationDelegate {
             nextIDs.insert(id)
             if !currentIDs.contains(id) {
                 let content = UNMutableNotificationContent()
-                content.title = "ZedLink · Agent request failed"
-                content.body = "Open the session to review the error reported by desktop Zed."
+                switch error.kind {
+                case "refusal":
+                    content.title = "ZedLink · Request refused"
+                    content.body = "The model refused this request. Open the session to review it."
+                case "max_output_tokens":
+                    content.title = "ZedLink · Output limit reached"
+                    content.body = "The model stopped at its output limit. Open the session to review its response."
+                case "prompt_too_large":
+                    content.title = "ZedLink · Context limit reached"
+                    content.body = "The request was too large for the model. Open the session to review it."
+                case "authentication_required", "authentication_failed", "no_credentials":
+                    content.title = "ZedLink · Model sign-in needed"
+                    content.body = "Desktop Zed needs model credentials before this session can continue."
+                case "permission_denied":
+                    content.title = "ZedLink · Request denied"
+                    content.body = "The model provider denied the request. Open the session to review it."
+                default:
+                    content.title = "ZedLink · Agent request failed"
+                    content.body = "Open the session to review the error reported by desktop Zed."
+                }
                 content.sound = .default
                 configurePresentation(content, gateway: gateway, target: target, thread: thread)
                 content.categoryIdentifier = "ZEDLINK_REVIEW"

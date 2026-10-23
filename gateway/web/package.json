@@ -1,0 +1,18 @@
+{
+  "name": "zedlink-gateway-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "bun run typecheck && bun build src/session-list.tsx --minify --format=iife --target=browser --outfile=ui.js"
+  },
+  "dependencies": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "typescript": "5.9.3"
+  }
+}

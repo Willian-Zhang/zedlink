@@ -1,5 +1,6 @@
 /protocol-core/target/
 /gateway/target/
+/gateway/web/node_modules
 /zed-source/
 /docs/
 __pycache__/

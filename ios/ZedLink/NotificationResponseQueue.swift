@@ -25,7 +25,7 @@ import Foundation
     }
     func enqueue(id: String, data: [String: String], action: String) {
         prune()
-        let reviewOnly = data["type"] == "agent_error"
+        let reviewOnly = ["agent_error", "turn_status", "compaction", "input_needed"].contains(data["type"] ?? "")
         let required = ["gateway", "target", "instance", "epoch", "thread"] + (reviewOnly ? [] : ["turn", "approval", "child"])
         guard id.utf8.count <= 2048, required.allSatisfy({ data[$0] != nil }),
               data.count <= 12, data.values.allSatisfy({ $0.utf8.count <= 2048 }),

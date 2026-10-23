@@ -46,6 +46,7 @@ import SwiftUI
                 if ProcessInfo.processInfo.arguments.contains("--zedlink-demo") { session.loadDemoPreview(); return }
                 #endif
                 ApprovalNotifications.shared.configure()
+                await ApprovalNotifications.shared.refreshStatus()
                 ApprovalNotifications.shared.onRemoteToken = { _ = Task { await session.syncAPNs() } }
                 session.enterForeground()
                 if session.profile == nil, let profile = profiles.preferredProfile {
@@ -61,7 +62,10 @@ import SwiftUI
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active, session.profile != nil, !session.demoPreview {
                     session.enterForeground()
-                    Task { await session.refresh() }
+                    Task {
+                        await ApprovalNotifications.shared.refreshStatus()
+                        await session.refresh()
+                    }
                 } else if phase != .active {
                     Task { await session.persistConversation() }
                     if phase == .background { session.enterBackground() }

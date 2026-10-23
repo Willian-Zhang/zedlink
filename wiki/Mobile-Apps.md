@@ -56,7 +56,7 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 Android rejects an update signed by a different key. Uninstalling clears app data and requires pairing again.
 
-Every Android UI change must increment version/build metadata. When reporting a problem, copy **Settings → Help & about → Version, build, and interface revision**. The current source declares version **0.2.12 (14)** and interface revision **2026.10.14.15**; that identifies source metadata, not a verified installed APK.
+Every Android UI change must increment version/build metadata. When reporting a problem, copy **Settings → Help & about → Version, build, and interface revision**. The current source declares version **0.2.14 (16)** and interface revision **2026.10.23.2**; that identifies source metadata, not a verified installed APK.
 
 ## Pairing
 
@@ -87,7 +87,7 @@ Image paste and selection open an annotation review with freehand drawing, Undo,
 
 ## Notifications and Apple Watch
 
-iOS local Agent alerts can cover approvals, request failures, and an observed compaction start while the app receives updates. Apple Watch can mirror eligible iPhone notifications through the operating system.
+iOS and Android local Agent alerts can cover approvals, request failures, observed native turn completion or cancellation, pending input, and context compaction while each app receives updates. Android source 0.2.14 (16) adds adaptive Material 3 navigation and a compact composer; the preceding update added loaded-conversation search and an unread count when following is paused. Apple Watch can mirror eligible iPhone notifications through the operating system.
 
 To check mirroring:
 

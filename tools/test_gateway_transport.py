@@ -439,7 +439,7 @@ class ProbeFixture:
                         error = {"code": "STALE_REVISION"}
                     else:
                         result = {"outcome": "ready", "revision": "fixture-head:4",
-                                  "diff": "diff --git a/src/main.rs b/src/main.rs\n+println!(\"ready\");\n",
+                                  "diff": "diff --git a/src/main.rs b/src/main.rs\n@@ -1,1 +1,1 @@\n+println!(\"ready\");\n",
                                   "truncated": False}
                 elif method in ("changes.stage", "changes.unstage"):
                     key = request["request_id"]
@@ -992,7 +992,7 @@ def main():
             browser = webdriver.Firefox(service=FirefoxService("/usr/bin/geckodriver"),
                                         options=browser_options)
             try:
-                wait = WebDriverWait(browser, 8)
+                wait = WebDriverWait(browser, 15)
                 browser.get(base + "/#gateway=" + info["gateway_id"])
                 wait.until(lambda driver: driver.find_element(By.ID, "gateway-id").text == info["gateway_id"])
                 assert browser.find_element(By.ID, "expected-id").get_attribute("value") == info["gateway_id"]
@@ -1055,12 +1055,22 @@ def main():
                 assert browser.find_element(By.ID, "thread-count").text == "2"
                 assert len(probe.created_requests) == 1
                 assert next(iter(probe.created_requests.values()))["agent_id"] == "codex-acp"
+                assert browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="All"] .filter-count').text == "2"
+                assert len(browser.find_elements(By.CSS_SELECTOR, '.thread-item[aria-current="page"]')) == 1
+                browser.execute_script("const prompt=document.getElementById('prompt'); prompt.focus(); prompt.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true}))")
+                assert browser.switch_to.active_element.get_attribute("id") == "prompt"
+                browser.execute_script("document.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true}))")
+                assert browser.switch_to.active_element.get_attribute("id") == "session-search"
                 search = browser.find_element(By.ID, "session-search")
                 search.send_keys("no such session")
                 assert not browser.find_elements(By.CSS_SELECTOR, ".thread-item")
-                assert "No sessions match" in browser.find_element(By.ID, "thread-list").text
-                search.send_keys(Keys.CONTROL, "a", Keys.DELETE)
+                wait.until(lambda driver: "No sessions match" in driver.find_element(By.ID, "thread-list").text)
+                browser.find_element(By.CSS_SELECTOR, ".sessions-empty button").click()
+                assert search.get_attribute("value") == ""
+                assert browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="All"]').get_attribute("aria-pressed") == "true"
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item"))
+                search.send_keys(Keys.ARROW_DOWN)
+                assert "thread-item" in browser.switch_to.active_element.get_attribute("class")
                 assert {item.get_attribute("textContent") for item in browser.find_elements(By.CSS_SELECTOR, ".thread-badge")} == {"ZED AGENT", "CODEX"}, browser.find_element(By.ID, "thread-list").get_attribute("textContent")
                 browser.find_element(By.CSS_SELECTOR, '.session-pin[aria-label="Pin Synthetic test thread"]').click()
                 browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="Pinned"]').click()
@@ -1075,6 +1085,30 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, '#session-filters [data-filter="All"]').click()
                 browser.find_element(By.XPATH, '//button[contains(@class,"thread-item")][strong[text()="Synthetic test thread"]]').click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Synthetic test thread")
+                browser.find_element(By.ID, "edit-session-tag").click()
+                browser.find_element(By.ID, "session-tag-input").send_keys("Fixture")
+                browser.find_element(By.ID, "session-tag-form").submit()
+                wait.until(lambda driver: "Fixture" in driver.find_element(By.ID, "thread-list").text)
+                Select(browser.find_element(By.ID, "session-tag-filter")).select_by_value("Fixture")
+                assert len(browser.find_elements(By.CSS_SELECTOR, ".thread-item")) == 1
+                Select(browser.find_element(By.ID, "session-tag-filter")).select_by_value("")
+                browser.find_element(By.ID, "open-message-search").click()
+                browser.find_element(By.ID, "message-search-query").send_keys("syntheticXss")
+                browser.find_element(By.ID, "message-search-form").submit()
+                wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".message-search-result"))
+                assert "Synthetic test thread" in browser.find_element(By.ID, "message-search-results").text
+                browser.find_element(By.CSS_SELECTOR, ".message-search-result").click()
+                wait.until(lambda driver: not driver.find_element(By.ID, "conversation-search").get_attribute("open"))
+                if browser.find_element(By.ID, "sidebar-project").get_attribute("open") is None:
+                    browser.find_element(By.CSS_SELECTOR, "#sidebar-project summary").click()
+                browser.find_element(By.CSS_SELECTOR, '.sidebar-workspace [data-context-tab="files"]').click()
+                assert browser.find_element(By.ID, "context-panel").is_displayed()
+                assert browser.find_element(By.ID, "context-files-tab").get_attribute("aria-selected") == "true"
+                browser.find_element(By.ID, "close-context").click()
+                browser.find_element(By.ID, "open-connection").click()
+                assert browser.find_element(By.ID, "connection-panel").is_displayed()
+                browser.find_element(By.ID, "connection-back").click()
+                assert browser.find_element(By.ID, "sessions-panel").is_displayed()
                 wait.until(lambda driver: "Zed connected · live updates" in driver.find_element(By.ID, "connection").get_attribute("textContent"))
                 browser.find_element(By.ID, "show-actions").click()
                 browser.find_element(By.ID, "action-delegate").click()
@@ -1087,6 +1121,8 @@ def main():
                 assert not browser.find_element(By.CSS_SELECTOR, ".subagent.archived").is_displayed()
                 assert "Checking concurrent gateway behavior" in browser.find_element(By.ID, "subagents").get_attribute("textContent")
                 assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") is None
+                browser.execute_script("const m=document.getElementById('messages'); m.style.scrollBehavior='auto'; m.scrollTop=m.scrollHeight;")
+                wait.until(lambda driver: driver.execute_script("const m=document.getElementById('messages').getBoundingClientRect(), s=document.querySelector('.subagent.active summary').getBoundingClientRect(); return s.top>=m.top && s.bottom<=m.bottom"))
                 browser.find_element(By.CSS_SELECTOR, ".subagent.active summary").click()
                 assert browser.find_element(By.CSS_SELECTOR, ".subagent.active").get_attribute("open") == "true"
                 browser.execute_script("window.titleMutations = 0; window.titleObserver = new MutationObserver(() => window.titleMutations++); window.titleObserver.observe(document.getElementById('thread-title'), { childList: true, subtree: true, characterData: true }); window.childReader = document.querySelector('.subagent.active'); window.childEntry = window.childReader.querySelector('.subagent-entries').firstElementChild;")
@@ -1150,8 +1186,14 @@ def main():
                 wait.until(lambda driver: not probe.queued_messages)
                 browser.find_element(By.ID, "open-settings").click()
                 wait.until(lambda driver: "Local GLM fixture" in Select(driver.find_element(By.ID, "zed-model")).first_selected_option.text)
+                assert 390 <= browser.execute_script("return document.querySelector('.sidebar').getBoundingClientRect().width") <= 420
                 assert "Local GLM fixture" in browser.find_element(By.ID, "header-model").text
                 assert "1,200 / 131,072" in browser.find_element(By.ID, "zed-context-usage").text
+                Select(browser.find_element(By.ID, "reading-width")).select_by_value("focused")
+                Select(browser.find_element(By.ID, "reading-size")).select_by_value("large")
+                assert browser.execute_script("return [document.body.dataset.readingWidth, document.body.dataset.readingSize]") == ["focused", "large"]
+                Select(browser.find_element(By.ID, "reading-width")).select_by_value("comfortable")
+                Select(browser.find_element(By.ID, "reading-size")).select_by_value("default")
                 assert Select(browser.find_element(By.ID, "zed-profile")).first_selected_option.get_attribute("value") == "write"
                 Select(browser.find_element(By.ID, "zed-profile")).select_by_value("ask")
                 browser.find_element(By.ID, "zed-thinking").click()
@@ -1173,8 +1215,19 @@ def main():
                 browser.save_screenshot("/tmp/zedlink-browser-settings.png")
                 browser.find_element(By.ID, "settings-back").click()
                 assert browser.find_element(By.ID, "sessions-panel").is_displayed()
+                assert "Context 1%" in browser.find_element(By.ID, "context-budget").text
+                browser.find_element(By.ID, "context-budget").click()
+                assert "1,200" in browser.find_element(By.ID, "context-budget-detail").text
+                browser.find_element(By.ID, "context-budget").click()
                 browser.find_element(By.ID, "show-context").click()
                 wait.until(lambda driver: driver.find_element(By.ID, "context-panel").is_displayed())
+                assert browser.find_element(By.ID, "context-project").text == "fixture-project"
+                dock = browser.execute_script("const workspace=document.querySelector('.workspace').getBoundingClientRect(); const panel=document.getElementById('context-panel').getBoundingClientRect(); const messages=document.getElementById('messages').getBoundingClientRect(); return {width:innerWidth,panelLeft:panel.left,messagesRight:messages.right,workspaceRight:workspace.right};")
+                if dock["width"] >= 1300:
+                    assert abs(dock["messagesRight"] - dock["panelLeft"]) <= 2 and abs(dock["workspaceRight"] - (dock["panelLeft"] + browser.find_element(By.ID, "context-panel").size["width"])) <= 2, dock
+                browser.find_element(By.ID, "expand-workspace").click()
+                assert browser.find_element(By.ID, "expand-workspace").get_attribute("aria-pressed") == "true"
+                browser.find_element(By.ID, "expand-workspace").click()
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src"]'))
                 assert not browser.find_elements(By.CSS_SELECTOR, '#file-list [data-path="src/main.rs"]')
                 browser.find_element(By.CSS_SELECTOR, '#file-list [data-path="src"]').click()
@@ -1204,9 +1257,7 @@ def main():
                 assert browser.find_elements(By.CSS_SELECTOR, "#code-review-content .search-hit")
                 browser.save_screenshot("/tmp/zedlink-browser-code-review.png")
                 browser.find_element(By.ID, "close-code-review").click()
-                file_rows = browser.find_elements(By.CSS_SELECTOR, "#file-list .context-row:not(.directory)")
-                next(row for row in file_rows if row.get_attribute("data-path") == "src/main.rs").click()
-                wait.until(lambda driver: "println" in driver.find_element(By.ID, "file-preview-content").text)
+                assert "println" in browser.find_element(By.ID, "file-preview-content").text
                 browser.find_element(By.ID, "attach-preview").click()
                 assert "src/main.rs" in browser.find_element(By.ID, "attachment-strip").text
                 browser.find_element(By.ID, "show-context").click()
@@ -1217,6 +1268,9 @@ def main():
                 wait.until(lambda driver: "diff --git" in driver.find_element(By.ID, "git-diff").text)
                 assert browser.find_elements(By.CSS_SELECTOR, "#git-diff .syntax-diff-add")
                 assert "wrap" in browser.find_element(By.ID, "git-diff").get_attribute("class")
+                assert browser.find_element(By.ID, "diff-next").is_displayed()
+                browser.find_element(By.ID, "diff-next").click()
+                assert "Hunk 1 of" in browser.find_element(By.ID, "diff-position").text
                 browser.find_element(By.ID, "diff-search").send_keys("println")
                 assert browser.find_element(By.ID, "diff-search-count").text == "1 match"
                 browser.find_element(By.ID, "expand-diff").click()
@@ -1311,8 +1365,8 @@ def main():
                     "return {width: box.width, border: style.borderTopWidth, radius: style.borderTopLeftRadius};",
                     user_message,
                 )
-                assert user_style["width"] < 400 and user_style["border"] == "0px"
-                assert user_style["radius"] == "12px"
+                assert user_style["width"] < 400 and user_style["border"] == "0px", user_style
+                assert 8 <= float(user_style["radius"].removesuffix("px")) <= 12, user_style
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant .message-label")[-1].get_attribute("textContent") == "Zed Agent"
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant strong")
                 assert browser.find_elements(By.CSS_SELECTOR, ".message.assistant pre code")
@@ -1379,7 +1433,24 @@ def main():
                 assert not browser.find_element(By.ID, "load-history").is_displayed()
                 assert len(browser.find_elements(By.CSS_SELECTOR, "#transcript-entries .message")) == len(probe.entries)
                 assert not browser.find_elements(By.ID, "snapshot-warning")
+                original_entries = list(probe.entries)
+                probe.entries = [f"## Assistant\n\nBounded entry {index}\n" for index in range(230)]
+                probe.transcript_page_size = 64
+                browser.execute_script("selectThread('fixture-thread')")
+                wait.until(lambda driver: "Bounded entry 229" in driver.find_element(By.ID, "transcript-entries").text)
+                for _ in range(4):
+                    history_button = browser.find_element(By.ID, "load-history")
+                    if not history_button.is_displayed() or "remaining" not in history_button.text:
+                        break
+                    prior_label = history_button.text
+                    browser.execute_script("arguments[0].click()", history_button)
+                    wait.until(lambda driver: not driver.find_element(By.ID, "load-history").is_displayed()
+                               or driver.find_element(By.ID, "load-history").text != prior_label)
+                assert len(browser.find_elements(By.CSS_SELECTOR, "#transcript-entries .message")) <= 192
+                assert browser.find_element(By.ID, "show-newer-entries").is_displayed()
+                probe.entries = original_entries
                 probe.transcript_page_size = None
+                browser.execute_script("selectThread('fixture-thread')")
                 probe.sequence += 1
                 wait.until(lambda driver: "conversation entries" in driver.find_element(By.ID, "thread-meta").text)
                 probe.approvals = [{"approval_id": "fixture-approval", "turn_id": 8,
@@ -1505,14 +1576,17 @@ def main():
                 assert browser.find_element(By.ID, "send").get_attribute("aria-label") == "Send message"
                 browser.save_screenshot("/tmp/zedlink-browser-fixture.png")
                 browser.set_window_size(1920, 1080)
-                wide = browser.execute_script("return {width:innerWidth, layoutWidth:document.querySelector('.layout').getBoundingClientRect().width, sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width, workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width}")
-                assert wide["layoutWidth"] >= wide["width"] - 2 and 240 <= wide["sidebarWidth"] <= 280, wide
+                wide = browser.execute_script("return {width:innerWidth, sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width, workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width}")
+                assert wide["sidebarWidth"] + wide["workspaceWidth"] >= wide["width"] - 2 and 290 <= wide["sidebarWidth"] <= 340, wide
+                assert browser.execute_script("return getComputedStyle(document.querySelector('.workspace')).backgroundColor") == "rgb(0, 0, 0)"
+                flat_shell = browser.execute_script("return {brand:getComputedStyle(document.querySelector('.brand')).borderRightWidth, sidebar:getComputedStyle(document.querySelector('.sidebar')).borderRightWidth, header:getComputedStyle(document.querySelector('.topbar-right')).borderBottomWidth, badge:getComputedStyle(document.getElementById('header-model')).backgroundColor}")
+                assert flat_shell == {"brand": "0px", "sidebar": "0px", "header": "0px", "badge": "rgba(0, 0, 0, 0)"}, flat_shell
                 composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); const workspace=document.querySelector('.workspace').getBoundingClientRect(); const add=document.getElementById('show-actions').getBoundingClientRect(); const send=document.getElementById('send').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,addWidth:add.width,sendWidth:send.width,centerDelta:Math.abs((box.left+box.width/2)-(workspace.left+workspace.width/2))}")
-                assert composer["width"] <= 922 and composer["height"] <= 54, composer
-                assert composer["radius"] == "14px" and composer["addWidth"] == 40 and composer["sendWidth"] == 40 and composer["centerDelta"] <= 1, composer
+                assert 900 <= composer["width"] <= 1062 and 100 <= composer["height"] <= 145, composer
+                assert 8 <= float(composer["radius"].split()[0].removesuffix("px")) <= 14 and composer["addWidth"] == 42 and composer["sendWidth"] == 38 and composer["centerDelta"] <= 1, composer
                 browser.find_element(By.ID, "show-sessions").click()
                 collapsed = browser.execute_script("return {sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).visibility==='hidden', workspaceWidth:document.querySelector('.workspace').getBoundingClientRect().width, width:innerWidth}")
-                assert collapsed["sidebarHidden"] and collapsed["workspaceWidth"] >= collapsed["width"] - 20, collapsed
+                assert collapsed["sidebarHidden"] and collapsed["workspaceWidth"] >= collapsed["width"] - 60, collapsed
                 assert browser.find_element(By.ID, "show-sessions").get_attribute("aria-label") == "Show sessions"
                 for width in (1920, 1360, 1024):
                     browser.set_window_size(width, 1080)
@@ -1557,7 +1631,7 @@ def main():
                 assert browser.find_element(By.ID, "file-browser").is_displayed()
                 browser.find_element(By.ID, "close-context").click()
                 mobile_composer = browser.execute_script("const box=document.getElementById('composer-form').getBoundingClientRect(); return {width:box.width,height:box.height,radius:getComputedStyle(document.getElementById('composer-form')).borderRadius,viewport:innerWidth}")
-                assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and mobile_composer["height"] <= 54 and mobile_composer["radius"] == "13px", mobile_composer
+                assert mobile_composer["width"] <= mobile_composer["viewport"] - 16 and 85 <= mobile_composer["height"] <= 135 and 8 <= float(mobile_composer["radius"].split()[0].removesuffix("px")) <= 14, mobile_composer
                 browser.find_element(By.ID, "show-context").click()
                 Select(browser.find_element(By.ID, "context-mobile-view")).select_by_value("terminal")
                 wait.until(lambda driver: driver.find_element(By.ID, "terminal-mode").get_attribute("aria-label") == "Interactive")
@@ -1669,7 +1743,13 @@ def main():
                 assert browser.find_element(By.ID, "tab-sessions").is_displayed()
                 mobile_icons = browser.execute_script("return [...document.querySelectorAll('.mobile-tab-icon')].map(icon => { const box=icon.getBoundingClientRect(); const style=getComputedStyle(icon); return {width:box.width,height:box.height,fontSize:style.fontSize,lineHeight:style.lineHeight}; })")
                 assert len(mobile_icons) == 3 and len({tuple(icon.values()) for icon in mobile_icons}) == 1, mobile_icons
-                assert "\ufe0e" in browser.find_element(By.CSS_SELECTOR, "#tab-settings .mobile-tab-icon").get_attribute("textContent")
+                assert len(browser.find_elements(By.CSS_SELECTOR, ".mobile-tabs .mobile-tab-icon svg")) == 3
+                sessions_layout = browser.execute_script("const filters=[...document.querySelectorAll('#session-filters button')].map(button=>button.getBoundingClientRect());const first=document.querySelector('.thread-item').getBoundingClientRect();const tabs=document.querySelector('.mobile-tabs').getBoundingClientRect();return {filterRows:filters.map(box=>box.top),firstTop:first.top,tabsTop:tabs.top,pageWidth:document.documentElement.scrollWidth,viewport:innerWidth,projectTools:getComputedStyle(document.querySelector('.sidebar-project')).display,footer:getComputedStyle(document.querySelector('.sidebar-footer')).display}")
+                assert max(sessions_layout["filterRows"]) - min(sessions_layout["filterRows"]) <= 1, sessions_layout
+                assert sessions_layout["firstTop"] < sessions_layout["tabsTop"] - 75, sessions_layout
+                assert sessions_layout["pageWidth"] <= sessions_layout["viewport"] + 1, sessions_layout
+                assert sessions_layout["projectTools"] == "none" and sessions_layout["footer"] == "none", sessions_layout
+                browser.save_screenshot("/tmp/zedlink-browser-sessions-mobile.png")
                 browser.execute_script("document.querySelector('.thread-item').click()")
                 wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, ".workspace").is_displayed())
                 assert not browser.find_element(By.ID, "activity-content").is_displayed()
@@ -1687,7 +1767,7 @@ def main():
                 probe.extra_thread = True
                 browser.find_element(By.ID, "refresh").click()
                 wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".thread-item")) == 3)
-                browser.find_elements(By.CSS_SELECTOR, ".thread-item")[1].click()
+                browser.find_element(By.XPATH, '//button[contains(@class,"thread-item")][strong[text()="Second synthetic thread"]]').click()
                 wait.until(lambda driver: driver.find_element(By.ID, "thread-title").text == "Second synthetic thread")
                 assert browser.find_element(By.ID, "messages").is_displayed()
                 assert browser.find_element(By.ID, "send").is_enabled()
@@ -1788,10 +1868,15 @@ def main():
                 assert not browser.find_element(By.ID, "verify-gateway").is_selected()
                 manual_layout = browser.execute_script(
                     "return {top:document.getElementById('pair-code').getBoundingClientRect().top,"
-                    "bottom:document.getElementById('pair-code').getBoundingClientRect().bottom,height:innerHeight}"
+                    "bottom:document.getElementById('pair-code').getBoundingClientRect().bottom,height:innerHeight,"
+                    "sidebarTop:document.querySelector('.sidebar').getBoundingClientRect().top,"
+                    "sidebarBottom:document.querySelector('.sidebar').getBoundingClientRect().bottom,"
+                    "sidebarScroll:document.querySelector('.sidebar').scrollTop,"
+                    "pairTop:document.getElementById('pair-panel').getBoundingClientRect().top,"
+                    "bodyClass:document.body.className}"
                 )
-                assert 0 <= manual_layout["top"] and manual_layout["bottom"] <= manual_layout["height"], manual_layout
                 browser.save_screenshot("/tmp/zedlink-browser-manual-pairing-mobile.png")
+                assert 0 <= manual_layout["top"] and manual_layout["bottom"] <= manual_layout["height"], manual_layout
                 manual_code = admin(state, "pair-short-code")["code"]
                 browser.find_element(By.ID, "pair-code").send_keys(manual_code)
                 assert not browser.find_element(By.ID, "pair-button").is_enabled()

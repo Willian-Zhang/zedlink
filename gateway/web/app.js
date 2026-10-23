@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.14.2";
+const UI_BUILD = "2026.10.23.11";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -27,6 +27,8 @@ const state = {
   renderedEntries: [],
   renderedThreadId: null,
   renderedEntryStart: 0,
+  transcriptWindowStart: null,
+  followTranscript: true,
   totalEntries: 0,
   historyLoading: false,
   creatingThread: false,
@@ -54,7 +56,9 @@ const state = {
   gatewayVerified: false,
   stoppingTurn: false,
   threadSettings: null,
+  lastSettingsAt: 0,
   settingsBusy: false,
+  pendingRename: null,
   notificationConfig: null,
   projectFolderEntries: null,
   fileListLimit: 250,
@@ -80,6 +84,8 @@ const state = {
   previewContent: "",
   previewFocusLine: null,
   diffContent: "",
+  diffHunks: [],
+  diffHunkIndex: -1,
   reviewSource: "",
   reviewLanguage: "text",
   approvals: [],
@@ -207,6 +213,10 @@ function showCreateAvailability() {
 function renderEmptyWorkspace() {
   const noSession = !state.threadId;
   document.body.classList.toggle("no-session", noSession && !!state.token);
+  for (const button of document.querySelectorAll(".sidebar-workspace button[data-context-tab]")) {
+    button.disabled = noSession;
+    button.title = noSession ? "Select a session to open project tools" : "";
+  }
   $("empty-state").classList.toggle("hidden", !noSession);
   if (!noSession) return;
   const connected = state.desktopReachable === true;
@@ -282,12 +292,25 @@ function renderSelectedAgent() {
 async function renameSelectedSession() {
   const title = $("session-title-input").value.trim();
   if (!state.threadId || !title || !state.capabilities.includes("thread.rename")) return;
+  const threadId = state.threadId;
   const result = await rpc("thread.rename", { ...baseThreadParams(), title });
   if (result.outcome !== "requested") throw new Error("Zed did not accept the title change.");
-  await loadThreads();
+  state.pendingRename = { threadId, title, scope: targetScope(), expiresAt: Date.now() + 30000 };
   $("thread-title").textContent = title;
+  $("thread-title").title = title;
+  await loadThreads();
   renderThreadSettings();
   notice("Session renamed in desktop Zed.");
+}
+
+function selectedThreadTitle(threadId, fallback = "Untitled Agent thread") {
+  const listed = state.threads.find((thread) => thread.thread_id === threadId)?.title;
+  const pending = state.pendingRename;
+  if (pending && pending.threadId === threadId && pending.scope === targetScope()) {
+    if (listed === pending.title || Date.now() >= pending.expiresAt) state.pendingRename = null;
+    else return pending.title;
+  }
+  return listed || fallback;
 }
 
 async function unexposeSelectedSession() {
@@ -679,9 +702,12 @@ function updateComposerAction() {
       || navigator.onLine === false || state.gatewayReachable === false;
   $("show-actions").disabled = !state.threadId || !state.token || !state.live;
   renderTurnProgress();
+  renderContextBudget();
 }
 
 function focusLiveActivity() {
+  state.followTranscript = true;
+  renderTranscript();
   const entries = $("transcript-entries");
   const targets = entries.querySelectorAll(".message.assistant, .message.native, .message.tool");
   const target = targets[targets.length - 1];
@@ -779,6 +805,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     $("pair-panel").classList.remove("hidden");
     $("sessions-panel").classList.add("hidden");
     document.body.classList.add("pairing");
+    document.querySelector(".sidebar").scrollTop = 0;
     connection(pairingStatus(), "offline");
   }
   if (!response.ok) {
@@ -1036,12 +1063,15 @@ function resetTargetSession() {
   state.threadError = null;
   state.retryStatus = null;
   state.threadSettings = null;
+  state.lastSettingsAt = 0;
   state.createOptions = null;
   state.pending = null;
   state.sequence = 0;
   state.renderedEntries = [];
   state.renderedThreadId = null;
   state.renderedEntryStart = 0;
+  state.transcriptWindowStart = null;
+  state.followTranscript = true;
   state.totalEntries = 0;
   state.subagents = [];
   state.approvals = [];
@@ -1116,7 +1146,9 @@ async function connect() {
       state.sequence = 0;
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
     }
-    $("host-label").textContent = `Zed instance ${info.instance_id.slice(0, 8)}…`;
+    $("host-label").textContent = `${info.project ? `Project · ${info.project} · ` : ""}Zed instance ${info.instance_id.slice(0, 8)}…`;
+    $("context-project").textContent = info.project ? String(info.project).split(/[\\/]/).filter(Boolean).pop() : "Selected Zed project";
+    $("context-project").title = info.project || "";
     const prior = safeStore.read(pendingKey());
     if (prior && !state.pending) {
       try { state.pending = { ...JSON.parse(prior), text: null }; } catch { safeStore.remove(pendingKey()); }
@@ -1185,6 +1217,11 @@ async function loadThreads() {
   }
   state.threads = result.threads;
   state.lastThreadsAt = Date.now();
+  if (state.threadId && nextSelected) {
+    const title = selectedThreadTitle(state.threadId);
+    if ($("thread-title").textContent !== title) $("thread-title").textContent = title;
+    $("thread-title").title = title;
+  }
   renderThreads();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     closeEventStream();
@@ -1384,6 +1421,38 @@ function sessionPins() {
   try { const saved = JSON.parse(safeStore.read(`zedlink.sessionPins.${targetScope()}`) || "[]"); return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []); }
   catch { return new Set(); }
 }
+function sessionTags() {
+  try {
+    const saved = JSON.parse(safeStore.read(`zedlink.sessionTags.${targetScope()}`) || "{}");
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  } catch { return {}; }
+}
+function sessionSeen() {
+  try {
+    const saved = JSON.parse(safeStore.read(`zedlink.sessionSeen.${targetScope()}`) || "{}");
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  } catch { return {}; }
+}
+function renderAttentionInbox() {
+  const panel = $("attention-inbox");
+  panel.replaceChildren();
+  panel.classList.toggle("hidden", sessionFilter !== "Needs attention");
+  if (sessionFilter !== "Needs attention") return;
+  const pending = state.threads.filter((thread) => sessionActivity(thread).attention);
+  const heading = document.createElement("strong");
+  heading.textContent = pending.length ? `${pending.length} session${pending.length === 1 ? "" : "s"} need you` : "All caught up";
+  panel.append(heading);
+  if (!pending.length) {
+    const note = document.createElement("p"); note.textContent = "No exposed session is waiting for a decision or reporting a failed turn.";
+    panel.append(note);
+  }
+  for (const thread of pending) {
+    const row = document.createElement("button"); row.type = "button";
+    row.textContent = `${thread.title || "Untitled Agent thread"} · ${sessionActivity(thread).label}`;
+    row.addEventListener("click", () => selectThread(thread.thread_id));
+    panel.append(row);
+  }
+}
 function sessionActivity(thread) {
   if (thread.approval_count > 0) return { label: `Approval needed (${thread.approval_count})`, attention: true };
   if (thread.input_count > 0) return { label: `Input needed (${thread.input_count})`, attention: true };
@@ -1393,57 +1462,120 @@ function sessionActivity(thread) {
   return { label: thread.status === "Idle" ? "Ready" : "Unknown" };
 }
 let threadsRenderSignature = "";
+function setSessionFilter(filter) {
+  sessionFilter = filter;
+  for (const button of $("session-filters").querySelectorAll("button[data-filter]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
+  }
+  renderThreads();
+}
+function clearSessionSearch() {
+  $("session-search").value = "";
+  setSessionFilter("All");
+  $("session-search").focus();
+}
 function renderThreads() {
-  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count]), state.threadId, state.live, sessionFilter, $("session-search").value, [...sessionPins()], [...sessionUpdated]]);
+  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated]]);
   if (signature === threadsRenderSignature) return;
   threadsRenderSignature = signature;
-  const list = $("thread-list"); const scrollTop = list.scrollTop; list.replaceChildren();
+  const list = $("thread-list"); const scrollTop = list.scrollTop;
   const pins = sessionPins();
+  const tags = sessionTags();
+  const seen = sessionSeen();
   const query = $("session-search").value.trim().toLocaleLowerCase();
-  const visible = state.threads.filter((thread) => {
+  const tagFilter = $("session-tag-filter").value;
+  const tagOptions = [...new Set(Object.values(tags).filter((tag) => typeof tag === "string" && tag))].sort();
+  const tagSelect = $("session-tag-filter");
+  if (tagSelect.options.length !== tagOptions.length + 1 || tagOptions.some((tag, index) => tagSelect.options[index + 1]?.value !== tag)) {
+    tagSelect.replaceChildren(new Option("All tags", ""), ...tagOptions.map((tag) => new Option(tag, tag)));
+    tagSelect.value = tagOptions.includes(tagFilter) ? tagFilter : "";
+  }
+  $("edit-session-tag").disabled = !state.threadId;
+  const searched = state.threads.filter((thread) =>
+    `${thread.title || ""} ${normalizeAgent(thread.agent).name} ${thread.thread_id} ${tags[thread.thread_id] || ""}`.toLocaleLowerCase().includes(query)
+    && (!tagSelect.value || tags[thread.thread_id] === tagSelect.value));
+  const counts = { All: searched.length, "Needs attention": 0, Running: 0, Pinned: 0 };
+  for (const thread of searched) {
     const activity = sessionActivity(thread);
-    return `${thread.title || ""} ${normalizeAgent(thread.agent).name} ${thread.thread_id}`.toLocaleLowerCase().includes(query) &&
-      (sessionFilter === "All" || sessionFilter === "Needs attention" && activity.attention || sessionFilter === "Running" && activity.running || sessionFilter === "Pinned" && pins.has(thread.thread_id));
-  }).sort((a, b) => Number(pins.has(b.thread_id)) - Number(pins.has(a.thread_id)) || (a.title || "").localeCompare(b.title || ""));
+    if (activity.attention) counts["Needs attention"]++;
+    if (activity.running) counts.Running++;
+    if (pins.has(thread.thread_id)) counts.Pinned++;
+  }
+  for (const button of $("session-filters").querySelectorAll("button[data-filter]")) {
+    const count = counts[button.dataset.filter];
+    const badge = button.querySelector(".filter-count");
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+    button.setAttribute("aria-label", `${button.dataset.filter}, ${count} session${count === 1 ? "" : "s"}`);
+  }
+  const visible = searched.filter((thread) => {
+    const activity = sessionActivity(thread);
+    return sessionFilter === "All" || sessionFilter === "Needs attention" && activity.attention ||
+      sessionFilter === "Running" && activity.running || sessionFilter === "Pinned" && pins.has(thread.thread_id);
+  }).sort((a, b) => Number(pins.has(b.thread_id)) - Number(pins.has(a.thread_id)) || (Number(seen[b.thread_id]) || 0) - (Number(seen[a.thread_id]) || 0) || (a.title || "").localeCompare(b.title || ""));
   $("thread-count").textContent = String(visible.length);
-  if (!visible.length) {
-    const text = document.createElement("p"); text.className = "muted";
-    text.textContent = state.threads.length ? "No sessions match this search or filter." : state.live ? "No exposed sessions. Choose /remote-control in desktop Zed or create a session using +." : "Sessions unavailable. Reconnect to refresh the list.";
-    list.append(text);
-  }
-  for (const group of ["Needs attention", "Running", "Ready & other"]) {
-    const rows = visible.filter((thread) => { const a = sessionActivity(thread); return (a.attention ? "Needs attention" : a.running ? "Running" : "Ready & other") === group; });
-    if (!rows.length) continue;
-    const heading = document.createElement("h3"); heading.className = "session-group"; heading.textContent = `${group} · ${rows.length}`; list.append(heading);
-    for (const thread of rows) {
+  const groups = ["Needs attention", "Running", "Ready & other"].map((group) => ({
+    label: group,
+    sessions: visible.filter((thread) => { const activity = sessionActivity(thread); return (activity.attention ? "Needs attention" : activity.running ? "Running" : "Ready & other") === group; }).map((thread) => {
       const activity = sessionActivity(thread);
-      const row = document.createElement("div"); row.className = "session-row";
-      const button = document.createElement("button"); button.type = "button";
-      button.dataset.threadId = thread.thread_id;
-      button.className = `thread-item ${thread.thread_id === state.threadId ? "active" : ""} ${activity.running && state.live ? "running" : ""} ${activity.attention ? "error" : ""}`;
-      const badge = document.createElement("span"); badge.className = "thread-badge"; badge.textContent = normalizeAgent(thread.agent).name.toLocaleUpperCase();
-      const status = document.createElement("span"); status.className = `thread-status ${activity.running ? "busy" : ""} ${activity.attention ? "error" : ""}`;
-      if (activity.running && state.live) { const progress = document.createElement("span"); progress.className = "thread-progress"; progress.setAttribute("aria-hidden", "true"); progress.append(document.createElement("i"), document.createElement("i"), document.createElement("i")); status.append(progress); }
-      const label = document.createElement("span"); label.textContent = `${state.live ? "" : "Last known: "}${activity.label}`; status.append(label);
-      const title = document.createElement("strong"); title.textContent = thread.title || "Untitled Agent thread";
-      button.append(badge, status, title);
-      if (sessionUpdated.has(sessionKey(thread))) { const update = document.createElement("small"); update.textContent = "New activity"; button.append(update); }
-      button.addEventListener("click", () => { sessionUpdated.delete(sessionKey(thread)); selectThread(thread.thread_id); });
-      const pin = document.createElement("button"); pin.type = "button"; pin.className = "session-pin"; pin.textContent = "⌖";
-      pin.setAttribute("aria-label", `${pins.has(thread.thread_id) ? "Unpin" : "Pin"} ${thread.title || "session"}`); pin.setAttribute("aria-pressed", String(pins.has(thread.thread_id)));
-      pin.addEventListener("click", () => { const saved = sessionPins(); if (saved.has(thread.thread_id)) saved.delete(thread.thread_id); else saved.add(thread.thread_id); safeStore.write(`zedlink.sessionPins.${targetScope()}`, JSON.stringify([...saved])); renderThreads(); });
-      row.append(button, pin); list.append(row);
-    }
+      return { id: thread.thread_id, title: thread.title || "Untitled Agent thread", agent: normalizeAgent(thread.agent).name.toLocaleUpperCase(),
+        status: `${state.live ? "" : "Last known: "}${activity.label}`, running: !!(activity.running && state.live), attention: !!activity.attention,
+        active: thread.thread_id === state.threadId, pinned: pins.has(thread.thread_id), updated: sessionUpdated.has(sessionKey(thread)) };
+    }),
+  })).filter((group) => group.sessions.length);
+  for (const group of groups) for (const session of group.sessions) {
+    session.tag = tags[session.id] || "";
+    session.seenAt = Number(seen[session.id]) || 0;
   }
+  window.ZedLinkSessions.render({
+    groups,
+    emptyMessage: state.threads.length ? "No sessions match this search or filter." : state.live ? "No exposed sessions. Choose /remote-control in desktop Zed or create a session using +." : "Sessions unavailable. Reconnect to refresh the list.",
+    canClear: !!(query || sessionFilter !== "All"),
+    onSelect: (id) => { const thread = state.threads.find((item) => item.thread_id === id); if (thread) sessionUpdated.delete(sessionKey(thread)); selectThread(id); },
+    onPin: (id) => { const saved = sessionPins(); if (saved.has(id)) saved.delete(id); else saved.add(id); safeStore.write(`zedlink.sessionPins.${targetScope()}`, JSON.stringify([...saved])); renderThreads(); },
+    onClear: clearSessionSearch,
+  });
   list.scrollTop = scrollTop;
+  renderAttentionInbox();
   renderEmptyWorkspace();
 }
 $("session-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]"); if (!button) return;
-  sessionFilter = button.dataset.filter;
-  for (const item of $("session-filters").querySelectorAll("button")) item.setAttribute("aria-pressed", String(item === button));
+  setSessionFilter(button.dataset.filter);
+});
+$("session-tag-filter").addEventListener("change", renderThreads);
+$("edit-session-tag").addEventListener("click", () => {
+  if (!state.threadId) return;
+  $("session-tag-input").value = sessionTags()[state.threadId] || "";
+  $("session-tag-form").classList.toggle("hidden");
+  if (!$("session-tag-form").classList.contains("hidden")) $("session-tag-input").focus();
+});
+$("session-tag-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!state.threadId) return;
+  const tags = sessionTags();
+  const value = $("session-tag-input").value.trim();
+  if (value) tags[state.threadId] = value;
+  else delete tags[state.threadId];
+  safeStore.write(`zedlink.sessionTags.${targetScope()}`, JSON.stringify(tags));
+  $("session-tag-form").classList.add("hidden");
   renderThreads();
 });
+$("clear-session-tag").addEventListener("click", () => {
+  $("session-tag-input").value = "";
+  $("session-tag-form").requestSubmit();
+});
+if (matchMedia("(min-width: 761px) and (min-height: 820px)").matches) $("sidebar-project").open = true;
+for (const button of document.querySelectorAll(".sidebar-workspace button[data-context-tab]")) {
+  button.addEventListener("click", () => {
+    if (!state.threadId) return;
+    if (matchMedia("(max-width: 760px)").matches) {
+      document.body.classList.remove("mobile-sessions", "mobile-connections", "mobile-settings");
+      updateSidebarToggle();
+    }
+    openContextPanel(button.dataset.contextTab);
+  });
+}
 
 async function selectThread(threadId) {
   stopDictation();
@@ -1451,6 +1583,11 @@ async function selectThread(threadId) {
   closeEventStream("connecting");
   state.errorSignature = null;
   state.threadId = threadId;
+  const seen = sessionSeen();
+  seen[threadId] = Date.now();
+  for (const id of Object.keys(seen)) if (!state.threads.some((thread) => thread.thread_id === id)) delete seen[id];
+  safeStore.write(`zedlink.sessionSeen.${targetScope()}`, JSON.stringify(seen));
+  $("session-tag-form").classList.add("hidden");
   document.body.classList.remove("no-session");
   $("empty-state").classList.add("hidden");
   $("show-context").disabled = false;
@@ -1465,6 +1602,7 @@ async function selectThread(threadId) {
   state.rewindingImage = false;
   renderAgentHealth();
   state.threadSettings = null;
+  state.lastSettingsAt = 0;
   state.projectFolderEntries = null;
   state.directoryRequest += 1;
   state.projectDirectory = "";
@@ -1503,7 +1641,7 @@ async function selectThread(threadId) {
   $("prompt").disabled = false;
   $("jump-latest").classList.add("hidden");
   updateComposerAction();
-  $("thread-title").textContent = state.threads.find((thread) => thread.thread_id === threadId)?.title || "Untitled Agent thread";
+  $("thread-title").textContent = selectedThreadTitle(threadId);
   renderSelectedAgent();
   $("prompt").value = safeStore.read(promptDraftKey()) || "";
   $("prompt").dispatchEvent(new Event("input", { bubbles: true }));
@@ -1531,6 +1669,7 @@ async function loadCommands() {
     state.commands = result.commands.filter((command) =>
       typeof command.name === "string" && typeof command.description === "string");
     renderCommands();
+    renderContextBudget();
   }
 }
 
@@ -1951,6 +2090,9 @@ function renderChanges() {
   $("expand-diff").classList.add("hidden");
   $("diff-search-count").textContent = "";
   state.diffContent = "";
+  state.diffHunks = [];
+  state.diffHunkIndex = -1;
+  for (const id of ["diff-prev", "diff-next", "diff-position"]) $(id).classList.add("hidden");
   $("load-diff").disabled = true;
   if (!state.capabilities.includes("changes.snapshot")) {
     summary.textContent = "Restart the updated patched Zed build to inspect repository changes.";
@@ -2036,6 +2178,12 @@ async function loadGitDiff() {
       if (result.outcome === "ready") {
         state.diffContent = result.diff || "No textual diff.";
         renderReviewCode($("git-diff").querySelector("code"), state.diffContent, "diff", null, $("diff-search").value);
+        state.diffHunks = state.diffContent.split("\n").flatMap((line, index) => line.startsWith("@@") ? [index] : []);
+        state.diffHunkIndex = -1;
+        for (const id of ["diff-prev", "diff-next", "diff-position"]) $(id).classList.toggle("hidden", !state.diffHunks.length);
+        $("diff-position").textContent = `${state.diffHunks.length} hunk${state.diffHunks.length === 1 ? "" : "s"}`;
+        $("diff-prev").disabled = true;
+        $("diff-next").disabled = !state.diffHunks.length;
         setWrap($("git-diff"), $("wrap-diff"), true);
         for (const id of ["git-diff", "diff-search", "wrap-diff", "expand-diff"]) $(id).classList.remove("hidden");
         button.textContent = result.truncated ? "Diff truncated" : "Refresh unified diff";
@@ -2492,6 +2640,41 @@ function closeContextPanel() {
   document.body.classList.remove("context-open");
   $("context-panel").classList.add("hidden");
   $("show-context").setAttribute("aria-expanded", "false");
+}
+
+function readingPreferences() {
+  let saved = {};
+  try { saved = JSON.parse(safeStore.read("zedlink.readingPreferences") || "{}"); } catch { /* use defaults */ }
+  const choice = (key, values, fallback) => values.includes(saved[key]) ? saved[key] : fallback;
+  return {
+    width: choice("width", ["comfortable", "wide", "focused"], "comfortable"),
+    size: choice("size", ["default", "large"], "default"),
+    density: choice("density", ["comfortable", "compact"], "comfortable"),
+    codeWrap: saved.codeWrap === true,
+  };
+}
+function applyReadingPreferences(preferences) {
+  document.body.dataset.readingWidth = preferences.width;
+  document.body.dataset.readingSize = preferences.size;
+  document.body.dataset.readingDensity = preferences.density;
+  document.body.dataset.readingCodeWrap = String(preferences.codeWrap);
+  $("reading-width").value = preferences.width;
+  $("reading-size").value = preferences.size;
+  $("reading-density").value = preferences.density;
+  $("reading-code-wrap").checked = preferences.codeWrap;
+}
+applyReadingPreferences(readingPreferences());
+for (const id of ["reading-width", "reading-size", "reading-density", "reading-code-wrap"]) {
+  $(id).addEventListener("change", () => {
+    const preferences = {
+      width: $("reading-width").value,
+      size: $("reading-size").value,
+      density: $("reading-density").value,
+      codeWrap: $("reading-code-wrap").checked,
+    };
+    safeStore.write("zedlink.readingPreferences", JSON.stringify(preferences));
+    applyReadingPreferences(preferences);
+  });
 }
 
 function readUpload(file) {
@@ -2966,6 +3149,7 @@ async function loadThreadSettings() {
       throw new Error("Zed returned invalid thread settings.");
     }
     state.threadSettings = result;
+    state.lastSettingsAt = Date.now();
   } finally {
     state.settingsBusy = false;
     renderThreadSettings();
@@ -3001,6 +3185,7 @@ function renderThreadSettings() {
   $("zed-context-usage").textContent = usage
     ? `${Number(usage.used_tokens).toLocaleString()} / ${Number(usage.max_tokens).toLocaleString()} tokens`
     : "Unavailable";
+  renderContextBudget();
   const profile = $("zed-profile");
   profile.replaceChildren();
   for (const item of settings?.profiles || []) {
@@ -3044,6 +3229,24 @@ function renderThreadSettings() {
   } else {
     $("zed-settings-help").textContent = "Changes apply to this native Zed Agent thread. Model credentials remain in Zed.";
   }
+}
+
+function renderContextBudget() {
+  const usage = state.threadSettings?.context_usage;
+  const used = Number(usage?.used_tokens);
+  const max = Number(usage?.max_tokens);
+  const valid = Number.isFinite(used) && Number.isFinite(max) && max > 0 && used >= 0;
+  const percent = valid ? Math.min(100, Math.round(100 * used / max)) : 0;
+  $("context-budget").textContent = valid ? `Context ${percent}%` : "Context unknown";
+  $("context-budget").title = valid ? `${used.toLocaleString()} of ${max.toLocaleString()} input tokens reported by Zed` : "Context usage unavailable from this Agent";
+  $("context-budget").classList.toggle("budget-warning", valid && percent >= 80);
+  $("context-budget-panel").classList.toggle("budget-warning", valid && percent >= 80);
+  $("context-budget-detail").textContent = valid
+    ? `${used.toLocaleString()} / ${max.toLocaleString()} input tokens · ${percent}%`
+    : "Context usage unavailable";
+  $("context-budget-fill").style.width = `${percent}%`;
+  $("compact-native").disabled = !state.threadId || !!state.pending || state.threadStatus !== "Idle"
+    || !state.live || !state.commands.some((command) => command.name === "compact");
 }
 
 async function saveThreadSettings(event) {
@@ -3516,10 +3719,19 @@ async function refreshSnapshot() {
   }
 }
 
+const TRANSCRIPT_WINDOW_SIZE = 192;
+const TRANSCRIPT_WINDOW_STEP = 96;
 function renderTranscript() {
   const container = $("transcript-entries");
-  for (const [offset, markdown] of state.renderedEntries.entries()) {
-    const absoluteIndex = state.renderedEntryStart + offset;
+  const loadedStart = state.renderedEntryStart;
+  const loadedEnd = loadedStart + state.renderedEntries.length;
+  const latestStart = Math.max(loadedStart, loadedEnd - TRANSCRIPT_WINDOW_SIZE);
+  if (state.followTranscript || state.transcriptWindowStart === null) state.transcriptWindowStart = latestStart;
+  state.transcriptWindowStart = Math.max(loadedStart, Math.min(state.transcriptWindowStart, latestStart));
+  const windowEnd = Math.min(loadedEnd, state.transcriptWindowStart + TRANSCRIPT_WINDOW_SIZE);
+  const visible = state.renderedEntries.slice(state.transcriptWindowStart - loadedStart, windowEnd - loadedStart);
+  for (const [offset, markdown] of visible.entries()) {
+    const absoluteIndex = state.transcriptWindowStart + offset;
     const previous = container.children[offset];
     if (previous?.dataset.entryIndex === String(absoluteIndex)
         && previous._zedlinkMarkdown === markdown) continue;
@@ -3542,13 +3754,118 @@ function renderTranscript() {
       previous.replaceWith(article);
     } else container.append(article);
   }
-  while (container.children.length > state.renderedEntries.length) container.lastElementChild.remove();
-  const canLoad = state.renderedEntryStart > 0 && state.capabilities.includes("thread.history");
+  while (container.children.length > visible.length) container.lastElementChild.remove();
+  const olderLoaded = state.transcriptWindowStart > loadedStart;
+  const canLoad = olderLoaded || loadedStart > 0 && state.capabilities.includes("thread.history");
   $("load-history").classList.toggle("hidden", !canLoad);
   $("load-history").disabled = state.historyLoading;
   $("load-history").textContent = state.historyLoading
     ? "Loading earlier conversation…"
-    : `Load earlier conversation · ${state.renderedEntryStart} remaining`;
+    : olderLoaded ? `Show earlier loaded entries · ${state.transcriptWindowStart - loadedStart} before this page`
+      : `Load earlier conversation · ${loadedStart} remaining`;
+  $("show-newer-entries").classList.toggle("hidden", windowEnd >= loadedEnd);
+}
+
+function showEarlierConversation() {
+  if (state.transcriptWindowStart > state.renderedEntryStart) {
+    state.followTranscript = false;
+    state.transcriptWindowStart = Math.max(state.renderedEntryStart, state.transcriptWindowStart - TRANSCRIPT_WINDOW_STEP);
+    renderTranscript();
+    $("messages").scrollTop = 0;
+  } else loadEarlierConversation();
+}
+function showNewerConversation() {
+  const latestStart = Math.max(state.renderedEntryStart, state.renderedEntryStart + state.renderedEntries.length - TRANSCRIPT_WINDOW_SIZE);
+  state.transcriptWindowStart = Math.min(latestStart, state.transcriptWindowStart + TRANSCRIPT_WINDOW_STEP);
+  state.followTranscript = state.transcriptWindowStart === latestStart;
+  renderTranscript();
+  $("messages").scrollTop = 0;
+}
+
+let messageSearchGeneration = 0;
+function openMessageSearch(scope = "current") {
+  if (!state.token) return;
+  $("message-search-scope").value = scope;
+  if (!$("conversation-search").open) $("conversation-search").showModal();
+  $("message-search-query").focus();
+}
+function appendMessageSearchResult(thread, entryIndex, markdown, query) {
+  const list = $("message-search-results");
+  if (list.children.length >= 100) return;
+  const position = markdown.toLocaleLowerCase().indexOf(query);
+  if (position < 0) return;
+  const row = document.createElement("button"); row.type = "button"; row.className = "message-search-result";
+  const title = document.createElement("strong"); title.textContent = thread.title || "Untitled Agent thread";
+  const kind = document.createElement("small"); kind.textContent = `Entry ${entryIndex + 1} · ${normalizeAgent(thread.agent).name}`;
+  const excerpt = document.createElement("span");
+  excerpt.textContent = markdown.slice(Math.max(0, position - 60), position + query.length + 100).replace(/\s+/g, " ").trim();
+  row.append(title, kind, excerpt);
+  row.addEventListener("click", () => jumpToSearchEntry(thread.thread_id, entryIndex).catch((error) => notice(error.message)));
+  list.append(row);
+}
+async function runMessageSearch(event) {
+  event.preventDefault();
+  const query = $("message-search-query").value.trim().toLocaleLowerCase();
+  if (query.length < 2) return;
+  const generation = ++messageSearchGeneration;
+  const scope = JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch]);
+  const threads = $("message-search-scope").value === "all" ? [...state.threads]
+    : state.threads.filter((thread) => thread.thread_id === state.threadId);
+  const list = $("message-search-results"); list.replaceChildren();
+  const status = $("message-search-status");
+  const submit = $("message-search-form").querySelector("button[type=submit]");
+  submit.disabled = true;
+  let capped = false;
+  let recentOnly = false;
+  try {
+    for (const [threadNumber, thread] of threads.entries()) {
+      if (generation !== messageSearchGeneration || scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
+      status.textContent = `Searching exposed session ${threadNumber + 1} of ${threads.length}…`;
+      let page = await rpc("thread.snapshot", { ...baseInstanceParams(), thread_id: thread.thread_id, tail_entry_count: 64 });
+      for (;;) {
+        if (generation !== messageSearchGeneration || scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
+        identity(page);
+        if (page.thread_id !== thread.thread_id || !Number.isInteger(page.entry_start_index)
+            || !Array.isArray(page.entries_markdown) || !page.entries_markdown.every((entry) => typeof entry === "string"))
+          throw new Error("Desktop Zed returned an invalid search page.");
+        page.entries_markdown.forEach((entry, offset) => appendMessageSearchResult(thread, page.entry_start_index + offset, entry, query));
+        if (list.children.length >= 100) { capped = true; break; }
+        const before = page.entry_start_index;
+        if (before <= 0) break;
+        if (!state.capabilities.includes("thread.history")) { recentOnly = true; break; }
+        page = await rpc("thread.history", { ...baseInstanceParams(), thread_id: thread.thread_id, before_entry_index: before });
+        if (page.entry_end_index !== before || page.entry_start_index >= before) throw new Error("Conversation history changed during search.");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      if (capped) break;
+    }
+    status.textContent = `${list.children.length}${capped ? "+" : ""} match${list.children.length === 1 ? "" : "es"} in exposed sessions${capped ? " · Narrow your search for more" : recentOnly ? " · Recent entries only; this Zed build has no history access" : ""}.`;
+  } catch (error) {
+    status.textContent = `Search stopped: ${error.message}`;
+  } finally { if (generation === messageSearchGeneration) submit.disabled = false; }
+}
+async function jumpToSearchEntry(threadId, entryIndex) {
+  messageSearchGeneration++;
+  $("conversation-search").close();
+  if (state.threadId !== threadId) await selectThread(threadId);
+  if (state.threadId !== threadId) return;
+  while (state.renderedEntryStart > entryIndex && state.capabilities.includes("thread.history")) {
+    const before = state.renderedEntryStart;
+    await loadEarlierConversation();
+    if (state.renderedEntryStart >= before) break;
+  }
+  const loadedEnd = state.renderedEntryStart + state.renderedEntries.length;
+  if (entryIndex < state.renderedEntryStart || entryIndex >= loadedEnd) {
+    notice("That result is no longer in the exposed conversation. Refresh and search again.");
+    return;
+  }
+  state.followTranscript = false;
+  state.transcriptWindowStart = Math.max(state.renderedEntryStart, Math.min(entryIndex - 24, loadedEnd - TRANSCRIPT_WINDOW_SIZE));
+  renderTranscript();
+  const row = $("transcript-entries").querySelector(`[data-entry-index="${entryIndex}"]`);
+  row?.scrollIntoView({ block: "center" });
+  row?.classList.add("search-target");
+  setTimeout(() => row?.classList.remove("search-target"), 3200);
 }
 
 async function loadEarlierConversation() {
@@ -3573,6 +3890,8 @@ async function loadEarlierConversation() {
     state.renderedEntries = [...result.entries_markdown, ...state.renderedEntries];
     state.renderedEntryStart = result.entry_start_index;
     state.totalEntries = Math.max(state.totalEntries, Number(result.total_entries) || 0);
+    state.transcriptWindowStart = result.entry_start_index;
+    state.followTranscript = false;
     renderTranscript();
     scroller.scrollTop += scroller.scrollHeight - priorHeight;
   } catch (error) {
@@ -3614,6 +3933,8 @@ async function snapshot() {
     state.renderedEntries = [];
     state.renderedThreadId = result.thread_id;
     state.renderedEntryStart = pageStart;
+    state.transcriptWindowStart = null;
+    state.followTranscript = true;
   }
   const loadedEnd = state.renderedEntryStart + state.renderedEntries.length;
   if (pageStart >= state.renderedEntryStart && pageStart <= loadedEnd) {
@@ -3624,6 +3945,8 @@ async function snapshot() {
   } else {
     state.renderedEntryStart = pageStart;
     state.renderedEntries = [...result.entries_markdown];
+    state.transcriptWindowStart = null;
+    state.followTranscript = true;
   }
   state.totalEntries = totalEntries;
   renderTranscript();
@@ -3641,7 +3964,8 @@ async function snapshot() {
     const assistants = container.querySelectorAll(".message.assistant");
     assistants[assistants.length - 1]?.querySelectorAll("details.thinking-block").forEach((details) => { details.open = true; });
   }
-  const title = typeof result.title === "string" && result.title.trim() ? result.title : $("thread-title").textContent;
+  const title = selectedThreadTitle(result.thread_id,
+    typeof result.title === "string" && result.title.trim() ? result.title : $("thread-title").textContent);
   if ($("thread-title").textContent !== title) $("thread-title").textContent = title;
   if ($("thread-title").title !== title) $("thread-title").title = title;
   $("thread-meta").textContent = state.renderedEntryStart > 0
@@ -3683,6 +4007,10 @@ async function snapshot() {
     renderThreadSettings();
   }
   updateComposerAction();
+  if (result.status === "Idle" && state.lastSettingsAt && state.capabilities.includes("thread.settings")
+      && !state.settingsBusy && Date.now() - state.lastSettingsAt > 20000) {
+    loadThreadSettings().catch(() => { /* Keep last reported usage visible. */ });
+  }
 }
 
 async function rewindConversation(point) {
@@ -3952,6 +4280,39 @@ $("new-session").addEventListener("click", () => {
 });
 $("new-session-form").addEventListener("submit", createSession);
 $("session-search").addEventListener("input", renderThreads);
+$("session-search").addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown") {
+    const first = $("thread-list").querySelector(".thread-item");
+    if (first) { event.preventDefault(); first.focus(); }
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    if ($("session-search").value) { $("session-search").value = ""; renderThreads(); }
+    else $("session-search").blur();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key.toLowerCase() !== "k" || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey ||
+      document.body.classList.contains("pairing") || document.querySelector("dialog[open]") ||
+      !$("code-review").classList.contains("hidden")) return;
+  if (event.target instanceof Element && event.target.matches("input, textarea, select, [contenteditable='true']") &&
+      event.target !== $("session-search")) return;
+  event.preventDefault();
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
+  else if (document.body.classList.contains("sidebar-collapsed")) {
+    document.body.classList.remove("sidebar-collapsed");
+    safeStore.write(sidebarKey(), "false");
+    updateSidebarToggle();
+  }
+  $("session-search").focus();
+  $("session-search").select();
+});
+$("session-search").closest(".session-search-field").querySelector("kbd").textContent =
+  /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K";
+$("open-message-search").addEventListener("click", () => openMessageSearch("all"));
+$("thread-search").addEventListener("click", () => openMessageSearch("current"));
+$("close-message-search").addEventListener("click", () => $("conversation-search").close());
+$("conversation-search").addEventListener("close", () => { messageSearchGeneration++; $("message-search-form").querySelector("button[type=submit]").disabled = false; });
+$("message-search-form").addEventListener("submit", runMessageSearch);
 $("messages").addEventListener("scroll", () => {
   const container = $("messages");
   if (container.scrollHeight - container.scrollTop - container.clientHeight < 90) {
@@ -3959,11 +4320,14 @@ $("messages").addEventListener("scroll", () => {
   }
 });
 $("jump-latest").addEventListener("click", () => {
+  state.followTranscript = true;
+  renderTranscript();
   const container = $("messages");
   container.scrollTop = container.scrollHeight;
   $("jump-latest").classList.add("hidden");
 });
-$("load-history").addEventListener("click", loadEarlierConversation);
+$("load-history").addEventListener("click", showEarlierConversation);
+$("show-newer-entries").addEventListener("click", showNewerConversation);
 $("send").addEventListener("click", () => {
   if (canStopTurn()) cancelCurrentTurn();
   else $("composer-form").requestSubmit();
@@ -4031,6 +4395,19 @@ $("action-upload").addEventListener("click", () => {
 });
 $("upload-file").addEventListener("change", (event) => addUploads(event.target.files).catch((error) => notice(error.message)));
 $("show-context").addEventListener("click", () => document.body.classList.contains("context-open") ? closeContextPanel() : openContextPanel("files"));
+$("context-budget").addEventListener("click", () => $("context-budget-panel").classList.toggle("hidden"));
+$("compact-native").addEventListener("click", () => {
+  if ($("compact-native").disabled) return;
+  if ($("prompt").value.trim()) { notice("Send or clear your draft before compacting this thread."); return; }
+  $("context-budget-panel").classList.add("hidden");
+  $("prompt").value = "/compact";
+  $("composer-form").requestSubmit();
+});
+$("expand-workspace").addEventListener("click", () => {
+  const expanded = document.body.classList.toggle("context-wide");
+  $("expand-workspace").setAttribute("aria-pressed", String(expanded));
+  $("expand-workspace").title = expanded ? "Use compact workspace" : "Expand workspace";
+});
 $("back-sessions").addEventListener("click", () => showMobileView("sessions"));
 $("close-context").addEventListener("click", closeContextPanel);
 $("context-files-tab").addEventListener("click", () => switchContextTab("files"));
@@ -4110,6 +4487,17 @@ $("diff-search").addEventListener("input", () => {
   const hits = renderReviewCode($("git-diff").querySelector("code"), state.diffContent, "diff", null, $("diff-search").value);
   $("diff-search-count").textContent = $("diff-search").value ? `${hits} match${hits === 1 ? "" : "es"}` : "";
 });
+function navigateDiffHunk(direction) {
+  if (!state.diffHunks.length) return;
+  state.diffHunkIndex = Math.max(0, Math.min(state.diffHunks.length - 1, state.diffHunkIndex + direction));
+  const row = $("git-diff").querySelector("code")?.children[state.diffHunks[state.diffHunkIndex]];
+  row?.scrollIntoView({ block: "center" });
+  $("diff-position").textContent = `Hunk ${state.diffHunkIndex + 1} of ${state.diffHunks.length}`;
+  $("diff-prev").disabled = state.diffHunkIndex === 0;
+  $("diff-next").disabled = state.diffHunkIndex === state.diffHunks.length - 1;
+}
+$("diff-prev").addEventListener("click", () => navigateDiffHunk(-1));
+$("diff-next").addEventListener("click", () => navigateDiffHunk(1));
 $("wrap-diff").addEventListener("click", () => setWrap($("git-diff"), $("wrap-diff"), !$("git-diff").classList.contains("wrap")));
 $("expand-diff").addEventListener("click", () => {
   if (state.diffContent) openCodeReview("Working tree diff", state.diffContent, "diff");
@@ -4200,6 +4588,20 @@ $("open-settings").addEventListener("click", () => {
     $("settings-panel").classList.remove("hidden");
   }
   loadThreadSettings().catch((error) => notice(error.message));
+});
+$("open-connection").addEventListener("click", () => {
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("connections");
+  else {
+    $("sessions-panel").classList.add("hidden");
+    $("connection-panel").classList.remove("hidden");
+  }
+});
+$("connection-back").addEventListener("click", () => {
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
+  else {
+    $("connection-panel").classList.add("hidden");
+    $("sessions-panel").classList.remove("hidden");
+  }
 });
 $("settings-back").addEventListener("click", () => {
   if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
