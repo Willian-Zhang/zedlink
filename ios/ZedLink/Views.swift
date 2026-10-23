@@ -219,7 +219,9 @@ struct ConversationView: View {
     @State private var showingAgentHistory = false
     @State private var lastKnownTitle = ""
     @State private var showingModelControls = false
+    @State private var selectedElicitationID: String?
     @State private var showingConversationSearch = false
+    @State private var showingAgentErrorDetails = false
     @State private var searchJumpIndex: Int?
     @State private var unreadEntries = 0
     @State private var newActivityWhileReading = false
@@ -240,15 +242,35 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             SessionIssueBanner()
             if let snapshot = session.snapshot, snapshot.threadID == threadID {
-                if session.state != .live { savedConversationBanner("Showing the last known conversation while reconnecting.") }
+                if session.state != .live {
+                    let message = session.lastSnapshotAt.map {
+                        "Last known conversation · updated \($0.formatted(date: .abbreviated, time: .shortened))"
+                    } ?? "Last known conversation · update time unknown"
+                    savedConversationBanner(message)
+                }
                 conversation(snapshot)
                     .onAppear { session.markConversationVisible() }
                 if session.state == .live, let error = snapshot.agentError {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(error.title, systemImage: "exclamationmark.triangle").font(.caption.bold())
-                        ScrollView { Text(error.message).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 100)
-                        if error.retrying { Text("Desktop Zed is retrying this request.").font(.caption) }
-                    }.foregroundStyle(ZLTheme.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(error.title, systemImage: "exclamationmark.triangle")
+                            .font(.footnote.weight(.semibold))
+                        if error.message.count > 240 {
+                            Text(error.message).font(.footnote).lineLimit(2)
+                            DisclosureGroup("Full error details", isExpanded: $showingAgentErrorDetails) {
+                                ScrollView {
+                                    Text(error.message).font(.footnote).textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }.frame(maxHeight: 120)
+                            }.font(.footnote)
+                        } else {
+                            Text(error.message)
+                                .font(.footnote)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                        if error.retrying { Text("Desktop Zed is retrying this request.").font(.footnote) }
+                    }.foregroundStyle(ZLTheme.warning).padding(.horizontal, 12).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .background(ZLTheme.surface).accessibilityIdentifier("native-agent-error")
                 }
                 if session.state == .live && !snapshot.pendingApprovals.isEmpty { approvalStack(snapshot.pendingApprovals) }
@@ -322,6 +344,23 @@ struct ConversationView: View {
             }
         }
         .sheet(isPresented: $showingModelControls) { SessionModelControls() }
+        .sheet(isPresented: Binding(get: { selectedElicitationID != nil }, set: { if !$0 { selectedElicitationID = nil } })) {
+            NavigationStack {
+                ScrollView {
+                    if let elicitation = session.elicitations.first(where: { $0.id == selectedElicitationID }) {
+                        NativeElicitationView(elicitation: elicitation)
+                            .id((session.operationScope + [elicitation.id]).joined(separator: "\n"))
+                            .padding(16)
+                    } else {
+                        ContentUnavailableView("Request completed", systemImage: "checkmark.circle")
+                    }
+                }
+                .background(ZLTheme.background)
+                .navigationTitle("Input requested")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { selectedElicitationID = nil } } }
+            }
+        }
         .confirmationDialog("Run desktop action?", isPresented: Binding(get: { session.localCommandConfirmation != nil }, set: { if !$0 { session.localCommandConfirmation = nil } })) {
             Button("Run /" + (session.localCommandConfirmation?.name ?? "")) { Task { await session.confirmLocalCommand() } }
         } message: { Text(session.localCommandConfirmation?.confirmation ?? "Confirm this desktop action.") }
@@ -364,13 +403,25 @@ struct ConversationView: View {
     }
 
     private func savedConversationBanner(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 8) {
             Label(message, systemImage: "clock.arrow.circlepath")
                 .font(.caption).foregroundStyle(ZLTheme.warning)
-            if session.state != .live { recoveryAction }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if session.state != .live && session.issue.isEmpty {
+                Button {
+                    if session.profile == nil { session.showConnections = true }
+                    else { Task { await session.refresh() } }
+                } label: {
+                    Image(systemName: session.profile == nil ? "network" : "arrow.clockwise")
+                        .frame(width: 44, height: 44)
+                }
+                .disabled(session.profile != nil && (session.state == .connecting || session.state == .reconnecting))
+                .accessibilityLabel(session.profile == nil ? "Choose connection" : "Reconnect to desktop Zed")
+                .accessibilityIdentifier("conversation-reconnect")
+            }
         }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16).padding(.vertical, 8)
+            .padding(.horizontal, 16).padding(.vertical, 6)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("saved-conversation-banner")
     }
@@ -421,6 +472,16 @@ struct ConversationView: View {
             Text(lastKnownTitle.isEmpty ? "Agent thread" : lastKnownTitle)
                 .font(.headline).lineLimit(2)
             if session.state != .live { ConnectionStatusView(state: session.state) }
+            if session.state == .live && !session.controlsIssue.isEmpty {
+                Button { Task { await session.refreshSessionControls() } } label: {
+                    Label("Controls need refresh", systemImage: "exclamationmark.circle")
+                        .font(.caption2).foregroundStyle(ZLTheme.warning)
+                }
+                .accessibilityHint("Retries loading session controls; the conversation is live")
+            }
+            if let snapshot = session.snapshot, snapshot.threadID == threadID, snapshot.isBusy {
+                agentProgress
+            }
             if let settings = session.threadSettings, session.selectedThreadID == threadID,
                let used = settings.usedTokens, let maximum = settings.maxTokens, maximum > 0 {
                 Button { showingModelControls = true } label: {
@@ -452,6 +513,12 @@ struct ConversationView: View {
     private var headerActions: some View {
         Menu {
             Text("Connection: \(session.state.label)")
+            if session.state == .live && !session.controlsIssue.isEmpty {
+                Text("Session controls: \(session.controlsIssue)")
+                Button("Retry session controls", systemImage: "arrow.clockwise") {
+                    Task { await session.refreshSessionControls() }
+                }
+            }
             Button("Find in conversation", systemImage: "magnifyingglass") { showingConversationSearch = true }
             if !session.delivery.isEmpty { Menu("Recent delivery status") { Text(session.delivery) } }
             Button("Agent history", systemImage: "person.2") { composerFocused = false; showingAgentHistory = true }
@@ -505,10 +572,9 @@ struct ConversationView: View {
                     ForEach(snapshot.entryStartIndex..<(snapshot.entryStartIndex + snapshot.entries.count), id: \.self) { entryIndex in
                         let markdown = snapshot.entries[entryIndex - snapshot.entryStartIndex]
                         VStack(alignment: .leading, spacing: 0) {
-                            NativeMessageView(
-                                message: NativeEntryPresentation(markdown, index: entryIndex),
-                                thinkingLive: snapshot.isBusy && entryIndex == snapshot.totalEntries - 1
-                            ).equatable()
+                            NativeEntryView(markdown: markdown, index: entryIndex,
+                                            thinkingLive: snapshot.isBusy && entryIndex == snapshot.totalEntries - 1)
+                                .equatable()
                             if session.state == .live, session.snapshot?.threadID == snapshot.threadID,
                                !snapshot.isBusy, session.capabilities.contains("thread.rewind"),
                                let point = snapshot.rewindPoints.first(where: { $0.entryIndex == entryIndex }) {
@@ -583,26 +649,60 @@ struct ConversationView: View {
     }
 
     private func approvalStack(_ approvals: [NativeApproval]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(approvals, id: \.viewIdentity) { NativeApprovalView(approval: $0) }
+        VStack(alignment: .leading, spacing: 0) {
+            if approvals.count == 1 {
+                NativeApprovalView(approval: approvals[0])
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+            } else {
+                Text("\(approvals.count) requests need your decision")
+                    .font(.footnote.weight(.semibold)).padding(.horizontal, 16).padding(.top, 9)
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(approvals, id: \.viewIdentity) { NativeApprovalView(approval: $0) }
+                    }.padding(.horizontal, 12).padding(.vertical, 9)
+                }.frame(maxHeight: 320)
             }
-            .padding(.horizontal, 12).padding(.vertical, 9)
+        }
+        .background(ZLTheme.background)
+        .overlay(alignment: .top) { Hairline() }
+    }
+
+    private var elicitationStack: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if session.elicitations.count > 2 {
+                Text("\(session.elicitations.count) input requests")
+                    .font(.footnote.weight(.semibold)).padding(.horizontal, 16).padding(.top, 8)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(session.elicitations) { elicitation in elicitationRow(elicitation) }
+                    }
+                }.frame(maxHeight: 180)
+            } else {
+                ForEach(session.elicitations) { elicitation in elicitationRow(elicitation) }
+            }
         }
         .background(ZLTheme.warning.opacity(0.07))
         .overlay(alignment: .top) { Hairline() }
     }
 
-    private var elicitationStack: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(session.elicitations) { elicitation in
-                    NativeElicitationView(elicitation: elicitation).id((session.operationScope + [elicitation.id]).joined(separator: "\n"))
+    private func elicitationRow(_ elicitation: NativeElicitation) -> some View {
+        VStack(spacing: 0) {
+            Button { composerFocused = false; selectedElicitationID = elicitation.id } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "hand.raised").foregroundStyle(ZLTheme.warning)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Input requested").font(.footnote.weight(.semibold))
+                        Text(elicitation.message).font(.footnote).lineLimit(2)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right")
                 }
-            }.padding(.horizontal, 12).padding(.vertical, 9)
+                .frame(minHeight: 44)
+                .padding(.horizontal, 16).padding(.vertical, 7)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("input-request-" + elicitation.id)
+            Hairline()
         }
-        .background(ZLTheme.warning.opacity(0.07))
-        .overlay(alignment: .top) { Hairline() }
     }
 
     private var nativeControls: some View {
@@ -612,7 +712,7 @@ struct ConversationView: View {
                     HStack {
                     VStack(alignment: .leading) {
                         Text("Review Agent edits").font(.subheadline.weight(.semibold))
-                        Text("\(review.changedFiles) files · +\(review.linesAdded) −\(review.linesRemoved)")
+                        Text("\(review.changedFiles) \(review.changedFiles == 1 ? "file" : "files") · +\(review.linesAdded) −\(review.linesRemoved)")
                             .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
                     }
                     Spacer()
@@ -620,8 +720,8 @@ struct ConversationView: View {
                     Button("Keep all") { Task { await session.resolveEditReview("keep_all") } }
                     }.disabled(session.state != .live)
                 } label: {
-                    Label("Edits · \(review.changedFiles) files · +\(review.linesAdded) −\(review.linesRemoved)", systemImage: "square.and.pencil")
-                        .font(.caption)
+                    Label("Edits · \(review.changedFiles) \(review.changedFiles == 1 ? "file" : "files") · +\(review.linesAdded) −\(review.linesRemoved)", systemImage: "square.and.pencil")
+                        .font(.footnote).frame(minHeight: 44, alignment: .leading)
                 }
             }
             if !session.queuedMessages.isEmpty {
@@ -632,7 +732,8 @@ struct ConversationView: View {
                 }.font(.footnote)
             }
         }
-        .padding(12).background(ZLTheme.surface).overlay(alignment: .top) { Hairline() }
+        .padding(.horizontal, 12).padding(.vertical, 4)
+        .background(ZLTheme.surface).overlay(alignment: .top) { Hairline() }
         .disabled(session.state != .live)
     }
 
@@ -653,9 +754,6 @@ struct ConversationView: View {
                     }.font(.caption).padding(4)
                 }.accessibilityIdentifier("prompt-attachments")
             }
-            if let snapshot = session.snapshot, snapshot.threadID == threadID, snapshot.isBusy {
-                agentProgress(snapshot)
-            }
             if !session.delivery.isEmpty && (session.pending != nil || session.state != .live) {
                 Text(session.delivery).font(.caption).foregroundStyle(ZLTheme.muted)
                     .lineLimit(2).accessibilityIdentifier("delivery-status")
@@ -666,7 +764,7 @@ struct ConversationView: View {
                     session.insertCommand(command); dismissedSlashDraft = session.draft
                 }.task { await session.refreshCommands() }
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 composerTextField.frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 8) {
                     Menu {
@@ -689,19 +787,19 @@ struct ConversationView: View {
                     sendOrStopButton
                 }.padding(.horizontal, 4)
             }
-            .padding(6)
+            .padding(4)
             .background(ZLTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 20))
             .overlay(RoundedRectangle(cornerRadius: 20).stroke(ZLTheme.line, lineWidth: 1))
         }
-        .padding(.horizontal, 10).padding(.top, 9).padding(.bottom, 8)
+        .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 6)
         .background(ZLTheme.background)
         .overlay(alignment: .top) { Hairline() }
     }
 
     private var composerTextField: some View {
         TextField("Message Zed Agent…", text: $session.draft, axis: .vertical)
-            .lineLimit(2...8).padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 3)
+            .lineLimit(1...8).padding(.horizontal, 11).padding(.top, 6).padding(.bottom, 2)
             .focused($composerFocused)
             .submitLabel(.send)
             .onSubmit { sendAndDismissKeyboard() }
@@ -713,8 +811,14 @@ struct ConversationView: View {
         Group {
             if session.canCancel {
                 Button { composerFocused = false; Task { await session.cancelCurrentTurn() } } label: {
-                    Image(systemName: "stop.fill").font(.headline).frame(width: 44, height: 44)
-                }.foregroundStyle(.white).background(ZLTheme.danger).clipShape(Circle())
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ZLTheme.danger)
+                        .frame(width: 32, height: 32)
+                        .background(ZLTheme.danger.opacity(0.12), in: Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
                     .accessibilityLabel("Stop current turn").accessibilityIdentifier("stop-current-turn")
             } else {
                 Button { sendAndDismissKeyboard() } label: {
@@ -726,15 +830,14 @@ struct ConversationView: View {
         }
     }
 
-    private func agentProgress(_ _: ThreadSnapshot) -> some View {
-        HStack(spacing: 8) {
+    private var agentProgress: some View {
+        HStack(spacing: 5) {
             Image(systemName: session.state != .live ? "pause.circle" : session.liveActivity.isCompacting ? "arrow.triangle.2.circlepath" : "waveform")
                 .foregroundStyle(session.state == .live ? ZLTheme.focus : ZLTheme.warning)
             Text(session.state == .live ? session.liveActivity.displayText : "Last known: " + session.liveActivity.displayText)
-                .font(.caption).foregroundStyle(ZLTheme.muted)
-            Spacer(minLength: 0)
+                .foregroundStyle(ZLTheme.muted).lineLimit(1)
         }
-        .padding(.horizontal, 8).padding(.vertical, 3)
+        .font(.caption2)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("agent-working-indicator")
     }
@@ -1065,10 +1168,24 @@ private struct ActivityPanel: View {
     }
 }
 
+/// Compare raw entries before parsing Markdown, so unchanged transcript rows stay idle while streaming.
+struct NativeEntryView: View, Equatable {
+    let markdown: String
+    let index: Int
+    let thinkingLive: Bool
+
+    static func == (left: Self, right: Self) -> Bool {
+        left.index == right.index && left.thinkingLive == right.thinkingLive && left.markdown == right.markdown
+    }
+
+    var body: some View {
+        NativeMessageView(message: NativeEntryPresentation(markdown, index: index), thinkingLive: thinkingLive)
+    }
+}
+
 struct NativeMessageView: View, Equatable {
     let message: NativeEntryPresentation
     let thinkingLive: Bool
-    @State private var showingTextSelection = false
 
     static func == (left: Self, right: Self) -> Bool {
         left.message == right.message && left.thinkingLive == right.thinkingLive
@@ -1078,28 +1195,18 @@ struct NativeMessageView: View, Equatable {
         ([message.body] + message.reasoning).filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
-    var body: some View {
-        content
-            .overlay(alignment: .topTrailing) {
-                if !selectableText.isEmpty {
-                    Menu {
-                        Button("Copy message", systemImage: "doc.on.doc") { UIPasteboard.general.string = selectableText }
-                        Button("Select text", systemImage: "text.cursor") { showingTextSelection = true }
-                    } label: {
-                        Image(systemName: "text.cursor")
-                            .font(.caption).foregroundStyle(ZLTheme.muted)
-                            .frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("Message text actions")
-                    .accessibilityIdentifier("message-text-actions-\(message.id)")
-                }
-            }
-            .contextMenu {
-                Button("Copy message") { UIPasteboard.general.string = selectableText }
-                Button("Select text") { showingTextSelection = true }
-            }
-            .sheet(isPresented: $showingTextSelection) { SelectableMessageSheet(text: selectableText) }
+    private var copyMessageButton: some View {
+        Button { UIPasteboard.general.string = selectableText } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.caption).foregroundStyle(ZLTheme.muted)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy entire message")
+        .accessibilityIdentifier("copy-message-\(message.id)")
     }
+
+    var body: some View { content }
 
     @ViewBuilder private var content: some View {
         switch message.kind {
@@ -1107,7 +1214,11 @@ struct NativeMessageView: View, Equatable {
             HStack {
                 Spacer(minLength: 42)
                 VStack(alignment: .leading, spacing: 7) {
-                    SectionLabel(message.label)
+                    HStack(spacing: 4) {
+                        SectionLabel(message.label)
+                        Spacer(minLength: 0)
+                        if !selectableText.isEmpty { copyMessageButton }
+                    }
                     NativeMarkdownView(markdown: message.body)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 11)
@@ -1115,10 +1226,14 @@ struct NativeMessageView: View, Equatable {
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
         case .tool:
-            ToolMessageView(message: message).padding(.horizontal, 14).padding(.vertical, 10)
+            ToolMessageView(message: message, copyText: selectableText).padding(.horizontal, 14).padding(.vertical, 10)
         default:
             VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(message.label)
+                HStack(spacing: 4) {
+                    SectionLabel(message.label)
+                    Spacer(minLength: 0)
+                    if !selectableText.isEmpty { copyMessageButton }
+                }
                 ForEach(Array(message.reasoning.enumerated()), id: \.offset) { _, thought in
                     ThinkingDisclosure(thought: thought, live: thinkingLive)
                 }
@@ -1164,25 +1279,38 @@ private struct ThinkingDisclosure: View {
 
 private struct ToolMessageView: View {
     let message: NativeEntryPresentation
+    let copyText: String
     @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Button { expanded.toggle() } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "terminal").foregroundStyle(ZLTheme.muted)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(message.toolName ?? "Zed tool").font(.subheadline.weight(.medium)).lineLimit(2)
-                        Text(message.toolStatus ?? "Native tool activity")
-                            .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+            HStack(spacing: 0) {
+                Button { expanded.toggle() } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "terminal").foregroundStyle(ZLTheme.muted)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(message.toolName ?? "Zed tool").font(.subheadline.weight(.medium)).lineLimit(2)
+                            Text(message.toolStatus ?? "Native tool activity")
+                                .font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                        }
+                        Spacer()
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption)
                     }
-                    Spacer()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption)
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain).frame(maxWidth: .infinity, minHeight: 44)
+                .accessibilityLabel(expanded ? "Hide tool details" : "Show tool details")
+                if !copyText.isEmpty {
+                    Button { UIPasteboard.general.string = copyText } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.caption).foregroundStyle(ZLTheme.muted)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy entire message")
+                    .accessibilityIdentifier("copy-message-\(message.id)")
+                }
             }
-            .buttonStyle(.plain).frame(minHeight: 44)
-            .accessibilityLabel(expanded ? "Hide tool details" : "Show tool details")
             if expanded { Hairline(); NativeMarkdownView(markdown: message.body) }
         }
         .padding(12).background(ZLTheme.surface)
@@ -1194,46 +1322,156 @@ struct NativeApprovalView: View {
     @EnvironmentObject private var session: SessionManager
     let approval: NativeApproval
     @State private var expanded = false
+    @State private var showingOtherChoices = false
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "hand.raised.fill").foregroundStyle(ZLTheme.warning)
-                Text("NEEDS YOU").font(.caption2.monospaced().weight(.bold)).foregroundStyle(ZLTheme.warning)
-                Spacer()
+    private var oneTimeChoices: [NativeApprovalDecision] {
+        guard approval.authorizationKind == "permission_grant" else { return [] }
+        return approval.decisions.filter { $0.optionKind == "allow_once" || $0.optionKind == "reject_once" }
+    }
+
+    private var otherChoices: [NativeApprovalDecision] {
+        approval.decisions.filter { !oneTimeChoices.contains($0) }
+    }
+
+    private var scopes: [String] {
+        var seen = Set<String>()
+        return otherChoices.compactMap { choice in
+            guard choice.action != nil, seen.insert(choice.label).inserted else { return nil }
+            return choice.label
+        }
+    }
+
+    private var otherChoiceTitle: String {
+        otherChoices.allSatisfy { $0.optionKind.hasSuffix("always") } ? "Remember a choice…" : "More choices…"
+    }
+
+    private func unavailable(_ choice: NativeApprovalDecision) -> Bool {
+        session.state != .live || session.resolvingApprovals.contains(approval.id) ||
+        !session.capabilities.contains("approval.respond") ||
+        (approval.detailsTruncated && (!choice.isRejecting || approval.authorizationKind == "action_choice"))
+    }
+
+    private func decisionButton(_ choice: NativeApprovalDecision, title: String, primary: Bool = false) -> some View {
+        Button {
+            dismissZedLinkKeyboard()
+            Task { await session.respond(to: approval, with: choice) }
+        } label: {
+            HStack(spacing: 7) {
+                if approval.authorizationKind == "permission_grant" {
+                    Image(systemName: choice.isRejecting ? "xmark" : "checkmark")
+                        .font(.caption.weight(.bold))
+                }
+                Text(title).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
-            Text(approval.display).font(.subheadline.weight(.medium)).lineLimit(expanded ? nil : 2)
-            Text(approval.toolName).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
-            if let input = approval.rawInput, expanded {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(input).font(.caption.monospaced()).textSelection(.enabled)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(primary ? ZLTheme.background : ZLTheme.ink)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 6)
+            .background(primary ? ZLTheme.ink : ZLTheme.raised, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(primary ? ZLTheme.ink : ZLTheme.line, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(unavailable(choice))
+        .accessibilityLabel(approval.authorizationKind == "permission_grant" && choice.optionKind == "allow_once" ? "Allow once" : approval.authorizationKind == "permission_grant" && choice.optionKind == "reject_once" ? "Deny once" : choice.displayLabel)
+        .accessibilityHint(choice.optionKind.hasSuffix("always") ? "Saves this permission choice in desktop Zed" : choice.optionKind.hasSuffix("once") ? "Applies to this request only" : "Choose this native Zed action")
+        .accessibilityIdentifier("approval-choice-" + choice.id)
+    }
+
+    private var remainingChoices: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(scopes, id: \.self) { scope in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(scope).font(.footnote).foregroundStyle(ZLTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 8) {
+                        ForEach(otherChoices.filter { $0.label == scope && $0.action != nil }) { choice in
+                            decisionButton(choice, title: choice.action == "allow" ? "Allow" : choice.action == "deny" ? "Deny" : choice.displayLabel)
+                        }
+                    }
                 }
             }
-            Button(expanded ? "Hide details" : "Review details") { expanded.toggle() }
-                .font(.caption).frame(minHeight: 44)
+            ForEach(otherChoices.filter { $0.action == nil }) { choice in
+                decisionButton(choice, title: choice.displayLabel)
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(approval.authorizationKind == "action_choice" ? "Action needed" : "Permission needed", systemImage: "hand.raised")
+                .font(.footnote.weight(.semibold)).foregroundStyle(ZLTheme.warning)
+            Text(approval.display)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(expanded ? nil : 3)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack(spacing: 10) {
+                Text(approval.toolName).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button(expanded ? "Hide details" : "Review details", systemImage: expanded ? "chevron.up" : "chevron.down") {
+                    expanded.toggle()
+                }.font(.caption).frame(minHeight: 44)
+            }
+            if let input = approval.rawInput, expanded {
+                ScrollView([.horizontal, .vertical]) {
+                    Text(input).font(.caption.monospaced()).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 160)
+                .padding(8).background(ZLTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if approval.detailsTruncated {
+                Label(approval.authorizationKind == "action_choice"
+                      ? "Details are incomplete. Resolve this request in desktop Zed."
+                      : "Details are incomplete. Allow is unavailable until the full request can be reviewed.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(ZLTheme.warning)
+            }
             if session.resolvingApprovals.contains(approval.id) { ProgressView("Sending decision…") }
-            Text(approval.authorizationKind == "action_choice" ? "Choose an action" : "Permission requested")
-                .font(.caption2.monospaced()).foregroundStyle(ZLTheme.warning)
             if approval.decisions.isEmpty {
                 Text("Update patched Zed to resolve this request remotely.")
                     .font(.caption2).foregroundStyle(ZLTheme.muted)
             } else {
-                ForEach(approval.decisions) { decision in
-                    Button {
-                        dismissZedLinkKeyboard()
-                        Task { await session.respond(to: approval, with: decision) }
-                    } label: {
-                        Text(decision.displayLabel)
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                if !oneTimeChoices.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(oneTimeChoices) { choice in
+                                decisionButton(choice,
+                                               title: choice.isRejecting ? "Deny once" : "Allow once",
+                                               primary: !choice.isRejecting)
+                                    .frame(minWidth: 140)
+                            }
+                        }
+                        VStack(spacing: 8) {
+                            ForEach(oneTimeChoices) { choice in
+                                decisionButton(choice,
+                                               title: choice.isRejecting ? "Deny once" : "Allow once",
+                                               primary: !choice.isRejecting)
+                            }
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(decision.isRejecting ? ZLTheme.warning : ZLTheme.focus)
-                    .disabled(session.state != .live || session.resolvingApprovals.contains(approval.id) || !session.capabilities.contains("approval.respond") || (approval.detailsTruncated && (!decision.isRejecting || approval.authorizationKind == "action_choice")))
+                }
+                if !otherChoices.isEmpty {
+                    if oneTimeChoices.isEmpty {
+                        remainingChoices
+                    } else {
+                        DisclosureGroup(isExpanded: $showingOtherChoices) {
+                            remainingChoices.padding(.top, 7)
+                        } label: {
+                            Text(otherChoiceTitle)
+                                .font(.footnote.weight(.medium))
+                                .frame(minHeight: 44, alignment: .leading)
+                        }
+                        .tint(ZLTheme.ink)
+                    }
                 }
             }
         }
-        .padding(12).frame(width: 290, alignment: .leading)
-        .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.45), lineWidth: 1))
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(ZLTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(ZLTheme.line, lineWidth: 1))
         .accessibilityIdentifier("native-approval")
     }
 }
@@ -1277,17 +1515,22 @@ private struct NativeElicitationView: View {
             }.disabled(submitting)
             if !validation.isEmpty { Text(validation).font(.caption).foregroundStyle(ZLTheme.danger) }
             if submitting { ProgressView("Submitting response…") }
-            HStack {
-                Button("Decline", role: .destructive) { dismissZedLinkKeyboard(); Task { await session.respondToElicitation(elicitation, action: "decline") } }
-                Button("Submit") {
+            VStack(spacing: 8) {
+                Button(role: .destructive) {
+                    dismissZedLinkKeyboard()
+                    Task { await session.respondToElicitation(elicitation, action: "decline") }
+                } label: { Text("Decline").frame(maxWidth: .infinity, minHeight: 44) }
+                    .buttonStyle(.bordered)
+                Button {
                     do {
                         let content = try ElicitationForm.content(elicitation.fields, values: values, selections: selections)
                         validation = ""; dismissZedLinkKeyboard()
                         Task { await session.respondToElicitation(elicitation, action: "accept", content: content) }
                     } catch { validation = error.localizedDescription }
-                }.buttonStyle(.borderedProminent)
+                } label: { Text("Submit").frame(maxWidth: .infinity, minHeight: 44) }
+                    .buttonStyle(.borderedProminent)
             }.disabled(session.state != .live || submitting || !session.capabilities.contains("elicitation.respond"))
-        }.padding(14).frame(width: 330, alignment: .leading)
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.5)))
     }
 }

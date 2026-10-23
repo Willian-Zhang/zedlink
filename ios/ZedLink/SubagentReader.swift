@@ -29,7 +29,9 @@ struct SubagentReader: View {
                                 Text("Earlier activity requires an updated desktop bridge.").font(.caption).foregroundStyle(ZLTheme.muted).padding(16)
                             }
                             ForEach(child.entryStartIndex..<(child.entryStartIndex + child.entries.count), id: \.self) { entryIndex in
-                                NativeMessageView(message: NativeEntryPresentation(child.entries[entryIndex - child.entryStartIndex], index: entryIndex), thinkingLive: child.isActive && entryIndex == child.entryStartIndex + child.entries.count - 1).equatable()
+                                NativeEntryView(markdown: child.entries[entryIndex - child.entryStartIndex], index: entryIndex,
+                                                thinkingLive: child.isActive && entryIndex == child.entryStartIndex + child.entries.count - 1)
+                                    .equatable()
                                 Hairline().padding(.horizontal, 16)
                             }
                             if child.entries.isEmpty { Text("Waiting for the first activity…").foregroundStyle(ZLTheme.muted).padding(16) }

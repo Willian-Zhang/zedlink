@@ -6,34 +6,57 @@ struct SessionIssueBanner: View {
     var body: some View {
         if !session.issue.isEmpty {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(ZLTheme.warning)
-                VStack(alignment: .leading, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(ZLTheme.warning)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
                     if let help = ConnectionHelp.forMessage(session.issue) {
-                        Text(help.title).font(.caption.bold())
-                        Text(help.detail).font(.caption).textSelection(.enabled)
-                        Button(help.action == .connections ? "Open Connections" : "Reconnect") {
-                            dismissZedLinkKeyboard()
-                            if help.action == .connections { session.showConnections = true }
-                            else { Task { await session.refresh() } }
-                        }.font(.caption).frame(minHeight: 44)
+                        Text(help.title).font(.footnote.weight(.semibold))
+                        Text(help.detail).font(.footnote).textSelection(.enabled)
                     } else {
-                        Text(session.issue).font(.caption).textSelection(.enabled)
-                        if session.notificationNeedsWorkspace || session.profile == nil {
-                            Button("Open Connections") {
-                                session.clearIssue()
-                                session.showConnections = true
-                            }.font(.caption).frame(minHeight: 44)
-                        } else if session.state != .live {
-                            Button("Reconnect") { Task { await session.refresh() } }
-                                .font(.caption).frame(minHeight: 44)
-                                .disabled(session.state == .connecting || session.state == .reconnecting)
-                        }
+                        Text(session.issue).font(.footnote).textSelection(.enabled)
                     }
                 }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if let help = ConnectionHelp.forMessage(session.issue) {
+                    Button {
+                        dismissZedLinkKeyboard()
+                        if help.action == .connections { session.showConnections = true }
+                        else { Task { await session.refresh() } }
+                    } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: help.action == .connections ? "network" : "arrow.clockwise")
+                            Text(help.action == .connections ? "Connections" : "Retry")
+                                .font(.caption2).fixedSize(horizontal: false, vertical: true)
+                        }.frame(minWidth: 76, minHeight: 44)
+                    }
+                    .accessibilityLabel(help.action == .connections ? "Open Connections" : "Reconnect")
+                    .disabled(help.action != .connections && (session.state == .connecting || session.state == .reconnecting))
+                } else if session.notificationNeedsWorkspace || session.profile == nil {
+                    Button {
+                        session.clearIssue()
+                        session.showConnections = true
+                    } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: "network")
+                            Text("Connections").font(.caption2).fixedSize(horizontal: false, vertical: true)
+                        }.frame(minWidth: 76, minHeight: 44)
+                    }
+                        .accessibilityLabel("Open Connections")
+                } else if session.state != .live {
+                    Button { Task { await session.refresh() } } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Retry").font(.caption2).fixedSize(horizontal: false, vertical: true)
+                        }.frame(minWidth: 76, minHeight: 44)
+                    }
+                    .accessibilityLabel("Reconnect")
+                    .disabled(session.state == .connecting || session.state == .reconnecting)
+                }
                 Button { session.clearIssue() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
                     .accessibilityLabel("Dismiss error")
-            }.padding(.leading, 12).background(ZLTheme.surface)
+            }.padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 6)
+                .background(ZLTheme.surface)
                 .accessibilityIdentifier("session-error")
         }
     }

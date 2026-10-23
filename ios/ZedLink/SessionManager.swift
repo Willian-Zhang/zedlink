@@ -9,6 +9,7 @@ import Network
     @Published private(set) var state: LinkState = .offline
     @Published private(set) var threads: [NativeThread] = []
     @Published private(set) var snapshot: ThreadSnapshot?
+    @Published private(set) var lastSnapshotAt: Date?
     @Published private(set) var cachedConversations: [CachedConversation] = []
     @Published private(set) var instanceID: String?
     @Published private(set) var epoch: String?
@@ -68,6 +69,7 @@ import Network
     @Published var notificationThreadID: String?
     @Published private(set) var delivery = ""
     @Published private(set) var issue = ""
+    @Published private(set) var controlsIssue = ""
     @Published private(set) var notificationNeedsWorkspace = false
     @Published private(set) var pending: PendingSend?
     @Published var draft = "" {
@@ -143,6 +145,7 @@ import Network
         state = .offline
         threads = []
         snapshot = nil
+        lastSnapshotAt = nil
         cachedConversations = []
         selectedThreadID = nil
         instanceID = nil
@@ -162,6 +165,7 @@ import Network
         pending = nil
         delivery = ""
         issue = ""
+        controlsIssue = ""
         notificationNeedsWorkspace = false
     }
 
@@ -170,6 +174,7 @@ import Network
         let sameTarget = requestedTargetID == nil || requestedTargetID == targetID
         let previousThread = sameProfile && sameTarget ? selectedThreadID : nil
         let previousSnapshot = sameProfile && (requestedTargetID == nil || requestedTargetID == targetID) ? snapshot : nil
+        let previousSnapshotAt = previousSnapshot == nil ? nil : lastSnapshotAt
         let previousThreads = sameProfile && (requestedTargetID == nil || requestedTargetID == targetID) ? threads : []
         let previousTargets = sameProfile ? targets : []
         let previousActivity = liveActivity
@@ -193,6 +198,7 @@ import Network
             if initialTarget == previousTarget {
                 selectedThreadID = previousThread
                 snapshot = previousSnapshot
+                lastSnapshotAt = previousSnapshotAt
                 threads = previousThreads
                 targets = previousTargets
                 liveActivity = previousActivity
@@ -262,6 +268,7 @@ import Network
             if selectedTarget.id != initialTarget {
                 selectedThreadID = nil
                 snapshot = nil
+                lastSnapshotAt = nil
                 threads = []
                 cachedConversations = await ConversationCache.shared.list(gatewayID: nextProfile.gatewayID, targetID: selectedTarget.id)
                 guard current == generation else { return }
@@ -276,7 +283,7 @@ import Network
             instanceID = instance
             epoch = nextEpoch
             resumeTrace?.mark("Native instance verified")
-            if previousInstance != instance || previousEpoch != nextEpoch { snapshot = nil }
+            if previousInstance != instance || previousEpoch != nextEpoch { snapshot = nil; lastSnapshotAt = nil }
             capabilities = Set(info["capabilities"] as? [String] ?? [])
             restorePending(for: nextProfile)
             if let previousPending, selectedTarget.id == previousTarget,
@@ -354,7 +361,7 @@ import Network
         UserDefaults.standard.set(resumedTarget, forKey: targetKey(profile))
         client = GatewayClient(profile: profile, token: token, targetID: resumedTarget)
         guard current == generation else { return }
-        if snapshot?.instanceID != instance || snapshot?.epoch != nextEpoch { snapshot = nil }
+        if snapshot?.instanceID != instance || snapshot?.epoch != nextEpoch { snapshot = nil; lastSnapshotAt = nil }
         instanceID = instance
         epoch = nextEpoch
         capabilities = Set(result["capabilities"] as? [String] ?? [])
@@ -444,11 +451,24 @@ import Network
         guard current == generation, selectedThreadID == id else { return }
         do {
             try await loadAuxiliaryState(id)
-            if current == generation { lastAuxiliaryRefresh = Date() }
+            if current == generation && selectedThreadID == id { lastAuxiliaryRefresh = Date(); controlsIssue = "" }
         } catch {
-            if current == generation && !isCancelledRequest(error) {
-                issue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)"
+            if current == generation && selectedThreadID == id && !isCancelledRequest(error) {
+                controlsIssue = error.localizedDescription
             }
+        }
+    }
+
+    func refreshSessionControls() async {
+        guard state == .live, let id = selectedThreadID else { return }
+        let scope = operationScope
+        do {
+            try await loadAuxiliaryState(id)
+            guard scope == operationScope else { return }
+            lastAuxiliaryRefresh = Date()
+            controlsIssue = ""
+        } catch {
+            if scope == operationScope && !isCancelledRequest(error) { controlsIssue = error.localizedDescription }
         }
     }
 
@@ -670,6 +690,8 @@ import Network
         if let selectedThreadID, !threads.contains(where: { $0.id == selectedThreadID }) {
             self.selectedThreadID = nil
             snapshot = nil
+            lastSnapshotAt = nil
+            controlsIssue = ""
             liveActivity = .ready
             commands = []
             lastCommandsRefresh = .distantPast
@@ -692,6 +714,8 @@ import Network
             projectFolderEntries = nil; directoryRequest = UUID()
             projectFiles = []; projectFilesTruncated = false
             snapshot = nil
+            lastSnapshotAt = nil
+            controlsIssue = ""
             liveActivity = threads.first(where: { $0.id == id })?.activity ?? .ready
             commands = []
             lastCommandsRefresh = .distantPast
@@ -740,8 +764,9 @@ import Network
                             do {
                                 try await loadAuxiliaryState(threadID)
                                 lastAuxiliaryRefresh = Date()
+                                controlsIssue = ""
                             } catch is CancellationError { return }
-                            catch { issue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)" }
+                            catch { controlsIssue = error.localizedDescription }
                         }
                     }
                     eventStreamLive = false
@@ -798,6 +823,8 @@ import Network
             }
             selectedThreadID = nil
             snapshot = nil
+            lastSnapshotAt = nil
+            controlsIssue = ""
             liveActivity = .ready
             commands = []
             try await loadThreads()
@@ -943,9 +970,13 @@ import Network
                                   activityTruncated: delta ? mergedStart > 0 : (result["activity_truncated"] as? Bool ?? false),
                                   pendingApprovals: approvals, rewindPoints: rewindPoints, subagents: uniqueSubagents,
                                   agentError: NativeAgentError(snapshot: result))
-        if snapshot != nextSnapshot {
+        let snapshotChanged = snapshot != nextSnapshot
+        if snapshotChanged {
             snapshot = nextSnapshot
             scheduleCacheSave()
+        }
+        if snapshotChanged || Date().timeIntervalSince(lastSnapshotAt ?? .distantPast) >= 5 {
+            lastSnapshotAt = Date()
         }
         if let profile, let targetID, let instanceID, let epoch {
             ApprovalNotifications.shared.update(gateway: profile.gatewayID, target: targetID,
@@ -954,8 +985,15 @@ import Network
         }
         lastFastSnapshot = Date()
         if refreshAuxiliary {
-            try await loadAuxiliaryState(id)
-            lastAuxiliaryRefresh = Date()
+            do {
+                try await loadAuxiliaryState(id)
+                guard scope == operationScope else { return }
+                lastAuxiliaryRefresh = Date()
+                controlsIssue = ""
+            } catch let error as CancellationError { throw error }
+            catch {
+                if scope == operationScope { controlsIssue = error.localizedDescription }
+            }
         }
     }
 
@@ -1618,7 +1656,6 @@ import Network
     private func pollLoop(_ current: UUID) async {
         var consecutiveFailures = 0
         while !Task.isCancelled && current == generation {
-            var auxiliaryIssue: String?
             do {
                 if let id = selectedThreadID, let client {
                     let result = try await client.rpc("thread.events", params: [
@@ -1657,14 +1694,15 @@ import Network
                     do {
                         try await loadAuxiliaryState(id)
                         lastAuxiliaryRefresh = Date()
+                        controlsIssue = ""
                     } catch is CancellationError { break }
-                    catch { auxiliaryIssue = "Conversation is live. Some session controls could not refresh: \(error.localizedDescription)" }
+                    catch { controlsIssue = error.localizedDescription }
                 }
                 if pending != nil { await reconcilePending() }
                 if current == generation {
                     consecutiveFailures = 0
                     state = .live
-                    if issue != threadExposureIssue { issue = auxiliaryIssue ?? "" }
+                    if issue != threadExposureIssue { issue = "" }
                 }
             } catch {
                 if case GatewayFailure.native("RESYNC_REQUIRED") = error, let id = selectedThreadID {
@@ -1675,6 +1713,8 @@ import Network
                     guard current == generation else { break }
                     selectedThreadID = nil
                     snapshot = nil
+                    lastSnapshotAt = nil
+                    controlsIssue = ""
                     liveActivity = .ready
                     commands = []
                     do {
@@ -1920,12 +1960,11 @@ import Network
     func persistConversation() async {
         guard let profile, let targetID, let snapshot,
               let cached = CachedConversation(gatewayID: profile.gatewayID, targetID: targetID, snapshot: snapshot) else { return }
+        let scope = operationScope
         await ConversationCache.shared.save(cached)
-        guard self.profile?.gatewayID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame,
-              self.targetID == targetID else { return }
-        var next = cachedConversations.filter { $0.threadID != cached.threadID }
-        next.insert(cached, at: 0)
-        cachedConversations = Array(next.prefix(12))
+        let saved = await ConversationCache.shared.list(gatewayID: profile.gatewayID, targetID: targetID)
+        guard scope == operationScope else { return }
+        cachedConversations = saved
     }
 
     private func pendingKey(_ profile: ConnectionProfile) -> String {

@@ -3,6 +3,12 @@ import XCTest
 /// Opt-in against an already paired, explicitly exposed disposable test thread.
 /// No test selects a user's project implicitly or performs approval/tool mutations.
 final class SessionWorkspaceUITests: XCTestCase {
+    private func transcriptText(in app: XCUIApplication, containing phrase: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", phrase, phrase))
+            .firstMatch
+    }
+
     private func openDisposableSession() throws -> XCUIApplication {
         let environment = ProcessInfo.processInfo.environment
         guard let thread = environment["ZEDLINK_E2E_THREAD_ID"], !thread.isEmpty else {
@@ -52,7 +58,7 @@ final class SessionWorkspaceUITests: XCTestCase {
         let app = try openDisposableSession()
         let composer = app.descendants(matching: .any).matching(identifier: "composer").firstMatch
         XCTAssertGreaterThan(composer.frame.width, app.frame.width * 0.65, "The prompt field should span the conversation width.")
-        let message = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", phrase)).firstMatch
+        let message = transcriptText(in: app, containing: phrase)
         XCTAssertTrue(message.waitForExistence(timeout: 20), "The latest native transcript should appear after opening the session.")
         app.buttons["back-to-sessions"].tap()
         app.buttons["reconnect"].tap()
@@ -61,6 +67,51 @@ final class SessionWorkspaceUITests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 20), "Refreshing should retain or reload the native transcript.")
         app.buttons["composer-add"].tap()
         XCTAssertTrue(app.buttons["Add image"].waitForExistence(timeout: 5))
+    }
+
+    func testPendingPermissionChoicesRemainReadable() throws {
+        guard ProcessInfo.processInfo.environment["ZEDLINK_E2E_PERMISSION_FIXTURE"] == "1" else {
+            throw XCTSkip("Use a disposable exposed thread paused on a permission request with one-time and lasting choices.")
+        }
+        let app = try openDisposableSession()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "native-approval").firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["Review details"].exists)
+        XCTAssertTrue(app.buttons["Remember a choice…"].exists)
+        let choices = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "approval-choice-"))
+        XCTAssertGreaterThanOrEqual(choices.count, 2, "One-time Allow and Deny must be reachable without expanding the card.")
+        app.buttons["Remember a choice…"].tap()
+        XCTAssertGreaterThan(choices.count, 2, "The lasting choices must remain reachable after disclosure.")
+        let stop = app.buttons["stop-current-turn"]
+        XCTAssertTrue(stop.exists)
+        XCTAssertGreaterThanOrEqual(stop.frame.width, 44)
+    }
+
+    func testInputRequestOpensFullWidthForm() throws {
+        guard ProcessInfo.processInfo.environment["ZEDLINK_E2E_ELICITATION_FIXTURE"] == "1" else {
+            throw XCTSkip("Use a disposable exposed thread paused on an input request; this test does not submit it.")
+        }
+        let app = try openDisposableSession()
+        let request = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "input-request-")).firstMatch
+        XCTAssertTrue(request.waitForExistence(timeout: 20))
+        request.tap()
+        XCTAssertTrue(app.navigationBars["Input requested"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Decline"].exists)
+        XCTAssertTrue(app.buttons["Submit"].exists)
+        app.buttons["Close"].tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "composer").firstMatch.exists)
+    }
+
+    func testMessageTextSelectsInPlace() throws {
+        guard let phrase = ProcessInfo.processInfo.environment["ZEDLINK_E2E_TRANSCRIPT_TEXT"], phrase.count >= 2 else {
+            throw XCTSkip("Set ZEDLINK_E2E_TRANSCRIPT_TEXT to text in an exposed disposable thread.")
+        }
+        let app = try openDisposableSession()
+        let message = transcriptText(in: app, containing: phrase)
+        XCTAssertTrue(message.waitForExistence(timeout: 20))
+        message.press(forDuration: 1.2)
+        XCTAssertFalse(app.navigationBars["Message text"].exists, "Selection should stay in the conversation.")
+        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3) || app.buttons["Copy"].exists,
+                      "Long-pressing message text should expose the native Copy action.")
     }
 
     func testNativePromptRoundTrip() throws {
@@ -73,7 +124,7 @@ final class SessionWorkspaceUITests: XCTestCase {
         composer.typeText("For this disposable test, reply exactly: ZEDLINK_IOS_ROUND_TRIP")
         app.buttons["send-prompt"].tap()
         XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
-        XCTAssertTrue(app.staticTexts["ZEDLINK_IOS_ROUND_TRIP"].waitForExistence(timeout: 120), "Check the authoritative desktop thread and the configured model if the reply is missing.")
+        XCTAssertTrue(transcriptText(in: app, containing: "ZEDLINK_IOS_ROUND_TRIP").waitForExistence(timeout: 120), "Check the authoritative desktop thread and the configured model if the reply is missing.")
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native-prompt-round-trip"; capture.lifetime = .keepAlways; add(capture)
     }
 

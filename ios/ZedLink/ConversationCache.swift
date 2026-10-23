@@ -14,7 +14,7 @@ struct CachedConversation: Codable, Identifiable {
 
     var id: String { [gatewayID, targetID, threadID].joined(separator: "\n") }
 
-    init?(gatewayID: String, targetID: String, snapshot: ThreadSnapshot) {
+    init?(gatewayID: String, targetID: String, snapshot: ThreadSnapshot, updatedAt: Date = Date()) {
         // Keep a contiguous suffix of the visible page. Earlier entries remain on the gateway.
         var suffix: [String] = []
         var bytes = 0
@@ -32,7 +32,7 @@ struct CachedConversation: Codable, Identifiable {
         self.entries = Array(suffix.reversed())
         self.entryStartIndex = snapshot.entryStartIndex + snapshot.entries.count - suffix.count
         self.totalEntries = snapshot.totalEntries
-        self.updatedAt = Date()
+        self.updatedAt = updatedAt
     }
 
     var displaySnapshot: ThreadSnapshot { displaySnapshot(visibleCount: 24) }
@@ -51,8 +51,10 @@ struct CachedConversation: Codable, Identifiable {
 actor ConversationCache {
     static let shared = ConversationCache()
     private var records: [CachedConversation]?
-    private let lifetime: TimeInterval = 30 * 24 * 60 * 60
-    private let maxRecords = 12
+    private var recordSizes: [String: Int] = [:]
+    private let lifetime: TimeInterval = 90 * 24 * 60 * 60
+    private let maxRecords = 24
+    private let maxTotalBytes = 8 * 1024 * 1024
     private let legacyURL: URL?
     private let directoryURL: URL?
 
@@ -74,16 +76,23 @@ actor ConversationCache {
         if let directoryURL {
             files = (try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)) ?? []
         } else { files = [] }
-        var decoded = files.filter { $0.pathExtension == "json" }.compactMap {
-            (try? Data(contentsOf: $0)).flatMap { try? JSONDecoder().decode(CachedConversation.self, from: $0) }
+        var decoded: [(record: CachedConversation, size: Int)] = []
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let record = try? JSONDecoder().decode(CachedConversation.self, from: data) else { continue }
+            decoded.append((record, data.count))
         }
         let legacyRecords = legacyURL.flatMap { try? Data(contentsOf: $0) }
             .flatMap { try? JSONDecoder().decode([CachedConversation].self, from: $0) }
-        decoded += legacyRecords ?? []
+        for record in legacyRecords ?? [] {
+            if let size = try? JSONEncoder().encode(record).count { decoded.append((record, size)) }
+        }
         var seen = Set<String>()
-        let valid = Array(decoded.filter { Date().timeIntervalSince($0.updatedAt) < lifetime }
-            .sorted { $0.updatedAt > $1.updatedAt }
-            .filter { seen.insert($0.id).inserted }.prefix(maxRecords))
+        let candidates = decoded.filter { Date().timeIntervalSince($0.record.updatedAt) < lifetime }
+            .sorted { $0.record.updatedAt > $1.record.updatedAt }
+            .filter { seen.insert($0.record.id).inserted }
+        recordSizes = Dictionary(uniqueKeysWithValues: candidates.map { ($0.record.id, $0.size) })
+        let valid = retained(candidates.map { $0.record })
         records = valid
         if legacyRecords != nil {
             let migrated = valid.allSatisfy(writeRecord)
@@ -103,15 +112,17 @@ actor ConversationCache {
 
     func save(_ conversation: CachedConversation) {
         var next = current()
-        if let previous = next.first(where: { $0.id == conversation.id }),
-           previous.title == conversation.title,
-           previous.entryStartIndex == conversation.entryStartIndex,
-           previous.totalEntries == conversation.totalEntries,
-           previous.entries == conversation.entries { return }
+        if let previous = next.first(where: { $0.id == conversation.id }) {
+            guard previous.updatedAt <= conversation.updatedAt else { return }
+            if previous.title == conversation.title,
+               previous.entryStartIndex == conversation.entryStartIndex,
+               previous.totalEntries == conversation.totalEntries,
+               previous.entries == conversation.entries { return }
+        }
         next.removeAll { $0.id == conversation.id }
         next.insert(conversation, at: 0)
         guard writeRecord(conversation) else { return }
-        records = Array(next.prefix(maxRecords))
+        records = retained(next)
         removeFiles(except: Set(records?.map(\.id) ?? []))
     }
 
@@ -133,6 +144,20 @@ actor ConversationCache {
         return directoryURL.appendingPathComponent(digest).appendingPathExtension("json")
     }
 
+    /// Keep the newest display copies within both a record count and encoded disk budget.
+    private func retained(_ candidates: [CachedConversation]) -> [CachedConversation] {
+        var kept: [CachedConversation] = []
+        var totalBytes = 0
+        for candidate in candidates {
+            guard kept.count < maxRecords,
+                  let size = recordSizes[candidate.id] ?? (try? JSONEncoder().encode(candidate).count),
+                  totalBytes + size <= maxTotalBytes else { continue }
+            kept.append(candidate)
+            totalBytes += size
+        }
+        return kept
+    }
+
     @discardableResult private func writeRecord(_ record: CachedConversation) -> Bool {
         guard let fileURL = recordURL(record.id), let data = try? JSONEncoder().encode(record) else { return false }
         do {
@@ -143,6 +168,7 @@ actor ConversationCache {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             try excluded.setResourceValues(values)
+            recordSizes[record.id] = data.count
             return true
         } catch {
             // Cache failure must not affect the native session or expose transcript text in logs.
@@ -151,6 +177,7 @@ actor ConversationCache {
     }
 
     private func removeFiles(except retained: Set<String>) {
+        recordSizes = recordSizes.filter { retained.contains($0.key) }
         guard let directoryURL,
               let files = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil) else { return }
         let names = Set(retained.compactMap { recordURL($0)?.lastPathComponent })
