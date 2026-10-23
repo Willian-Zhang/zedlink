@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.23.11";
+const UI_BUILD = "2026.10.23.15";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -213,10 +213,6 @@ function showCreateAvailability() {
 function renderEmptyWorkspace() {
   const noSession = !state.threadId;
   document.body.classList.toggle("no-session", noSession && !!state.token);
-  for (const button of document.querySelectorAll(".sidebar-workspace button[data-context-tab]")) {
-    button.disabled = noSession;
-    button.title = noSession ? "Select a session to open project tools" : "";
-  }
   $("empty-state").classList.toggle("hidden", !noSession);
   if (!noSession) return;
   const connected = state.desktopReachable === true;
@@ -1464,6 +1460,7 @@ function sessionActivity(thread) {
 let threadsRenderSignature = "";
 function setSessionFilter(filter) {
   sessionFilter = filter;
+  $("desktop-session-filter").value = filter;
   for (const button of $("session-filters").querySelectorAll("button[data-filter]")) {
     button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
   }
@@ -1508,6 +1505,10 @@ function renderThreads() {
     badge.hidden = count === 0;
     button.setAttribute("aria-label", `${button.dataset.filter}, ${count} session${count === 1 ? "" : "s"}`);
   }
+  for (const option of $("desktop-session-filter").options) {
+    const label = option.value === "All" ? "All chats" : option.value;
+    option.textContent = counts[option.value] ? `${label} (${counts[option.value]})` : label;
+  }
   const visible = searched.filter((thread) => {
     const activity = sessionActivity(thread);
     return sessionFilter === "All" || sessionFilter === "Needs attention" && activity.attention ||
@@ -1543,6 +1544,7 @@ $("session-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]"); if (!button) return;
   setSessionFilter(button.dataset.filter);
 });
+$("desktop-session-filter").addEventListener("change", (event) => setSessionFilter(event.target.value));
 $("session-tag-filter").addEventListener("change", renderThreads);
 $("edit-session-tag").addEventListener("click", () => {
   if (!state.threadId) return;
@@ -1565,18 +1567,6 @@ $("clear-session-tag").addEventListener("click", () => {
   $("session-tag-input").value = "";
   $("session-tag-form").requestSubmit();
 });
-if (matchMedia("(min-width: 761px) and (min-height: 820px)").matches) $("sidebar-project").open = true;
-for (const button of document.querySelectorAll(".sidebar-workspace button[data-context-tab]")) {
-  button.addEventListener("click", () => {
-    if (!state.threadId) return;
-    if (matchMedia("(max-width: 760px)").matches) {
-      document.body.classList.remove("mobile-sessions", "mobile-connections", "mobile-settings");
-      updateSidebarToggle();
-    }
-    openContextPanel(button.dataset.contextTab);
-  });
-}
-
 async function selectThread(threadId) {
   stopDictation();
   if ($("clipboard-dialog").open) closeClipboard();
@@ -2630,7 +2620,10 @@ function openContextPanel(tab = "files") {
   if (!state.threadId) return;
   document.body.classList.add("context-open");
   $("context-panel").classList.remove("hidden");
+  if (matchMedia("(min-width: 1300px)").matches) setWorkspaceWidth(workspaceWidth ?? Math.min(480, Math.max(360, workspace.getBoundingClientRect().width * .28)));
   $("show-context").setAttribute("aria-expanded", "true");
+  $("show-context").setAttribute("aria-label", "Close workspace");
+  $("show-context").title = "Close workspace";
   switchContextTab(tab);
 }
 
@@ -2640,6 +2633,8 @@ function closeContextPanel() {
   document.body.classList.remove("context-open");
   $("context-panel").classList.add("hidden");
   $("show-context").setAttribute("aria-expanded", "false");
+  $("show-context").setAttribute("aria-label", "Open workspace");
+  $("show-context").title = "Open workspace";
 }
 
 function readingPreferences() {
@@ -4404,9 +4399,99 @@ $("compact-native").addEventListener("click", () => {
   $("composer-form").requestSubmit();
 });
 $("expand-workspace").addEventListener("click", () => {
+  if (document.body.classList.contains("context-floating")) setWorkspaceFloating(false);
   const expanded = document.body.classList.toggle("context-wide");
   $("expand-workspace").setAttribute("aria-pressed", String(expanded));
   $("expand-workspace").title = expanded ? "Use compact workspace" : "Expand workspace";
+});
+const workspace = document.querySelector(".workspace");
+const workspacePanel = $("context-panel");
+const workspaceResize = $("workspace-resize");
+const workspaceMove = $("move-workspace");
+const savedWorkspaceWidth = Number(safeStore.read("zedlink.workspaceWidth"));
+let workspaceWidth = Number.isFinite(savedWorkspaceWidth) && savedWorkspaceWidth >= 340 ? savedWorkspaceWidth : null;
+let floatingPosition = null;
+
+function dockWidthBounds() {
+  return { min: 340, max: Math.max(340, Math.min(900, Math.floor(workspace.getBoundingClientRect().width - 600))) };
+}
+
+function setWorkspaceWidth(width, persist = false) {
+  const bounds = dockWidthBounds();
+  const resolved = Math.min(bounds.max, Math.max(bounds.min, Math.round(width)));
+  workspace.style.setProperty("--context-dock-width", `${resolved}px`);
+  workspaceResize.setAttribute("aria-valuenow", String(resolved));
+  workspaceResize.setAttribute("aria-valuemax", String(bounds.max));
+  workspaceResize.setAttribute("aria-valuetext", `${resolved} pixels wide`);
+  if (persist) {
+    workspaceWidth = resolved;
+    safeStore.write("zedlink.workspaceWidth", String(resolved));
+  }
+}
+
+function positionFloatingWorkspace(left, top) {
+  const width = workspacePanel.getBoundingClientRect().width;
+  const height = workspacePanel.getBoundingClientRect().height;
+  const x = Math.max(12, Math.min(Math.round(left), Math.max(12, innerWidth - width - 12)));
+  const y = Math.max(12, Math.min(Math.round(top), Math.max(12, innerHeight - height - 12)));
+  workspacePanel.style.setProperty("--floating-left", `${x}px`);
+  workspacePanel.style.setProperty("--floating-top", `${y}px`);
+  floatingPosition = { left: x, top: y };
+}
+
+function setWorkspaceFloating(floating) {
+  document.body.classList.toggle("context-floating", floating);
+  $("float-workspace").setAttribute("aria-pressed", String(floating));
+  $("float-workspace").setAttribute("aria-label", floating ? "Dock workspace" : "Float workspace");
+  $("float-workspace").title = floating ? "Dock workspace beside chat" : "Float workspace over chat";
+  if (floating) {
+    document.body.classList.remove("context-wide");
+    $("expand-workspace").setAttribute("aria-pressed", "false");
+    $("expand-workspace").title = "Expand workspace";
+    positionFloatingWorkspace(innerWidth - workspacePanel.getBoundingClientRect().width - 24, 88);
+  }
+}
+
+setWorkspaceWidth(workspaceWidth ?? Math.min(480, Math.max(360, workspace.getBoundingClientRect().width * .28)));
+workspaceResize.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !matchMedia("(min-width: 1300px)").matches || document.body.classList.contains("context-wide")) return;
+  event.preventDefault();
+  workspaceResize.setPointerCapture(event.pointerId);
+});
+workspaceResize.addEventListener("pointermove", (event) => {
+  if (workspaceResize.hasPointerCapture(event.pointerId)) setWorkspaceWidth(workspace.getBoundingClientRect().right - event.clientX);
+});
+workspaceResize.addEventListener("pointerup", () => {
+  if (document.body.classList.contains("context-open") && matchMedia("(min-width: 1300px)").matches) setWorkspaceWidth(workspacePanel.getBoundingClientRect().width, true);
+});
+workspaceResize.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const bounds = dockWidthBounds();
+  const current = workspacePanel.getBoundingClientRect().width;
+  setWorkspaceWidth(event.key === "Home" ? bounds.min : event.key === "End" ? bounds.max : current + (event.key === "ArrowLeft" ? 24 : -24), true);
+});
+$("float-workspace").addEventListener("click", () => setWorkspaceFloating(!document.body.classList.contains("context-floating")));
+workspaceMove.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !document.body.classList.contains("context-floating")) return;
+  event.preventDefault();
+  workspaceMove.dataset.startX = String(event.clientX - workspacePanel.getBoundingClientRect().left);
+  workspaceMove.dataset.startY = String(event.clientY - workspacePanel.getBoundingClientRect().top);
+  workspaceMove.setPointerCapture(event.pointerId);
+});
+workspaceMove.addEventListener("pointermove", (event) => {
+  if (workspaceMove.hasPointerCapture(event.pointerId)) positionFloatingWorkspace(event.clientX - Number(workspaceMove.dataset.startX), event.clientY - Number(workspaceMove.dataset.startY));
+});
+workspaceMove.addEventListener("keydown", (event) => {
+  const delta = { ArrowLeft: [-24, 0], ArrowRight: [24, 0], ArrowUp: [0, -24], ArrowDown: [0, 24] }[event.key];
+  if (!delta || !document.body.classList.contains("context-floating")) return;
+  event.preventDefault();
+  const rect = workspacePanel.getBoundingClientRect();
+  positionFloatingWorkspace(rect.left + delta[0], rect.top + delta[1]);
+});
+window.addEventListener("resize", () => {
+  if (workspaceWidth !== null) setWorkspaceWidth(workspaceWidth);
+  if (floatingPosition) positionFloatingWorkspace(floatingPosition.left, floatingPosition.top);
 });
 $("back-sessions").addEventListener("click", () => showMobileView("sessions"));
 $("close-context").addEventListener("click", closeContextPanel);

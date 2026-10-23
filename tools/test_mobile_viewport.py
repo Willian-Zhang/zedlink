@@ -58,8 +58,8 @@ setTimeout(() => {
  if (document.querySelector('.session-search-field').getBoundingClientRect().right > sidebar.getBoundingClientRect().right - 8) errors.push('session search exceeds rail');
  const filters = [...document.querySelectorAll('#session-filters button')].map(button => button.getBoundingClientRect());
  if (filters.some(box => Math.abs(box.top - filters[0].top) > 1)) errors.push('mobile filters stack vertically');
- if (getComputedStyle(document.querySelector('.session-search-field')).borderTopWidth === '0px') errors.push('session search has no visible field');
- if (getComputedStyle(document.querySelector('.sidebar-project')).display !== 'none') errors.push('duplicate project tools occupy session list');
+ if (getComputedStyle(document.querySelector('.session-search-field')).borderBottomWidth === '0px') errors.push('session search has no visible focus line');
+ if (document.querySelector('.sidebar-project')) errors.push('duplicate project tools occupy session list');
  if (getComputedStyle(document.querySelector('.sidebar-footer')).display !== 'none') errors.push('duplicate navigation occupies session list');
  if (document.querySelectorAll('.mobile-tabs .mobile-tab-icon svg').length !== 3) errors.push('mobile tab icons missing');
  if (allocatedHeight >= 500 && document.querySelector('.thread-item').getBoundingClientRect().top > tabs.getBoundingClientRect().top - 75) errors.push('session list starts below visible area');
