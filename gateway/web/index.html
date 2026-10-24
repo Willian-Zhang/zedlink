@@ -85,11 +85,12 @@
         <div class="settings-row"><span>Desktop Zed</span><strong id="zed-connection-state">Checking…</strong></div>
         <div class="settings-row"><span>Live updates</span><strong id="stream-connection-state">Not started</strong></div>
         <div class="settings-row"><span>Selected Agent</span><strong id="agent-connection-state">No session</strong></div>
-        <div class="settings-row"><span>Last live update</span><strong id="last-live-update">None yet</strong></div>
+        <div class="settings-row"><span>Last transport event</span><strong id="last-live-update">None yet</strong></div>
+        <div class="settings-row"><span>Conversation changed</span><strong id="last-conversation-change">No session</strong></div>
         <div class="settings-row"><span>Gateway</span><code id="mobile-gateway-id">Unknown</code></div>
         <div class="settings-row route-addresses-row"><span>Saved addresses</span><strong id="gateway-route-addresses">Checking…</strong></div>
         <div class="settings-row"><span>Zed target</span><strong id="connection-target">Not selected</strong></div>
-        <p class="muted">Gateway, desktop Zed, live updates, and the selected Agent are checked separately. A green gateway does not mean the configured model is reachable.</p>
+        <p class="muted">Live updates show that the browser is receiving gateway events. Conversation changed tracks new text seen since this page opened. A working Agent can stay connected without producing new text while compacting or running a tool.</p>
         <p class="note">Browser pairing belongs to one HTTPS address. Keep using the saved hostname when changing private networks. Native iOS and Android profiles can verify a new address for the same Gateway ID and retain their credential.</p>
         <p class="note">To remove this browser’s saved access, open Settings and select Sign out.</p>
       </section>

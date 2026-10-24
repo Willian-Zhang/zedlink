@@ -751,11 +751,12 @@ import Network
             while !Task.isCancelled && current == generation && selectedThreadID == threadID {
                 do {
                     let stream = try client.eventStream(threadID: threadID, afterSequence: snapshot?.lastSequence ?? 0)
-                    delay = 1
                     for try await result in stream {
                         guard current == generation, selectedThreadID == threadID else { return }
-                        if !eventStreamLive { eventStreamLive = true; ResumeTrace.streamReady() }
                         try checkIdentity(result)
+                        guard result["thread_id"] as? String == threadID else { throw GatewayFailure.invalidResponse }
+                        if !eventStreamLive { eventStreamLive = true; ResumeTrace.streamReady() }
+                        delay = 1
                         let events = result["events"] as? [[String: Any]] ?? []
                         notifyTurnEvents(events, threadID: threadID)
                         applyEventActivity(events)

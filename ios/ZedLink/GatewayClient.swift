@@ -205,7 +205,10 @@ struct GatewayClient {
                     try? await Task.sleep(for: .seconds(15))
                     if Task.isCancelled { return }
                     let timeout = Task {
-                        try? await Task.sleep(for: .seconds(5))
+                        // A native Zed probe may take up to six seconds. Allow for
+                        // transport scheduling without treating a slow turn as a
+                        // dead gateway connection.
+                        try? await Task.sleep(for: .seconds(12))
                         if Task.isCancelled { return }
                         continuation.finish(throwing: GatewayFailure.native("Gateway event stream timed out."))
                         task.cancel(with: .goingAway, reason: nil)

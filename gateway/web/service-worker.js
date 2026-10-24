@@ -1,6 +1,6 @@
 "use strict";
 
-const SHELL_CACHE = "zedlink-shell-v73";
+const SHELL_CACHE = "zedlink-shell-v76";
 const SHELL = [
   "/",
   "/style.css",
@@ -30,10 +30,17 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(fetch(event.request).then((response) => {
     if (response.ok && SHELL.includes(url.pathname)) {
       const copy = response.clone();
-      caches.open(SHELL_CACHE).then((cache) => cache.put(event.request, copy));
+      event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.put(event.request, copy)));
     }
     return response;
-  }).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/"))));
+  }).catch(async () => {
+    const cached = await caches.match(event.request);
+    if (cached) return cached;
+    // Only a navigation can use the cached app shell. Returning HTML for a
+    // missing script or stylesheet produces a blank page after a route drop.
+    if (event.request.mode === "navigate") return await caches.match("/") || Response.error();
+    return Response.error();
+  }));
 });
 
 self.addEventListener("push", (event) => {

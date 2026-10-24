@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.23.15";
+const UI_BUILD = "2026.10.24.3";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -16,6 +16,7 @@ const state = {
   threadId: null,
   turnId: null,
   threadStatus: null,
+  threadActivity: null,
   sequence: 0,
   polling: false,
   live: false,
@@ -40,6 +41,8 @@ const state = {
   streamState: "idle",
   streamReconnectAttempt: 0,
   lastLiveEventAt: 0,
+  lastTranscriptChangeAt: 0,
+  transcriptObservedAt: 0,
   gatewayReachable: null,
   desktopReachable: null,
   connectionMessage: "Checking gateway…",
@@ -98,6 +101,11 @@ const state = {
   queue: null,
   rewindPoints: [],
 };
+function resetTranscriptObservation() {
+  state.threadActivity = null;
+  state.transcriptObservedAt = 0;
+  state.lastTranscriptChangeAt = 0;
+}
 const safeStore = {
   read(key) {
     try {
@@ -140,12 +148,22 @@ function setHealthText(id, text, status = "") {
   element.textContent = text;
   element.className = status;
 }
-function relativeLiveTime() {
-  if (!state.lastLiveEventAt) return "None yet";
-  const seconds = Math.max(0, Math.round((Date.now() - state.lastLiveEventAt) / 1000));
+function relativeTime(at) {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
   if (seconds < 2) return "Just now";
   if (seconds < 60) return `${seconds}s ago`;
   return `${Math.floor(seconds / 60)}m ago`;
+}
+function selectedActivityLabel() {
+  if (state.threadStatus === "Idle") return "Idle";
+  const phase = state.threadActivity?.phase;
+  return ({
+    compacting: "Compacting context",
+    waiting_for_approval: "Waiting for approval",
+    preparing_tool: "Preparing a tool",
+    running_tool: "Running a tool",
+    responding: "Responding",
+  })[phase] || "Working";
 }
 function compactConnectionMessage(message) {
   if (!matchMedia("(max-width: 760px)").matches) return message;
@@ -191,10 +209,13 @@ function renderConnectionHealth() {
   setHealthText("stream-connection-state", stream[0], stream[1]);
   const agent = state.retryStatus ? ["Retrying model request", "warning"]
     : state.threadError ? ["Last request failed", "error"]
-      : state.threadId && state.threadStatus && state.threadStatus !== "Idle" ? ["Working", "online"]
+      : state.threadId && state.threadStatus && state.threadStatus !== "Idle" ? [selectedActivityLabel(), "online"]
         : state.threadId ? ["Idle · model not probed", ""] : ["No session", ""];
   setHealthText("agent-connection-state", agent[0], agent[1]);
-  $("last-live-update").textContent = relativeLiveTime();
+  $("last-live-update").textContent = state.lastLiveEventAt ? relativeTime(state.lastLiveEventAt) : "None yet";
+  $("last-conversation-change").textContent = !state.threadId ? "No session"
+    : state.lastTranscriptChangeAt ? `${relativeTime(state.lastTranscriptChangeAt)} · this page`
+      : state.transcriptObservedAt ? "No change since opening" : "Checking…";
   renderMobileSessionMeta();
 }
 function pairingStatus() {
@@ -372,7 +393,7 @@ function renderMobileSessionMeta() {
   const activity = state.retryStatus ? "Retrying"
     : state.threadError ? "Request failed"
       : state.threadStatus && state.threadStatus !== "Idle"
-        ? (/tool|execut|run/i.test(state.threadStatus) ? "Running tools" : /wait|pending|queue/i.test(state.threadStatus) ? "Waiting" : "Generating")
+        ? selectedActivityLabel()
         : state.desktopReachable === false ? "Zed unavailable"
           : state.live ? "Live" : "Reconnecting";
   const text = `${model} · ${activity}`;
@@ -763,6 +784,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   let response;
+  let data;
   try {
     response = await fetch("/v1/rpc", {
       method: "POST", cache: "no-store", redirect: "error", signal: controller.signal,
@@ -770,6 +792,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
       body: JSON.stringify({ version: 1, request_id: requestId, method, params,
         ...(method !== "instance.list" && state.targetId ? { target_id: state.targetId } : {}) }),
     });
+    data = await response.json();
     state.gatewayReachable = true;
     renderConnectionHealth();
   } catch (cause) {
@@ -779,7 +802,6 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     error.code = "TRANSPORT_UNAVAILABLE";
     throw error;
   } finally { clearTimeout(timeout); }
-  const data = await response.json();
   if (response.status === 401) {
     closeEventStream();
     state.token = null;
@@ -789,6 +811,7 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     state.commands = [];
     state.turnId = null;
     state.threadStatus = null;
+    resetTranscriptObservation();
     state.threadError = null;
     state.retryStatus = null;
     state.imageRecovery = null;
@@ -850,26 +873,22 @@ function startEventStream() {
   url.searchParams.set("after_sequence", String(state.sequence));
   if (targetId) url.searchParams.set("target_id", targetId);
   const socket = new WebSocket(url, ["zedlink-v1", `zedlink-token-${state.token}`]);
+  let receivedFirstFrame = false;
   state.streamState = state.streamReconnectAttempt ? "reconnecting" : "connecting";
   document.body.dataset.liveTransport = "connecting";
   state.eventSocket = socket;
   state.eventThreadId = threadId;
   renderConnectionHealth();
   state.eventConnectTimer = setTimeout(() => {
-    if (state.eventSocket === socket && socket.readyState !== WebSocket.OPEN) {
+    if (state.eventSocket === socket && !receivedFirstFrame) {
       state.streamState = "timed_out";
       renderConnectionHealth();
-      socket.close(4000, "Live update connection timed out");
+      socket.close(4000, "Live update did not deliver an event");
     }
-  }, 8000);
+  }, 12000);
   socket.addEventListener("open", () => {
     if (state.eventSocket === socket) {
-      if (state.eventConnectTimer) clearTimeout(state.eventConnectTimer);
-      state.eventConnectTimer = null;
-      state.streamState = "live";
-      state.streamReconnectAttempt = 0;
-      state.lastLiveEventAt = Date.now();
-      document.body.dataset.liveTransport = "websocket";
+      state.streamState = "connecting";
       renderConnectionHealth();
     }
   });
@@ -881,8 +900,13 @@ function startEventStream() {
       const result = data.result;
       identity(result);
       if (result.thread_id !== threadId || !Array.isArray(result.events)) throw new Error("Invalid live event response.");
+      receivedFirstFrame = true;
+      if (state.eventConnectTimer) clearTimeout(state.eventConnectTimer);
+      state.eventConnectTimer = null;
       state.streamState = "live";
+      state.streamReconnectAttempt = 0;
       state.lastLiveEventAt = Date.now();
+      document.body.dataset.liveTransport = "websocket";
       connection("Zed connected · live updates", "online");
       if (Number.isInteger(result.last_sequence)) state.sequence = Math.max(state.sequence, result.last_sequence);
       if (result.events.some((item) => item?.kind === "entry.removed")) {
@@ -935,11 +959,13 @@ async function loadGateway() {
   const oneScanCode = pairingLink.get("pair");
   const expectedFromLink = pairingLink.get("gateway");
   if (oneScanCode) history.replaceState(null, "", location.pathname + location.search);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch("/v1/gateway", { cache: "no-store", redirect: "error" });
+    const response = await fetch("/v1/gateway", { cache: "no-store", redirect: "error", signal: controller.signal });
+    const result = await response.json();
     state.gatewayReachable = true;
     renderConnectionHealth();
-    const result = await response.json();
     if (!response.ok || result.version !== 1 || typeof result.gateway_id !== "string") {
       throw new Error("Unsupported gateway identity response.");
     }
@@ -996,7 +1022,7 @@ async function loadGateway() {
     connection(error.message.includes("gateway identity differs") ? "Gateway identity mismatch"
       : error.message.includes("pairing link") ? "Pairing link invalid" : "Gateway unavailable", "offline");
     notice(error.message);
-  }
+  } finally { clearTimeout(timeout); }
 }
 
 async function pairBrowser(code, deviceName) {
@@ -1056,6 +1082,7 @@ function resetTargetSession() {
   state.threadId = null;
   state.turnId = null;
   state.threadStatus = null;
+  resetTranscriptObservation();
   state.threadError = null;
   state.retryStatus = null;
   state.threadSettings = null;
@@ -1130,6 +1157,7 @@ async function connect() {
       renderCommands();
       state.turnId = null;
       state.threadStatus = null;
+      resetTranscriptObservation();
       state.threadError = null;
       state.retryStatus = null;
       state.imageRecovery = null;
@@ -1227,6 +1255,7 @@ async function loadThreads() {
     renderCommands();
     state.turnId = null;
     state.threadStatus = null;
+    resetTranscriptObservation();
     state.threadError = null;
     state.retryStatus = null;
     state.imageRecovery = null;
@@ -1586,6 +1615,7 @@ async function selectThread(threadId) {
   renderCommands();
   state.turnId = null;
   state.threadStatus = null;
+  resetTranscriptObservation();
   state.threadError = null;
   state.retryStatus = null;
   state.imageRecovery = null;
@@ -3910,7 +3940,7 @@ async function snapshot() {
       || !result.entries_markdown.every((entry) => typeof entry === "string")) {
     throw new Error("Snapshot belongs to another thread.");
   }
-  state.sequence = result.last_sequence;
+  state.sequence = Math.max(state.sequence, result.last_sequence);
   state.rewindPoints = Array.isArray(result.rewind_points) ? result.rewind_points : [];
   state.lastSnapshotAt = Date.now();
   const scroller = $("messages");
@@ -3923,6 +3953,20 @@ async function snapshot() {
   if (pageEnd !== pageStart + result.entries_markdown.length || totalEntries < pageEnd) {
     throw new Error("Invalid transcript page from desktop Zed.");
   }
+  const observingThread = state.renderedThreadId === result.thread_id && state.transcriptObservedAt > 0;
+  const priorStart = state.renderedEntryStart;
+  const priorEnd = priorStart + state.renderedEntries.length;
+  const overlappingEntries = result.entries_markdown.filter((_, offset) =>
+    pageStart + offset >= priorStart && pageStart + offset < priorEnd);
+  const transcriptChanged = observingThread && (totalEntries !== state.totalEntries
+    || (state.renderedEntries.length > 0 && result.entries_markdown.length > 0 && !overlappingEntries.length)
+    || result.entries_markdown.some((entry, offset) => {
+      const priorIndex = pageStart + offset - priorStart;
+      return priorIndex >= 0 && priorIndex < state.renderedEntries.length
+        && entry !== state.renderedEntries[priorIndex];
+    }));
+  if (transcriptChanged) state.lastTranscriptChangeAt = Date.now();
+  state.transcriptObservedAt = Date.now();
   if (state.renderedThreadId !== result.thread_id) {
     container.replaceChildren();
     state.renderedEntries = [];
@@ -3947,6 +3991,8 @@ async function snapshot() {
   renderTranscript();
   const busy = result.status !== "Idle";
   state.threadStatus = result.status;
+  state.threadActivity = result.activity && typeof result.activity.phase === "string" ? result.activity : null;
+  renderConnectionHealth();
   const summary = state.threads.find((thread) => thread.thread_id === result.thread_id);
   if (summary && result.agent) summary.agent = result.agent;
   renderSelectedAgent();
@@ -4078,6 +4124,11 @@ async function poll() {
   try {
     if (!state.instanceId) { await connect(); return; }
     if (state.threadId) {
+      if (state.streamState === "live" && state.eventSocket?.readyState === WebSocket.OPEN
+          && Date.now() - state.lastLiveEventAt > 15000) {
+        state.streamState = "timed_out";
+        state.eventSocket.close(4000, "Live updates stopped");
+      }
       const streamLive = state.eventSocket?.readyState === WebSocket.OPEN
         && state.eventThreadId === state.threadId;
       if (!streamLive) {
@@ -4622,6 +4673,7 @@ async function signOut() {
   state.pending = null;
   state.threadId = null;
   state.threadStatus = null;
+  resetTranscriptObservation();
   state.threadError = null;
   state.retryStatus = null;
   state.imageRecovery = null;
@@ -4811,7 +4863,8 @@ window.addEventListener("resize", () => {
   renderConnectionHealth();
 });
 function appViewportHeight(viewport, standalone, keyboardOpen, fullHeight) {
-  const visibleBottom = viewport ? viewport.height + viewport.offsetTop : window.innerHeight;
+  const visibleBottom = viewport?.height > 0
+    ? viewport.height + Math.max(0, viewport.offsetTop || 0) : fullHeight;
   if (standalone && !keyboardOpen) return fullHeight;
   return Math.min(fullHeight, visibleBottom);
 }
@@ -4834,9 +4887,17 @@ function syncVisualViewport(viewport = window.visualViewport) {
   const acceptsKeyboard = active?.matches?.("input:not([type=button]):not([type=checkbox]):not([type=radio]), textarea, [contenteditable=true]") === true;
   const keyboardOpen = acceptsKeyboard && viewport && viewport.height < fullHeight - 120;
   const height = appViewportHeight(viewport, standalone, keyboardOpen, fullHeight);
-  document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+  // WebKit can briefly report a zero viewport during a tab/PWA transition.
+  // Keep the last usable height instead of collapsing the entire mobile app.
+  if (Number.isFinite(height) && height >= 100) {
+    document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+  }
 }
 syncVisualViewport();
+window.addEventListener("pageshow", () => requestAnimationFrame(() => syncVisualViewport()));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestAnimationFrame(() => syncVisualViewport());
+});
 window.visualViewport?.addEventListener("resize", () => syncVisualViewport());
 window.visualViewport?.addEventListener("scroll", () => syncVisualViewport());
 window.addEventListener("orientationchange", () => syncVisualViewport());

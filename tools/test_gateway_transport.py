@@ -48,6 +48,8 @@ class ProbeFixture:
         self.accepted = 0
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
         self.sequence = 0
+        self.event_delay = 0
+        self.event_delay_started = threading.Event()
         self.extra_thread = False
         self.no_threads = False
         self.created_thread = False
@@ -232,6 +234,9 @@ class ProbeFixture:
                               "total_entries": len(history), "has_older_entries": start > 0,
                               "last_sequence": self.sequence}
                 elif method == "thread.events":
+                    if self.event_delay:
+                        self.event_delay_started.set()
+                        time.sleep(self.event_delay)
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "thread_id": params["thread_id"],
                               "events": [{"sequence": self.sequence, "kind": "entry.added",
@@ -971,6 +976,11 @@ def main():
                 activities = [row.get("activity") for row in event["result"]["events"]]
                 assert any(row and row["phase"] == "compacting" for row in activities)
                 assert websocket.ping().wait(timeout=3), "gateway did not acknowledge the iOS-style WebSocket heartbeat"
+                probe.event_delay_started.clear()
+                probe.event_delay = 2
+                assert probe.event_delay_started.wait(timeout=3), "fixture did not start a slow native poll"
+                assert websocket.ping().wait(timeout=1), "gateway heartbeat waited for the native probe"
+                probe.event_delay = 0
                 assert admin(state, "revoke", device2["device_id"])["revoked"]
                 try:
                     websocket.recv(timeout=3)
@@ -1374,7 +1384,9 @@ def main():
                 assert browser.find_element(By.CSS_SELECTOR, ".message.assistant .code-block-head").text.startswith("TEXT")
                 assert not browser.find_element(By.ID, "delivery-details").is_displayed()
                 assert browser.find_element(By.ID, "send").is_enabled()
+                assert browser.find_element(By.ID, "last-conversation-change").get_attribute("textContent") not in ("No session", "Checking…")
                 probe.active_turn_id = 8
+                probe.activity = {"phase": "compacting", "label": "Compacting context", "detail": None}
                 probe.entries[-1] = "## Assistant\n\n<thinking>\nChecking the fixture stream\n</thinking>\n\n**Synthetic fixture reply.**\n\n"
                 probe.sequence += 1
                 wait.until(lambda driver: driver.find_elements(By.CSS_SELECTOR, ".thread-item.running .thread-progress"))
@@ -1382,6 +1394,10 @@ def main():
                     "return document.querySelector('.thread-status.busy')?.textContent || ''"))
                 browser.save_screenshot("/tmp/zedlink-browser-active-session.png")
                 wait.until(lambda driver: "Checking the fixture stream" in driver.find_element(By.ID, "transcript-entries").text)
+                wait.until(lambda driver: driver.find_element(By.ID, "agent-connection-state").get_attribute("textContent") == "Compacting context")
+                assert "this page" in browser.find_element(By.ID, "last-conversation-change").get_attribute("textContent")
+                assert browser.find_element(By.ID, "last-live-update").get_attribute("textContent") != "None yet"
+                probe.activity = {"phase": "responding", "label": "Agent is responding", "detail": None}
                 progress = browser.find_element(By.ID, "thread-state")
                 assert progress.is_displayed()
                 wait.until(lambda driver: "working" in driver.find_element(By.ID, "thread-state").get_attribute("class"))
@@ -1632,6 +1648,8 @@ def main():
                 wait.until(lambda driver: driver.execute_script("return Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-height')) - Math.min(innerHeight, visualViewport.height + visualViewport.offsetTop)) <= 1"))
                 offset_viewport_height = browser.execute_script("syncVisualViewport({height: 700, offsetTop: 59}); const value=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-height')); syncVisualViewport(); return value")
                 assert offset_viewport_height == 759, offset_viewport_height
+                transient_viewport = browser.execute_script("syncVisualViewport({height:0,offsetTop:0}); const after=parseFloat(document.documentElement.style.getPropertyValue('--app-height')); syncVisualViewport(); return {after,fallback:appViewportHeight({height:0,offsetTop:0},false,false,852)}")
+                assert transient_viewport["after"] >= 100 and transient_viewport["fallback"] == 852, transient_viewport
                 standalone_heights = browser.execute_script("return {resting:appViewportHeight({height:700,offsetTop:59},true,false,852),keyboard:appViewportHeight({height:700,offsetTop:59},true,true,852),browser:appViewportHeight({height:700,offsetTop:59},false,false,852)}")
                 assert standalone_heights == {"resting": 852, "keyboard": 759, "browser": 759}, standalone_heights
                 layout = browser.execute_script("return {width:innerWidth, pageWidth:document.documentElement.scrollWidth, composerBottom:document.getElementById('composer-form').getBoundingClientRect().bottom, height:innerHeight, visibleBottom:visualViewport.height + visualViewport.offsetTop, messagesHeight:document.getElementById('messages').getBoundingClientRect().height, sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none'}")

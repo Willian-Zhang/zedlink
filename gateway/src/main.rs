@@ -51,6 +51,7 @@ const MAX_PROBE_RESPONSE: u64 = 4 * 1024 * 1024;
 const PAIR_TTL: Duration = Duration::from_secs(300);
 const MAX_DEVICES: usize = 32;
 const MAX_WEBSOCKETS: usize = 64;
+const EVENT_POLL: Duration = Duration::from_secs(1);
 const NOTIFICATION_POLL: Duration = Duration::from_secs(2);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -2249,8 +2250,8 @@ async fn event_stream(
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let mut sequence = query.after_sequence.unwrap_or(0);
-    let mut interval = tokio::time::interval(Duration::from_millis(250));
-    loop {
+    let mut interval = tokio::time::interval(EVENT_POLL);
+    'stream: loop {
         tokio::select! {
             biased;
             incoming = socket.recv() => match incoming {
@@ -2281,10 +2282,41 @@ async fn event_stream(
         }
         let request = json!({"version":1,"request_id":Uuid::new_v4().to_string(),
             "method":"thread.events","params":{"thread_id":query.thread_id,"after_sequence":sequence}});
-        let response = match state.probe(query.target_id.as_deref(), &request).await {
+        // The native probe can take six seconds. Keep reading the socket while it
+        // is pending so a client heartbeat is answered without waiting for Zed.
+        let probe = state.probe(query.target_id.as_deref(), &request);
+        tokio::pin!(probe);
+        let response = loop {
+            tokio::select! {
+                incoming = socket.recv() => match incoming {
+                    Some(Ok(Message::Ping(payload))) => {
+                        if !tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Pong(payload)))
+                            .await.is_ok_and(|result| result.is_ok()) {
+                            break 'stream;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break 'stream,
+                    Some(Ok(_)) => {}
+                },
+                result = &mut probe => break result,
+            }
+        };
+        let response = match response {
             Ok(response) => response,
             Err(_) => json!({"version":1,"error":{"code":"INSTANCE_UNAVAILABLE"}}),
         };
+        // A device may be revoked while the native poll is in flight.
+        if !state
+            .0
+            .persisted
+            .lock()
+            .await
+            .devices
+            .iter()
+            .any(|device| device.id == device_id)
+        {
+            break;
+        }
         if let Some(next) = response["result"]["last_sequence"].as_u64() {
             sequence = next;
         }
