@@ -35,6 +35,21 @@ enum ZLTheme {
     static let focus = adaptive(UIColor(red: 0.84, green: 0.91, blue: 1, alpha: 1), UIColor(red: 0.13, green: 0.30, blue: 0.61, alpha: 1))
 }
 
+/// A readable primary action in both the OLED and light appearances.
+struct ZLPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ZLTheme.background)
+            .padding(.horizontal, 18)
+            .frame(minHeight: 44)
+            .background(ZLTheme.focus, in: RoundedRectangle(cornerRadius: 10))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
+    }
+}
+
 @MainActor func dismissZedLinkKeyboard() {
     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 }

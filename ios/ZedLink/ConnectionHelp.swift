@@ -11,8 +11,10 @@ struct ConnectionHelp: Equatable {
             return .init(title: "Phone is offline", detail: "Restore Wi-Fi or cellular access, then reconnect. Your Agent keeps running in desktop Zed.", action: .retry)
         case "Gateway name could not be resolved. Check the saved hostname and VPN DNS route.":
             return .init(title: "Hostname lookup failed", detail: "Check the saved HTTPS hostname and your VPN's DNS connection.", action: .connections)
-        case "Gateway unreachable. Check the VPN connection, address, and route.":
-            return .init(title: "Gateway cannot be reached", detail: "Confirm the gateway is running and your phone's VPN can reach the saved address.", action: .retry)
+        case "Gateway request timed out. Check the phone's private route and retry.",
+             "Could not connect to the gateway. Check the private route and address.",
+             "Gateway connection dropped. Check the phone's private route and retry.":
+            return .init(title: "Gateway cannot be reached", detail: "Check that this phone's VPN can open the same HTTPS address in Safari, then retry the endpoint test.", action: .retry)
         case "HTTPS identity could not be verified. Check the hostname and certificate.", GatewayFailure.changedIdentity.localizedDescription:
             return .init(title: "Connection identity needs review", detail: "Check the hostname, certificate and gateway identity before pairing again. TLS verification stays enabled.", action: .connections)
         case "Pair this device first.", GatewayFailure.native("UNAUTHENTICATED").localizedDescription:

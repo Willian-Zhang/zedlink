@@ -36,6 +36,11 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
 struct GatewayClient {
     private static let redirectDelegate = NoRedirect()
     private static let session = URLSession(configuration: .ephemeral, delegate: redirectDelegate, delegateQueue: nil)
+    private static func identitySession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
+    }
     let profile: ConnectionProfile
     let token: String?
     var targetID: String? = nil
@@ -60,9 +65,9 @@ struct GatewayClient {
     }
 
     private func call(_ path: String, payload: [String: Any]? = nil, authorized: Bool = false,
-                      method: String? = nil) async throws -> [String: Any] {
+                      method: String? = nil, freshTransport: Bool = false) async throws -> [String: Any] {
         var request = URLRequest(url: try address(path))
-        request.timeoutInterval = 12
+        request.timeoutInterval = freshTransport ? 20 : 12
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpMethod = method ?? (payload == nil ? "GET" : "POST")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -76,16 +81,24 @@ struct GatewayClient {
         }
         let data: Data
         let response: URLResponse
+        // Identity checks are small, unauthenticated reads. A fresh URLSession avoids
+        // reusing a connection created before an iPhone VPN route changed.
+        let transport = freshTransport ? Self.identitySession() : Self.session
+        defer { if freshTransport { transport.finishTasksAndInvalidate() } }
         do {
-            (data, response) = try await Self.session.data(for: request)
+            (data, response) = try await transport.data(for: request)
         } catch let error as URLError {
             switch error.code {
             case .notConnectedToInternet:
                 throw GatewayFailure.native("No network connection. Check the phone's network settings.")
             case .cannotFindHost, .dnsLookupFailed:
                 throw GatewayFailure.native("Gateway name could not be resolved. Check the saved hostname and VPN DNS route.")
-            case .timedOut, .cannotConnectToHost, .networkConnectionLost:
-                throw GatewayFailure.native("Gateway unreachable. Check the VPN connection, address, and route.")
+            case .timedOut:
+                throw GatewayFailure.native("Gateway request timed out. Check the phone's private route and retry.")
+            case .cannotConnectToHost:
+                throw GatewayFailure.native("Could not connect to the gateway. Check the private route and address.")
+            case .networkConnectionLost:
+                throw GatewayFailure.native("Gateway connection dropped. Check the phone's private route and retry.")
             case .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
                  .serverCertificateHasBadDate, .serverCertificateNotYetValid,
                  .secureConnectionFailed:
@@ -107,7 +120,7 @@ struct GatewayClient {
     }
 
     func gatewayID() async throws -> String {
-        let object = try await call("/v1/gateway")
+        let object = try await call("/v1/gateway", freshTransport: true)
         guard object["version"] as? Int == 1, let id = object["gateway_id"] as? String else {
             throw GatewayFailure.invalidResponse
         }

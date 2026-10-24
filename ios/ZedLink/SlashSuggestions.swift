@@ -10,7 +10,7 @@ struct NativeSlashSuggestions: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if matches.isEmpty { Text("No matching advertised commands. Open Agent commands to refresh.").font(.caption).foregroundStyle(ZLTheme.muted).padding(10) }
+                if matches.isEmpty { Text("No matching advertised commands. Open Slash commands to refresh.").font(.caption).foregroundStyle(ZLTheme.muted).padding(10) }
                 ForEach(matches.prefix(12)) { command in
                     Button { choose(command) } label: {
                         VStack(alignment: .leading, spacing: 3) {

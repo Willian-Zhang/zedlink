@@ -45,7 +45,7 @@ struct ImageAnnotationView: View {
                     Button("Attach") {
                         guard let data = annotatedJPEG() else { return }
                         attach(data)
-                    }.buttonStyle(.borderedProminent)
+                    }.buttonStyle(ZLPrimaryButtonStyle())
                 }
             }
             .padding()

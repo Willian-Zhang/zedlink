@@ -55,7 +55,7 @@ struct SessionsView: View {
                             Text(session.profile == nil ? "Pair a private gateway in Connections." : session.visibleThreads.isEmpty ? (session.state == .live ? "Expose a conversation with /remote-control in desktop Zed, or create a session using +." : "Reconnect to refresh your sessions.") : "Try another search or filter.").font(.subheadline).foregroundStyle(ZLTheme.muted)
                             if session.profile == nil {
                                 Button("Open Connections") { session.showConnections = true }
-                                    .buttonStyle(.borderedProminent)
+                                    .buttonStyle(ZLPrimaryButtonStyle())
                             } else if session.state != .live {
                                 Button("Reconnect") { Task { await session.refresh() } }
                                     .buttonStyle(.bordered).disabled(session.state == .connecting || session.state == .reconnecting)
@@ -205,12 +205,20 @@ private struct SessionRow: View {
     }
 }
 
-struct ConversationView: View {
+@MainActor struct ConversationView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
+    @ObservedObject private var composerLibrary = ComposerLibrary.shared
     let threadID: String
     @State private var showingClearConfirmation = false
     @State private var showingCommands = false
+    @State private var focusComposerAfterCommand = false
+    @State private var pendingCommandReplacement: NativeCommand?
+    @State private var showingCommandReplacement = false
+    @State private var showingRemoteClipboard = false
+    @State private var promptScope: ComposerScope?
+    @State private var focusComposerAfterInputSheet = false
+    @State private var showingDelegateReplacement = false
     @State private var showingRename = false
     @State private var showingUnexposeConfirmation = false
     @State private var showingContext = false
@@ -237,6 +245,18 @@ struct ConversationView: View {
     @State private var imageToReview: UIImage?
     @State private var editingAttachmentID: UUID?
     @FocusState private var composerFocused: Bool
+
+    private var composerScope: ComposerScope? {
+        guard let profile = session.profile, let targetID = session.targetID else { return nil }
+        return ComposerScope(gatewayID: profile.gatewayID, targetID: targetID)
+    }
+
+    private var availablePinnedCommands: [NativeCommand] {
+        guard let composerScope else { return [] }
+        return composerLibrary.pinned(in: composerScope).compactMap { name in
+            session.commands.first(where: { $0.name == name })
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -332,7 +352,42 @@ struct ConversationView: View {
         .sheet(isPresented: Binding(get: { selectedChildID != nil }, set: { if !$0 { selectedChildID = nil } })) {
             if let id = selectedChildID { SubagentReader(childID: id) }
         }
-        .sheet(isPresented: $showingCommands) { CommandPicker() }
+        .sheet(isPresented: $showingCommands, onDismiss: {
+            if pendingCommandReplacement != nil { showingCommandReplacement = true }
+            else if focusComposerAfterCommand { composerFocused = true; focusComposerAfterCommand = false }
+        }) {
+            SlashCommandPicker(library: composerLibrary, scope: composerScope) { command in
+                chooseSlashCommand(command, fromSheet: true)
+            }
+        }
+        .sheet(isPresented: $showingRemoteClipboard, onDismiss: {
+            if focusComposerAfterInputSheet { composerFocused = true; focusComposerAfterInputSheet = false }
+        }) {
+            RemoteClipboardView(destination: "prompt") { text in
+                if appendToDraft(text) { focusComposerAfterInputSheet = true }
+            }
+        }
+        .sheet(item: $promptScope, onDismiss: {
+            if focusComposerAfterInputSheet { composerFocused = true; focusComposerAfterInputSheet = false }
+        }) { scope in
+            PromptSnippetsView(library: composerLibrary, scope: scope, currentDraft: session.draft) { text in
+                guard scope == composerScope else {
+                    session.reportIssue("The Zed workspace changed. Open Saved prompts again.")
+                    return false
+                }
+                let inserted = appendToDraft(text)
+                if inserted { focusComposerAfterInputSheet = true }
+                return inserted
+            }
+        }
+        .onChange(of: composerScope) { _, scope in
+            if promptScope != scope { promptScope = nil }
+            showingCommands = false
+            pendingCommandReplacement = nil
+            showingCommandReplacement = false
+            focusComposerAfterCommand = false
+            focusComposerAfterInputSheet = false
+        }
         .sheet(isPresented: Binding(get: { imageToReview != nil }, set: { if !$0 { imageToReview = nil; editingAttachmentID = nil } })) {
             if let imageToReview {
                 ImageAnnotationView(image: imageToReview, cancel: { self.imageToReview = nil; editingAttachmentID = nil }) { data in
@@ -380,6 +435,29 @@ struct ConversationView: View {
             Button("Clear locally", role: .destructive) { session.clearPending() }
         } message: {
             Text("Inspect the desktop transcript first. Clearing this record does not cancel a native turn.")
+        }
+        .confirmationDialog("Replace your draft?", isPresented: $showingDelegateReplacement) {
+            Button("Replace with delegated task draft", role: .destructive) {
+                session.prepareSubagentTask(); composerFocused = true
+            }
+        } message: {
+            Text("Your current message has not been sent. Replacing it will discard that draft.")
+        }
+        .confirmationDialog("Replace your draft with a slash command?", isPresented: $showingCommandReplacement) {
+            if let command = pendingCommandReplacement {
+                Button("Use /\(command.name)", role: .destructive) {
+                    session.insertCommand(command)
+                    dismissedSlashDraft = session.draft
+                    if let composerScope { composerLibrary.recordChoice(command.name, in: composerScope) }
+                    pendingCommandReplacement = nil
+                    composerFocused = true
+                }
+            }
+        } message: {
+            Text("Your current message has not been sent. Choosing a slash command will replace that draft.")
+        }
+        .onChange(of: showingCommandReplacement) { _, isPresented in
+            if !isPresented { pendingCommandReplacement = nil }
         }
         .alert("Rename session", isPresented: $showingRename) {
             TextField("Session title", text: $proposedTitle)
@@ -521,8 +599,18 @@ struct ConversationView: View {
             }
             Button("Find in conversation", systemImage: "magnifyingglass") { showingConversationSearch = true }
             if !session.delivery.isEmpty { Menu("Recent delivery status") { Text(session.delivery) } }
+            Button("Reconnect and refresh", systemImage: "arrow.clockwise") {
+                Task { await session.refresh() }
+            }.disabled(session.profile == nil)
             Button("Agent history", systemImage: "person.2") { composerFocused = false; showingAgentHistory = true }
             Button("Agent settings", systemImage: "slider.horizontal.3") { composerFocused = false; showingModelControls = true }
+            Button("Draft delegated task", systemImage: "arrow.triangle.branch") {
+                if session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    session.prepareSubagentTask(); composerFocused = true
+                }
+                else { showingDelegateReplacement = true }
+            }.disabled(session.state != .live)
+                .accessibilityIdentifier("delegate-subagent-task")
             Button("Rename session", systemImage: "pencil") {
                 proposedTitle = session.snapshot?.title ?? ""; showingRename = true
             }.disabled(!session.capabilities.contains("thread.rename"))
@@ -762,25 +850,59 @@ struct ConversationView: View {
             if session.draft.hasPrefix("/"), session.draft != dismissedSlashDraft, !session.draft.contains(where: { $0.isWhitespace }) {
                 NativeSlashSuggestions(commands: session.commands, query: String(session.draft.dropFirst())) { command in
                     session.insertCommand(command); dismissedSlashDraft = session.draft
+                    if let composerScope { composerLibrary.recordChoice(command.name, in: composerScope) }
                 }.task { await session.refreshCommands() }
             }
             VStack(alignment: .leading, spacing: 0) {
                 composerTextField.frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 8) {
                     Menu {
-                        PhotosPicker(selection: $composerPhoto, matching: .images) {
-                            Label("Add image", systemImage: "photo.badge.plus")
-                        }.disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
-                        Button("Agent commands", systemImage: "terminal") {
-                            composerFocused = false; showingCommands = true
+                        Section("Add to message") {
+                            PhotosPicker(selection: $composerPhoto, matching: .images) {
+                                Label("Add image", systemImage: "photo.badge.plus")
+                            }
+                            .disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
+                            Button("Paste image from phone", systemImage: "doc.on.clipboard") {
+                                guard let image = UIPasteboard.general.image else {
+                                    session.reportIssue("Clipboard does not contain a supported image."); return
+                                }
+                                imageToReview = image
+                            }
+                            .disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
+                            Button("Paste text from phone", systemImage: "text.alignleft") {
+                                _ = appendToDraft(UIPasteboard.general.string ?? "")
+                            }
+                            .accessibilityIdentifier("paste-phone-text")
+                            Button("Paste text from desktop", systemImage: "doc.on.doc") {
+                                composerFocused = false; showingRemoteClipboard = true
+                            }
+                            Button("Project context", systemImage: "folder.badge.plus") {
+                                composerFocused = false; showingContext = true
+                            }
                         }
-                        Button("Project context", systemImage: "folder.badge.plus") {
-                            composerFocused = false; showingContext = true
+                        Section("Draft tools") {
+                            Button("Slash commands", systemImage: "terminal") {
+                                composerFocused = false; showingCommands = true
+                            }
+                            Button("Saved prompts", systemImage: "bookmark") {
+                                composerFocused = false; promptScope = composerScope
+                            }
+                            .disabled(composerScope == nil)
+                            .accessibilityIdentifier("saved-prompts")
+                        }
+                        if !availablePinnedCommands.isEmpty {
+                            Section("Pinned commands") {
+                                ForEach(availablePinnedCommands.prefix(4)) { command in
+                                    Button("/\(command.name)", systemImage: "pin") {
+                                        chooseSlashCommand(command, fromSheet: false)
+                                    }
+                                }
+                            }
                         }
                     } label: {
                         Image(systemName: "plus").font(.title3).frame(width: 44, height: 44)
                     }
-                    .accessibilityLabel("Add image, command, or project context")
+                    .accessibilityLabel("Add to message or choose a slash command")
                     .accessibilityIdentifier("composer-add")
                     VoiceDraftButton(text: $session.draft, scope: "\(session.profile?.id.uuidString ?? "").\(session.targetID ?? "").\(session.instanceID ?? "").\(session.epoch ?? "").\(session.selectedThreadID ?? "")")
                     Spacer(minLength: 0)
@@ -846,6 +968,48 @@ struct ConversationView: View {
         guard session.canSend, !session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !session.attachments.isEmpty || !session.contextPaths.isEmpty else { return }
         composerFocused = false
         Task { await session.send() }
+    }
+
+    @discardableResult private func appendToDraft(_ text: String) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            session.reportIssue("No text is available to paste into this message.")
+            return false
+        }
+        let separator = session.draft.isEmpty ? "" : "\n"
+        guard (session.draft + separator + text).utf8.count <= 16_384,
+              !text.unicodeScalars.contains(where: {
+                  ($0.value < 32 && $0.value != 9 && $0.value != 10 && $0.value != 13) || $0.value == 127
+              }) else {
+            session.reportIssue("Use plain text up to 16 KiB without control characters.")
+            return false
+        }
+        let current = session.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !session.commands.contains(where: { $0.execution == "local" && current == "/" + $0.name }) else {
+            session.reportIssue("Run the local slash command separately before adding prompt text.")
+            return false
+        }
+        session.draft += separator + text
+        composerFocused = true
+        return true
+    }
+
+    private func chooseSlashCommand(_ command: NativeCommand, fromSheet: Bool) {
+        guard let composerScope,
+              session.commands.contains(where: { $0.name == command.name }) else {
+            session.reportIssue("This command is no longer available in the selected Zed thread.")
+            return
+        }
+        let current = session.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current.isEmpty || current.hasPrefix("/") && !current.contains(where: \.isWhitespace) {
+            session.insertCommand(command)
+            dismissedSlashDraft = session.draft
+            composerLibrary.recordChoice(command.name, in: composerScope)
+            if fromSheet { focusComposerAfterCommand = true }
+            else { composerFocused = true }
+        } else {
+            pendingCommandReplacement = command
+            if !fromSheet { showingCommandReplacement = true }
+        }
     }
 
     private var uncertainDelivery: some View {
@@ -1528,105 +1692,142 @@ private struct NativeElicitationView: View {
                         Task { await session.respondToElicitation(elicitation, action: "accept", content: content) }
                     } catch { validation = error.localizedDescription }
                 } label: { Text("Submit").frame(maxWidth: .infinity, minHeight: 44) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(ZLPrimaryButtonStyle())
             }.disabled(session.state != .live || submitting || !session.capabilities.contains("elicitation.respond"))
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(ZLTheme.surface).overlay(Rectangle().stroke(ZLTheme.warning.opacity(0.5)))
     }
 }
 
-private struct CommandPicker: View {
+@MainActor private struct SlashCommandPicker: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: SessionManager
+    @ObservedObject var library: ComposerLibrary
+    let scope: ComposerScope?
+    let choose: (NativeCommand) -> Void
     @State private var search = ""
-    @State private var photo: PhotosPickerItem?
-    @State private var loadingPhoto = false
-    @State private var showingClipboard = false
-    @State private var imageToReview: UIImage?
+    @State private var category = "All"
+
+    private var categories: [String] {
+        ["All"] + Array(Set(session.commands.map(\.category))).sorted()
+    }
 
     private var commands: [NativeCommand] {
-        guard !search.isEmpty else { return session.commands }
-        return session.commands.filter { $0.name.localizedCaseInsensitiveContains(search) ||
-            $0.description.localizedCaseInsensitiveContains(search) }
+        session.commands.filter { command in
+            (category == "All" || command.category == category) &&
+                (search.isEmpty || command.name.localizedCaseInsensitiveContains(search) ||
+                 command.description.localizedCaseInsensitiveContains(search) ||
+                 command.inputHint?.localizedCaseInsensitiveContains(search) == true)
+        }
+    }
+
+    private var pinnedCommands: [NativeCommand] {
+        guard let scope else { return [] }
+        return library.pinned(in: scope).compactMap { name in commands.first(where: { $0.name == name }) }
+    }
+
+    private var recentCommands: [NativeCommand] {
+        guard let scope else { return [] }
+        let pinned = Set(pinnedCommands.map(\.name))
+        return library.recent(in: scope).compactMap { name in
+            pinned.contains(name) ? nil : commands.first(where: { $0.name == name })
+        }
+    }
+
+    private var otherCommands: [NativeCommand] {
+        let highlighted = Set((pinnedCommands + recentCommands).map(\.name))
+        return commands.filter { !highlighted.contains($0.name) }
     }
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Attachments") {
-                    PhotosPicker(selection: $photo, matching: .images) { Label("Attach photo", systemImage: "photo") }
-                        .disabled(loadingPhoto || !session.capabilities.contains("thread.attachments") || session.supportsImages == false)
-                    Button("Paste image", systemImage: "doc.on.clipboard") {
-                        guard let image = UIPasteboard.general.image else { session.reportIssue("Clipboard does not contain a supported image."); return }
-                        imageToReview = image
-                    }.disabled(!session.capabilities.contains("thread.attachments") || session.supportsImages == false)
-                    if loadingPhoto { ProgressView("Preparing image…") }
-                }
-                Section("Agent actions") {
-                    Button("Recover session") { Task { await session.refresh() }; dismiss() }
-                    Button("Remote clipboard") { showingClipboard = true }
-                    Button {
-                        session.prepareSubagentTask()
-                        dismiss()
-                    } label: {
-                        Label("Delegate a parallel task", systemImage: "arrow.triangle.branch")
-                    }
-                    .accessibilityIdentifier("delegate-subagent-task")
-                }
-                Section("Slash commands") {
-                    if commands.isEmpty {
-                        Text("No slash commands are advertised by this thread.").foregroundStyle(.secondary)
-                    }
-                    ForEach(commands) { command in
-                        Button {
-                            session.insertCommand(command)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Text("/\(command.name)").font(.body.monospaced().weight(.semibold))
-                                    Spacer()
-                                    Text(command.category.uppercased()).font(.caption2.monospaced()).foregroundStyle(ZLTheme.muted)
-                                }
-                                Text(command.description).font(.footnote).foregroundStyle(.secondary)
-                                if let hint = command.inputHint { Text(hint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted) }
-                                if let warning = command.warning { Text(warning).font(.caption).foregroundStyle(ZLTheme.warning) }
-                            }
-                            .padding(.vertical, 4)
+                Section {
+                    Text("These commands come from the selected Zed Agent thread. Choose one for your draft, or pin it for quick access in +.")
+                        .font(.footnote).foregroundStyle(ZLTheme.muted)
+                    if categories.count > 2 {
+                        Picker("Category", selection: $category) {
+                            ForEach(categories, id: \.self) { Text($0).tag($0) }
                         }
-                        .buttonStyle(.plain)
+                        .pickerStyle(.menu)
+                    }
+                }
+                if commands.isEmpty {
+                    Section("Slash commands") {
+                        Text(session.commands.isEmpty
+                             ? "No slash commands are advertised by this thread. Reconnect or refresh to check again."
+                             : "No commands match this search or category.")
+                            .foregroundStyle(ZLTheme.muted)
+                    }
+                }
+                if !pinnedCommands.isEmpty {
+                    Section("Pinned") {
+                        ForEach(pinnedCommands) { command in commandRow(command) }
+                    }
+                }
+                if !recentCommands.isEmpty {
+                    Section("Recently chosen") {
+                        ForEach(recentCommands) { command in commandRow(command) }
+                    }
+                }
+                if !otherCommands.isEmpty {
+                    Section("All commands") {
+                        ForEach(otherCommands) { command in commandRow(command) }
                     }
                 }
             }
             .listStyle(.plain).scrollContentBackground(.hidden).background(ZLTheme.background)
-            .searchable(text: $search, prompt: "Search commands and skills")
+            .searchable(text: $search, prompt: "Search slash commands")
             .task { await session.refreshCommands() }
-            .task(id: photo) {
-                guard let photo else { return }
-                loadingPhoto = true; defer { loadingPhoto = false }
-                let scope = session.operationScope
-                do {
-                    let raw = try await photo.loadTransferable(type: Data.self)
-                    guard !Task.isCancelled, scope == session.operationScope else { return }
-                    guard let raw, let image = UIImage(data: raw) else {
-                        session.reportIssue("This image could not be opened."); return
-                    }
-                    imageToReview = image
-                } catch { if scope == session.operationScope { session.reportIssue("Image unavailable: " + error.localizedDescription) } }
-            }
-            .navigationTitle("Agent commands")
+            .navigationTitle("Slash commands")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
-        }
-        .sheet(isPresented: $showingClipboard) { RemoteClipboardView(destination: "prompt") { session.draft = $0 } }
-        .sheet(isPresented: Binding(get: { imageToReview != nil }, set: { if !$0 { imageToReview = nil } })) {
-            if let imageToReview {
-                ImageAnnotationView(image: imageToReview, cancel: { self.imageToReview = nil }) { data in
-                    session.addImage(data); self.imageToReview = nil; dismiss()
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { Task { await session.refreshCommands() } } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Refresh slash commands")
                 }
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private func commandRow(_ command: NativeCommand) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                choose(command)
+                dismiss()
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("/\(command.name)").font(.body.monospaced().weight(.semibold))
+                        Spacer()
+                        Text(command.category.uppercased()).font(.caption2.monospaced())
+                            .foregroundStyle(ZLTheme.muted)
+                    }
+                    Text(command.description).font(.footnote).foregroundStyle(.secondary)
+                    if let hint = command.inputHint {
+                        Text(hint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                    }
+                    if let warning = command.warning {
+                        Text(warning).font(.caption).foregroundStyle(ZLTheme.warning)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("slash-command-\(command.name)")
+            if let scope {
+                let isPinned = library.pinned(in: scope).contains(command.name)
+                Button { library.togglePin(command.name, in: scope) } label: {
+                    Image(systemName: isPinned ? "pin.fill" : "pin")
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(isPinned ? "Unpin /\(command.name)" : "Pin /\(command.name)")
+                .accessibilityIdentifier("slash-pin-\(command.name)")
+            }
+        }
     }
 }
 

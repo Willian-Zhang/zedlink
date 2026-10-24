@@ -127,6 +127,7 @@ actor CredentialVault {
         if !stillUsesCredential {
             await CredentialVault.shared.delete(profile)
             await ConversationCache.shared.remove(gatewayID: profile.gatewayID)
+            ComposerLibrary.shared.forgetGateway(profile.gatewayID)
         }
     }
 

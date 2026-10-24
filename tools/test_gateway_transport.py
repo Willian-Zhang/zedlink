@@ -970,6 +970,7 @@ def main():
                 assert event["result"]["thread_id"] == "fixture-thread"
                 activities = [row.get("activity") for row in event["result"]["events"]]
                 assert any(row and row["phase"] == "compacting" for row in activities)
+                assert websocket.ping().wait(timeout=3), "gateway did not acknowledge the iOS-style WebSocket heartbeat"
                 assert admin(state, "revoke", device2["device_id"])["revoked"]
                 try:
                     websocket.recv(timeout=3)

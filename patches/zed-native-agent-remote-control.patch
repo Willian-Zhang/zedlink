@@ -122,7 +122,7 @@ index 058c8c2e67..99d3a41430 100644
 +    }
      context_server_configuration::init(language_registry, fs.clone(), cx);
 diff --git a/crates/agent_ui/src/completion_provider.rs b/crates/agent_ui/src/completion_provider.rs
-index 80589fa87a..818ee356cf 100644
+index 80589fa87a..9136087fc8 100644
 --- a/crates/agent_ui/src/completion_provider.rs
 +++ b/crates/agent_ui/src/completion_provider.rs
 @@ -201,2 +201,4 @@ pub enum PromptLocalCommand {
@@ -150,6 +150,40 @@ index 80589fa87a..818ee356cf 100644
 +            #[cfg(unix)]
 +            Self::RemoteControl => IconName::Link,
          }
+@@ -1467,2 +1477,3 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
+                 );
++                let editor_for_local_command = editor.clone();
+                 let slash_candidates: Task<Vec<(SlashCompletionCandidate, Option<SkillInfo>)>> = {
+@@ -1643,6 +1654,8 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
+                                         let source = source.clone();
+-                                        move |intent, _window, cx| {
+-                                            cx.defer({
++                                        let editor = editor_for_local_command.clone();
++                                        move |intent, window, cx| {
++                                            window.defer(cx, {
+                                                 let source = source.clone();
+-                                                move |cx| match intent {
++                                                let editor = editor.clone();
++                                                move |window, cx| match intent {
+                                                     CompletionIntent::Complete
+@@ -1652,3 +1665,16 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
+                                                     }
+-                                                    CompletionIntent::Compose => {}
++                                                    CompletionIntent::Compose => {
++                                                        if let Some(editor) = editor.upgrade() {
++                                                            editor.update(cx, |editor, cx| {
++                                                                editor.insert(
++                                                                    &format!(
++                                                                        "/{}",
++                                                                        command.keyword()
++                                                                    ),
++                                                                    window,
++                                                                    cx,
++                                                                );
++                                                            });
++                                                        }
++                                                    }
+                                                 }
 diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/agent_ui/src/conversation_view/message_queue.rs
 index 5984ffd186..99980c13a5 100644
 --- a/crates/agent_ui/src/conversation_view/message_queue.rs
@@ -168,7 +202,7 @@ index 5984ffd186..99980c13a5 100644
 +    pub remote_request_id: Option<String>,
      /// When true, this message interrupts the agent at the next turn boundary
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 2e1a3d3ae8..fe1d9b9a54 100644
+index 2e1a3d3ae8..bb9a70a4a5 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -771,2 +771,4 @@ pub struct ThreadView {
@@ -282,14 +316,29 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +                }
 +            }
          }
-@@ -2163,2 +2262,6 @@ impl ThreadView {
+@@ -2086,2 +2185,14 @@ impl ThreadView {
+
++        let draft = self.message_editor.read(cx).text(cx);
++        if let Some(command) = self
++            .available_local_commands(cx)
++            .into_iter()
++            .find(|command| draft.trim() == format!("/{}", command.keyword()))
++        {
++            self.message_editor
++                .update(cx, |editor, cx| editor.clear(window, cx));
++            self.run_local_command(command, window, cx);
++            return;
++        }
++
+         let message_editor = self.message_editor.clone();
+@@ -2163,2 +2274,6 @@ impl ThreadView {
 
 +    pub(crate) fn is_loading_message_contents(&self) -> bool {
 +        self.is_loading_contents
 +    }
 +
      /// Sends a bare `/command` turn and queues everything the user typed after
-@@ -2274,2 +2377,54 @@ impl ThreadView {
+@@ -2274,2 +2389,54 @@ impl ThreadView {
          cx: &mut Context<Self>,
 +    ) {
 +        self.send_content_with_remote_origin(contents_task, is_native_command, None, window, cx);
@@ -344,24 +393,24 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +        window: &mut Window,
 +        cx: &mut Context<Self>,
      ) {
-@@ -2351,3 +2506,4 @@ impl ThreadView {
+@@ -2351,3 +2518,4 @@ impl ThreadView {
              let turn_start_time = Instant::now();
 -            let send = thread.update(cx, |thread, cx| {
 +            let (send, entry_start_index) = thread.update(cx, |thread, cx| {
 +                let entry_start_index = thread.entries().len();
                  thread.action_log().update(cx, |action_log, cx| {
-@@ -2369,3 +2525,3 @@ impl ThreadView {
+@@ -2369,3 +2537,3 @@ impl ThreadView {
 
 -                if is_native_command {
 +                let send = if is_native_command {
                      thread.send_command(contents, cx)
-@@ -2373,3 +2529,4 @@ impl ThreadView {
+@@ -2373,3 +2541,4 @@ impl ThreadView {
                      thread.send(contents, cx)
 -                }
 +                };
 +                (send, entry_start_index)
              })?;
-@@ -2379,2 +2536,10 @@ impl ThreadView {
+@@ -2379,2 +2548,10 @@ impl ThreadView {
                  this.current_submission = Some(submission_id);
 +                this.remote_submission = remote_request_id.map(|request_id| {
 +                    let record = (submission_id, request_id, entry_start_index);
@@ -372,7 +421,7 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +                    record
 +                });
                  this.sync_generating_indicator(cx);
-@@ -2499,2 +2664,133 @@ impl ThreadView {
+@@ -2499,2 +2676,133 @@ impl ThreadView {
 
 +    pub(crate) fn zedlink_error_summary(&self) -> Option<(&'static str, String, String, bool)> {
 +        self.thread_error.as_ref().map(|error| match error {
@@ -506,7 +555,7 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +    }
 +
      fn emit_thread_error_telemetry(&self, error: &ThreadError, cx: &mut Context<Self>) {
-@@ -2778,2 +3074,25 @@ impl ThreadView {
+@@ -2778,2 +3086,25 @@ impl ThreadView {
      ) {
 +        self.add_to_queue_with_remote_origin(content, tracked_buffers, None, window, cx);
 +    }
@@ -532,23 +581,23 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +        cx: &mut Context<Self>,
 +    ) -> QueueEntryId {
          // The ID must be allocated up front so the editor event subscription
-@@ -2811,2 +3130,3 @@ impl ThreadView {
+@@ -2811,2 +3142,3 @@ impl ThreadView {
              tracked_buffers,
 +            remote_request_id,
              steer: false,
-@@ -2817,2 +3137,3 @@ impl ThreadView {
+@@ -2817,2 +3149,3 @@ impl ThreadView {
          cx.notify();
 +        id
      }
-@@ -2881,2 +3202,3 @@ impl ThreadView {
+@@ -2881,2 +3214,3 @@ impl ThreadView {
                      entry.tracked_buffers = tracked_buffers;
 +                    entry.remote_request_id = None;
                  }
-@@ -2996,2 +3318,3 @@ impl ThreadView {
+@@ -2996,2 +3330,3 @@ impl ThreadView {
 
 +        let remote_request_id = entry.remote_request_id.clone();
          // A queued message can itself be a built-in command (e.g. the user typed
-@@ -3038,3 +3361,9 @@ impl ThreadView {
+@@ -3038,3 +3373,9 @@ impl ThreadView {
 
 -        self.send_content(contents_task, is_native_command, window, cx);
 +        self.send_content_with_remote_origin(
@@ -559,7 +608,7 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +            cx,
 +        );
      }
-@@ -8044,2 +8373,7 @@ impl ThreadView {
+@@ -8044,2 +8385,7 @@ impl ThreadView {
 
 +        #[cfg(unix)]
 +        if self.parent_session_id.is_none() && crate::zedlink_probe::is_available(cx) {
@@ -568,7 +617,7 @@ index 2e1a3d3ae8..fe1d9b9a54 100644
 +
          commands
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
-index ad5eca5cdf..b8ffdcaa0d 100644
+index ad5eca5cdf..e8826eff1b 100644
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
 @@ -756,4 +756,3 @@ impl MessageEditor {
@@ -582,9 +631,45 @@ index ad5eca5cdf..b8ffdcaa0d 100644
 -fn mention_to_content_block(
 +pub(crate) fn mention_to_content_block(
      uri: &MentionUri,
+@@ -3108,2 +3107,35 @@ mod tests {
+         );
++
++        #[cfg(unix)]
++        {
++            message_editor.read_with(&cx, |message_editor, _| {
++                message_editor.set_local_commands(vec![PromptLocalCommand::RemoteControl]);
++            });
++            cx.simulate_input("/remo");
++            cx.run_until_parked();
++
++            editor.read_with(&cx, |editor, _| {
++                assert!(editor.has_visible_completions_menu());
++                assert_eq!(
++                    current_completion_labels(editor),
++                    &[PromptLocalCommand::RemoteControl.label().to_string()],
++                );
++            });
++            editor.update_in(&mut cx, |editor, window, cx| {
++                editor.compose_completion(
++                    &editor::actions::ComposeCompletion::default(),
++                    window,
++                    cx,
++                );
++            });
++            cx.run_until_parked();
++
++            editor.read_with(&cx, |editor, cx| {
++                assert_eq!(editor.text(cx), "/remote-control");
++            });
++            assert_eq!(
++                invoked.borrow().as_slice(),
++                &[PromptLocalCommand::ThumbsDown]
++            );
++        }
+     }
 diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
 new file mode 100644
-index 0000000000..3c7e201269
+index 0000000000..c8349a9247
 --- /dev/null
 +++ b/crates/agent_ui/src/zedlink_probe.rs
 @@ -0,0 +1,5007 @@

@@ -103,6 +103,9 @@ import Network
     }
 
     var canSend: Bool { state == .live && capabilities.contains("thread.send") && selectedThreadID != nil && snapshot?.threadID == selectedThreadID && pending == nil }
+    func savedTargetID(for profile: ConnectionProfile) -> String? {
+        UserDefaults.standard.string(forKey: targetKey(profile))
+    }
     var visibleThreads: [NativeThread] {
         guard profile != nil else { return [] }
         let exposed = Set(threads.map(\.id))

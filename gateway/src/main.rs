@@ -2251,7 +2251,23 @@ async fn event_stream(
     let mut sequence = query.after_sequence.unwrap_or(0);
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     loop {
-        interval.tick().await;
+        tokio::select! {
+            biased;
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Ping(payload))) => {
+                    if !tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Pong(payload)))
+                        .await
+                        .is_ok_and(|result| result.is_ok())
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(_)) => continue,
+            },
+            _ = interval.tick() => {}
+        }
         if !state
             .0
             .persisted

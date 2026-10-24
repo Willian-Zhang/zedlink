@@ -138,7 +138,10 @@ struct RemoteClipboardView: View {
         NavigationStack {
             Form {
                 Section("Preview") { TextEditor(text: $text).frame(minHeight: 160).onChange(of: text) { old, value in if value.utf8.count > 65536 { text = old; status = "Clipboard exceeds 64 KiB." } }
-                    Text("Explicit text transfers only. Terminal paste fills a draft; it does not execute.").font(.caption)
+                    Text(destination == "terminal"
+                         ? "Explicit text transfers only. Terminal paste fills a draft; it does not execute."
+                         : "Explicit text transfers only. Inserting text fills the message draft; it does not send.")
+                        .font(.caption)
                 }
                 Section {
                     Button("Read desktop clipboard") { transfer(nil) }.disabled(!session.capabilities.contains("clipboard.read"))

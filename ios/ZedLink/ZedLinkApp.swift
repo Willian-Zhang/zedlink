@@ -24,9 +24,9 @@ import SwiftUI
         WindowGroup {
             TabView(selection: $selectedTab) {
                 SessionsView(navigationPath: $sessionsPath)
-                    .tabItem { Label("Sessions", systemImage: "bolt.horizontal") }.tag(0)
+                    .tabItem { Label("Sessions", systemImage: "bubble.left.and.bubble.right") }.tag(0)
                 ConnectionsView(draft: $connectionDraft)
-                    .tabItem { Label("Connections", systemImage: "network") }.tag(1)
+                    .tabItem { Label("Connections", systemImage: "link") }.tag(1)
                 SettingsView()
                     .tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
             }

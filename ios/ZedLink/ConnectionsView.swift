@@ -24,15 +24,113 @@ struct ConnectionsView: View {
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var session: SessionManager
     @State private var showingAdd = false
+    @State private var checking = false
+    @State private var checkStage = ""
+    @State private var checkRun = UUID()
+    @State private var checkedProfileID: UUID?
+    @State private var checkedAt: Date?
+    @State private var checks: [ConnectionCheck] = []
+    @State private var checkedThreads: [String] = []
     @Binding var draft: ConnectionDraft
+    private var currentProfile: ConnectionProfile? { session.profile ?? profiles.preferredProfile }
+    private var currentIsLive: Bool { session.state == .live && session.profile?.id == currentProfile?.id }
+
     var body: some View {
         NavigationStack {
             List {
+                if let profile = currentProfile {
+                    Section("Current connection") {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(profile.name).font(.headline)
+                                Text(profile.route.rawValue).font(.subheadline).foregroundStyle(ZLTheme.muted)
+                            }
+                            Spacer()
+                            if session.profile?.id == profile.id { ConnectionStatusView(state: session.state) }
+                            else { Text("Saved").font(.caption).foregroundStyle(ZLTheme.muted) }
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Private HTTPS address").font(.footnote).foregroundStyle(ZLTheme.muted)
+                            Text(profile.endpoint).font(.footnote.monospaced()).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(profile.route.guidance).font(.footnote).foregroundStyle(ZLTheme.muted)
+                        if session.profile?.id == profile.id, !session.issue.isEmpty {
+                            Label {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(ConnectionHelp.forMessage(session.issue)?.title ?? "Connection needs attention")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(ConnectionHelp.forMessage(session.issue)?.detail ?? session.issue)
+                                        .font(.footnote)
+                                }
+                            } icon: { Image(systemName: "exclamationmark.triangle") }
+                                .foregroundStyle(ZLTheme.warning)
+                        }
+                        Button {
+                            Task { await checkConnection(profile) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                if checking { ProgressView().controlSize(.small) }
+                                else { Image(systemName: "waveform.path.ecg") }
+                                Text(checking ? "Checking \(checkStage)…" : "Check connection")
+                                Spacer()
+                            }
+                            .frame(minHeight: 44)
+                        }
+                        .disabled(checking)
+                        .accessibilityIdentifier("check-connection")
+                    }
+
+                    Section("Connection path") {
+                        pathRow("Phone to gateway", checkID: "https", liveDetail: "Connected earlier; check again for current reachability", pendingDetail: "Run checks to verify the HTTPS route")
+                        pathRow("Paired device", checkID: "device", liveDetail: "Authorized when this session connected", pendingDetail: "Run checks to verify this device's credential")
+                        pathRow("Desktop Zed", checkID: "zed", liveDetail: "Selected workspace responded when this session connected", pendingDetail: "Run checks to verify the selected Zed workspace")
+                    }
+
+                    if checkedProfileID == profile.id, !checks.isEmpty {
+                        Section {
+                            if let checkedAt {
+                                Text("Checked \(checkedAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.footnote).foregroundStyle(ZLTheme.muted)
+                            }
+                            ForEach(checks) { check in
+                                ConnectionPathRow(title: check.title, detail: check.detail, passed: check.passed, failed: !check.passed)
+                            }
+                        } header: { Text("Latest checks") }
+                    }
+
+                    Section("Remote control sessions") {
+                        if checkedProfileID == profile.id,
+                           checks.first(where: { $0.id == "sessions" })?.passed == true {
+                            Text(checkedThreads.isEmpty
+                                 ? "No sessions exposed at the last check. Use /remote-control in a desktop Agent thread."
+                                 : "\(checkedThreads.count) exposed session\(checkedThreads.count == 1 ? "" : "s") at the last check.")
+                                .font(.footnote).foregroundStyle(ZLTheme.muted)
+                            ForEach(checkedThreads.indices, id: \.self) { index in
+                                Label(checkedThreads[index], systemImage: "bubble.left.and.bubble.right")
+                                    .font(.subheadline).lineLimit(2)
+                            }
+                        } else if currentIsLive {
+                            Text(session.threads.isEmpty
+                                 ? "Zed is connected. No sessions are exposed. In a desktop Agent thread, use /remote-control to share it."
+                                 : "\(session.threads.count) exposed session\(session.threads.count == 1 ? "" : "s") from the selected workspace.")
+                                .font(.footnote).foregroundStyle(ZLTheme.muted)
+                            ForEach(session.threads) { thread in
+                                Label(thread.title, systemImage: "bubble.left.and.bubble.right")
+                                    .font(.subheadline).lineLimit(2)
+                            }
+                        } else {
+                            Text("Connect to Zed to see which Agent sessions are enabled for remote control.")
+                                .font(.footnote).foregroundStyle(ZLTheme.muted)
+                        }
+                    }
+                }
                 Section("Saved connections") {
                     if profiles.profiles.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("No connections").font(.headline)
-                            Text("Add your workstation using its private pairing QR or link.").font(.subheadline).foregroundStyle(ZLTheme.muted)
+                            Text("Use Pair a device on your workstation, then scan its QR or paste its pairing link here.")
+                                .font(.subheadline).foregroundStyle(ZLTheme.muted)
                         }.padding(.vertical, 8)
                     }
                     ForEach(profiles.profiles) { profile in
@@ -68,10 +166,167 @@ struct ConnectionsView: View {
                         }
                     }
                 }
-            }.listStyle(.plain).scrollContentBackground(.hidden).background(ZLTheme.background)
+            }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(ZLTheme.background)
                 .navigationTitle("Connections").navigationBarTitleDisplayMode(.inline)
                 .sheet(isPresented: $showingAdd) { AddConnectionView(draft: $draft) }
+                .onChange(of: currentProfile) { _, _ in resetChecks() }
+                .onChange(of: session.targetID) { _, _ in resetChecks() }
         }
+    }
+
+    private func pathRow(_ title: String, checkID: String, liveDetail: String,
+                         pendingDetail: String) -> some View {
+        let hasChecks = checkedProfileID == currentProfile?.id && !checks.isEmpty
+        let latest = hasChecks ? checks.first(where: { $0.id == checkID }) : nil
+        return ConnectionPathRow(
+            title: title,
+            detail: latest?.detail ?? (hasChecks ? "Not checked because an earlier step did not pass." : currentIsLive ? liveDetail : pendingDetail),
+            passed: latest?.passed ?? (!hasChecks && currentIsLive),
+            failed: latest?.passed == false
+        )
+    }
+
+    private func resetChecks() {
+        checkRun = UUID()
+        checking = false
+        checkStage = ""
+        checks = []
+        checkedThreads = []
+        checkedProfileID = nil
+    }
+
+    @MainActor private func checkConnection(_ profile: ConnectionProfile) async {
+        let run = UUID()
+        checkRun = run
+        checking = true
+        checkStage = "HTTPS"
+        checkedProfileID = profile.id
+        checkedAt = nil
+        checks = []
+        checkedThreads = []
+        defer {
+            if checkRun == run { checking = false; checkStage = ""; checkedAt = Date() }
+        }
+
+        let client = GatewayClient(profile: profile, token: nil)
+        do {
+            let observedID = try await client.gatewayID()
+            guard checkRun == run else { return }
+            checks.append(.init(id: "https", title: "Private HTTPS", detail: "Gateway answered over trusted HTTPS.", passed: true))
+            guard observedID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame else {
+                checks.append(.init(id: "identity", title: "Gateway identity", detail: "The gateway ID changed. Review this saved address before sending a credential.", passed: false))
+                return
+            }
+            checks.append(.init(id: "identity", title: "Gateway identity", detail: "Matches this saved connection.", passed: true))
+        } catch {
+            guard checkRun == run else { return }
+            checks.append(.init(id: "https", title: "Private HTTPS", detail: error.localizedDescription, passed: false))
+            return
+        }
+
+        checkStage = "device"
+        guard let token = await CredentialVault.shared.read(profile) else {
+            guard checkRun == run else { return }
+            checks.append(.init(id: "device", title: "Paired device", detail: "No local credential is saved. Pair this iPhone again.", passed: false))
+            return
+        }
+        guard checkRun == run else { return }
+        let authorized = GatewayClient(profile: profile, token: token)
+        let targets: [[String: Any]]
+        let registry: [String: Any]
+        do {
+            registry = try await authorized.rpc("instance.list")
+            guard checkRun == run else { return }
+            guard let rows = registry["targets"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
+            targets = rows
+            checks.append(.init(id: "device", title: "Paired device", detail: "Gateway accepted this device's credential.", passed: true))
+        } catch {
+            guard checkRun == run else { return }
+            checks.append(.init(id: "device", title: "Paired device", detail: error.localizedDescription, passed: false))
+            return
+        }
+
+        checkStage = "Zed"
+        let preferredTargetID = session.profile?.id == profile.id
+            ? (session.targetID ?? session.savedTargetID(for: profile))
+            : session.savedTargetID(for: profile)
+        let targetID = preferredTargetID ?? (registry["default_target_id"] as? String)
+        let selectedTarget = targetID == nil
+            ? targets.first(where: { $0["available"] as? Bool == true })
+            : targets.first(where: { $0["target_id"] as? String == targetID })
+        guard let target = selectedTarget,
+              let selectedID = target["target_id"] as? String else {
+            checks.append(.init(id: "zed", title: "Desktop Zed", detail: "No Zed workspace is configured or available.", passed: false))
+            return
+        }
+        guard target["available"] as? Bool == true else {
+            checks.append(.init(id: "zed", title: "Desktop Zed", detail: "The selected Zed workspace is offline. Open desktop Zed and its project.", passed: false))
+            return
+        }
+        let targetClient = GatewayClient(profile: profile, token: token, targetID: selectedID)
+        let instanceID: String
+        let epoch: String
+        do {
+            let info = try await targetClient.rpc("instance.info")
+            guard checkRun == run else { return }
+            guard let currentInstance = info["instance_id"] as? String,
+                  let currentEpoch = info["epoch"] as? String else { throw GatewayFailure.invalidResponse }
+            instanceID = currentInstance
+            epoch = currentEpoch
+            checks.append(.init(id: "zed", title: "Desktop Zed", detail: "\(target["label"] as? String ?? "Selected workspace") is responding.", passed: true))
+        } catch {
+            guard checkRun == run else { return }
+            checks.append(.init(id: "zed", title: "Desktop Zed", detail: error.localizedDescription, passed: false))
+            return
+        }
+
+        checkStage = "sessions"
+        do {
+            let result = try await targetClient.rpc("thread.list")
+            guard checkRun == run else { return }
+            guard result["instance_id"] as? String == instanceID,
+                  result["epoch"] as? String == epoch else {
+                throw GatewayFailure.native("Desktop Zed restarted during the check. Run checks again.")
+            }
+            guard let rows = result["threads"] as? [[String: Any]] else { throw GatewayFailure.invalidResponse }
+            checkedThreads = rows.map { $0["title"] as? String ?? "Untitled Agent thread" }
+            checks.append(.init(id: "sessions", title: "Remote control sessions", detail: rows.isEmpty
+                                ? "None exposed. Use /remote-control in a desktop Agent thread."
+                                : "\(rows.count) exposed session\(rows.count == 1 ? "" : "s") available.", passed: true))
+        } catch {
+            guard checkRun == run else { return }
+            checks.append(.init(id: "sessions", title: "Remote control sessions", detail: error.localizedDescription, passed: false))
+        }
+    }
+}
+
+private struct ConnectionCheck: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let passed: Bool
+}
+
+private struct ConnectionPathRow: View {
+    let title: String
+    let detail: String
+    let passed: Bool
+    var failed = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: passed ? "checkmark.circle.fill" : failed ? "exclamationmark.circle.fill" : "circle.dotted")
+                .foregroundStyle(passed ? ZLTheme.healthy : failed ? ZLTheme.warning : ZLTheme.muted)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(detail).font(.footnote).foregroundStyle(ZLTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(passed ? "Passed" : failed ? "Failed" : "Not checked"). \(detail)")
     }
 }
 
@@ -196,7 +451,12 @@ struct AddConnectionView: View {
                         .disabled(busy).accessibilityIdentifier("test-connection")
                     
                     DisclosureGroup("Gateway identity", isExpanded: $showingIdentity) {
-                        if !observedID.isEmpty { LabeledContent("Observed gateway ID", value: observedID).textSelection(.enabled) }
+                        if !observedID.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Observed gateway ID").font(.footnote).foregroundStyle(ZLTheme.muted)
+                                Text(observedID).font(.footnote.monospaced()).textSelection(.enabled)
+                            }
+                        }
                         TextField("Expected gateway ID from workstation", text: $draft.expectedID)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .disabled(draft.editing).accessibilityIdentifier("expected-gateway-id")
@@ -208,10 +468,15 @@ struct AddConnectionView: View {
                     SecureField("10-digit pairing code", text: $draft.code)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.numberPad)
                         .accessibilityIdentifier("pairing-code")
-                    Text("The observed identity must match before the one-use code is sent.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    if !code.isEmpty {
+                        Label("One-time code loaded", systemImage: "checkmark.circle")
+                            .font(.footnote).foregroundStyle(ZLTheme.healthy)
+                    }
+                    Text(pairingNextStep)
+                        .font(.footnote).foregroundStyle(ZLTheme.muted)
                     Button("Pair and save") { Task { await pair() } }
                         .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(candidate.gatewayID) != .orderedSame || code.isEmpty)
+                        .buttonStyle(ZLPrimaryButtonStyle())
                         .accessibilityIdentifier("pair-and-save")
                     }
                     if savedGateway != nil {
@@ -222,13 +487,30 @@ struct AddConnectionView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
-                if !issue.isEmpty { Section("Connection diagnostic") { Text(issue).foregroundStyle(ZLTheme.warning) } }
+                if !issue.isEmpty {
+                    Section("Connection diagnostic") {
+                        Label {
+                            Text(issue).foregroundStyle(ZLTheme.ink).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: issue.hasPrefix("HTTPS and gateway identity verified") ? "checkmark.circle" : "exclamationmark.triangle")
+                                .foregroundStyle(issue.hasPrefix("HTTPS and gateway identity verified") ? ZLTheme.healthy : ZLTheme.warning)
+                        }
+                        if issue.hasPrefix("Gateway request timed out") ||
+                            issue.hasPrefix("Could not connect to the gateway") ||
+                            issue.hasPrefix("Gateway connection dropped") {
+                            Text("If Safari opens this HTTPS address but this test fails, retry while the phone's VPN is connected. No pairing code has been sent.")
+                                .font(.footnote).foregroundStyle(ZLTheme.muted)
+                        }
+                    }
+                }
             }
             .disabled(busy)
             .navigationTitle(draft.editing ? "Edit connection" : "Add connection").navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled(busy)
             .onChange(of: endpoint) { _, _ in observedID = "" }
-            .onChange(of: expectedID) { _, _ in observedID = "" }
+            .onChange(of: expectedID) { _, _ in
+                if !observedID.isEmpty { issue = identityIssue }
+            }
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { dismiss() }.disabled(busy) } }
             .sheet(isPresented: $showingScanner) {
                 NavigationStack {
@@ -284,17 +566,40 @@ struct AddConnectionView: View {
         busy = true; defer { busy = false }; observedID = ""
         do {
             observedID = try await GatewayClient(profile: candidate, token: nil).gatewayID()
-            issue = observedID.caseInsensitiveCompare(candidate.gatewayID) == .orderedSame
-                ? "HTTPS and gateway identity verified. Choose Pair or Save to continue."
-                : "HTTPS reached, but the gateway identity must match the workstation value before continuing."
+            showingIdentity = true
+            issue = identityIssue
         } catch { issue = error.localizedDescription }
+    }
+
+    private var identityIssue: String {
+        if candidate.gatewayID.isEmpty {
+            return "HTTPS reached. Compare the observed gateway ID below with the ID shown on your workstation, then enter that expected ID."
+        }
+        if observedID.caseInsensitiveCompare(candidate.gatewayID) != .orderedSame {
+            return "HTTPS reached, but this gateway ID differs from the workstation value. Check the address and expected ID before pairing."
+        }
+        return code.isEmpty
+            ? "HTTPS and gateway identity verified. Enter a fresh one-time code, then choose Pair and save."
+            : "HTTPS and gateway identity verified. Choose Pair and save to continue."
+    }
+
+    private var pairingNextStep: String {
+        if observedID.isEmpty { return "Test HTTPS above before pairing. No code will be sent until the gateway identity is verified." }
+        if expectedID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Compare the observed gateway ID with the workstation, then enter the expected ID under Gateway identity."
+        }
+        if observedID.caseInsensitiveCompare(candidate.gatewayID) != .orderedSame {
+            return "The gateway IDs differ. Check the workstation identity and address before pairing."
+        }
+        if code.isEmpty { return "Use Pair a device on the workstation to get a fresh one-time code, then enter it above." }
+        return "Identity verified. Pair and save will send the one-time code to this gateway."
     }
 
     private func pair() async {
         guard !busy else { return }
         busy = true; defer { busy = false }
         let profile = candidate
-        guard !profile.name.isEmpty, observedID == profile.gatewayID else {
+        guard !profile.name.isEmpty, observedID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame else {
             issue = "Gateway ID differs from the workstation value. No pairing code was sent."; return
         }
         let shortCode = code.count == 10 && code.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
