@@ -1,0 +1,932 @@
+From 288ac47efb17d69e4818559b7135fc7a46fb0889 Mon Sep 17 00:00:00 2001
+From: Willian Z <willian@willian.email>
+Date: Wed, 28 Oct 2026 18:18:29 -0400
+Subject: [PATCH] Allow ZedLink to expose multiple projects
+
+Add zedlink.project_roots alongside project_root. Each thread is confined to the configured root that is one of its own folders, so file reads, search, Git, terminals and tasks never cross into another listed project. Unusable roots are skipped with a warning instead of disabling the bridge.
+---
+ assets/settings/default.json                  |   1 +
+ crates/agent_ui/src/zedlink_probe.rs          | 418 ++++++++++--------
+ .../settings_content/src/settings_content.rs  |  11 +-
+ 3 files changed, 245 insertions(+), 185 deletions(-)
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 17f3be9..ef742d1 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -2951,6 +2951,7 @@
+     "enabled": false,
+     "state_directory": "",
+     "project_root": "",
++    "project_roots": [],
+     "start_gateway_on_launch": true,
+     "manager_path": "",
+     "allow_session_creation": true,
+diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
+index c8349a9..9b7a306 100644
+--- a/crates/agent_ui/src/zedlink_probe.rs
++++ b/crates/agent_ui/src/zedlink_probe.rs
+@@ -80,7 +80,7 @@ struct ProbeCommand {
+ }
+ 
+ struct ProbeState {
+-    project_root: PathBuf,
++    project_roots: Vec<PathBuf>,
+     permissions: Cell<ProbePermissions>,
+     instance_id: String,
+     epoch: String,
+@@ -381,7 +381,9 @@ pub fn init(cx: &mut App) {
+     let environment_paths = || {
+         Some((
+             PathBuf::from(std::env::var_os("ZEDLINK_PROBE_DIR")?),
+-            PathBuf::from(std::env::var_os("ZEDLINK_PROBE_PROJECT_ROOT")?),
++            std::env::split_paths(&std::env::var_os("ZEDLINK_PROBE_PROJECT_ROOT")?)
++                .filter(|path| !path.as_os_str().is_empty())
++                .collect::<Vec<_>>(),
+         ))
+     };
+     let settings_paths = || {
+@@ -390,29 +392,49 @@ pub fn init(cx: &mut App) {
+             return None;
+         }
+         let state_directory = settings.state_directory.as_deref()?.trim();
+-        let project_root = settings.project_root.as_deref()?.trim();
+-        if state_directory.is_empty() || project_root.is_empty() {
++        if state_directory.is_empty() {
+             return None;
+         }
+-        Some((
+-            PathBuf::from(state_directory).join("probe"),
+-            PathBuf::from(project_root),
+-        ))
++        let project_roots = settings
++            .project_root
++            .iter()
++            .chain(settings.project_roots.iter().flatten())
++            .map(|path| path.trim())
++            .filter(|path| !path.is_empty())
++            .map(PathBuf::from)
++            .collect::<Vec<_>>();
++        Some((PathBuf::from(state_directory).join("probe"), project_roots))
+     };
+-    let Some((directory, project_root)) = environment_paths().or_else(settings_paths) else {
++    let Some((directory, configured_roots)) = environment_paths().or_else(settings_paths) else {
+         return;
+     };
+-    if !directory.is_absolute() || !project_root.is_absolute() {
+-        log::warn!("ZedLink probe requires absolute directory and project paths");
++    if !directory.is_absolute() {
++        log::warn!("ZedLink probe requires an absolute state directory");
+         return;
+     }
+-
+-    let setup = (|| -> Result<(UnixListener, ProbeState)> {
+-        let project_root = fs::canonicalize(project_root).context("project root unavailable")?;
+-        if !project_root.is_dir() {
+-            return Err(anyhow!("project root is not a directory"));
++    // Unusable roots are skipped rather than fatal: dropping one only narrows
++    // what is exposed, and one stale entry shouldn't disable the whole bridge.
++    let mut project_roots = Vec::new();
++    for root in configured_roots {
++        if !root.is_absolute() {
++            log::warn!("ZedLink skipped project root that isn't absolute: {root:?}");
++            continue;
+         }
++        match fs::canonicalize(&root) {
++            Ok(canonical) if canonical.is_dir() => {
++                if !project_roots.contains(&canonical) {
++                    project_roots.push(canonical);
++                }
++            }
++            _ => log::warn!("ZedLink skipped unavailable project root: {root:?}"),
++        }
++    }
++    if project_roots.is_empty() {
++        log::warn!("ZedLink probe requires at least one available project root");
++        return;
++    }
+ 
++    let setup = (|| -> Result<(UnixListener, ProbeState)> {
+         let mut builder = DirBuilder::new();
+         builder.mode(0o700);
+         match builder.create(&directory) {
+@@ -438,7 +460,7 @@ pub fn init(cx: &mut App) {
+         Ok((
+             listener,
+             ProbeState {
+-                project_root,
++                project_roots,
+                 permissions: Cell::new(permissions),
+                 instance_id: uuid::Uuid::new_v4().to_string(),
+                 epoch: uuid::Uuid::new_v4().to_string(),
+@@ -527,7 +549,7 @@ pub fn init(cx: &mut App) {
+ 
+ pub(crate) fn toggle_thread_exposure(thread: &Entity<AcpThread>, cx: &mut App) -> Option<bool> {
+     let state = cx.try_global::<ProbeGlobal>()?.0.clone();
+-    if !thread_belongs_to_project(thread, &state.project_root, cx) {
++    if !thread_belongs_to_project(thread, &state.project_roots, cx) {
+         return None;
+     }
+     let id = thread.read(cx).session_id().to_string();
+@@ -872,7 +894,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                 "instance_id": state.instance_id,
+                 "epoch": state.epoch,
+                 "capabilities": permissions.capabilities(),
+-                "project": state.project_root.file_name().and_then(|name| name.to_str()),
++                "project": project_names(&state.project_roots),
+                 "provisional": true,
+             }),
+         ),
+@@ -901,7 +923,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+             if !state.exposed_threads.borrow().contains(&record.thread_id) {
+                 return error(&request.request_id, "THREAD_NOT_EXPOSED");
+             }
+-            let entry_index = loaded_thread_views(&state.project_root, cx)
++            let entry_index = loaded_thread_views(&state.project_roots, cx)
+                 .into_iter()
+                 .find(|(thread, _)| thread.read(cx).session_id().to_string() == record.thread_id)
+                 .and_then(|(thread, view)| {
+@@ -920,7 +942,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         }
+         "thread.list" => {
+             let mut seen = HashSet::new();
+-            let threads = loaded_thread_views(&state.project_root, cx)
++            let threads = loaded_thread_views(&state.project_roots, cx)
+                 .into_iter()
+                 .filter_map(|(thread, view)| {
+                     let thread = thread.read(cx);
+@@ -968,7 +990,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+             if !state.exposed_threads.borrow().contains(id) {
+                 return error(&request.request_id, "THREAD_NOT_EXPOSED");
+             }
+-            let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++            let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
+                 .into_iter()
+                 .find(|(thread, _)| thread.read(cx).session_id().to_string() == id)
+             else {
+@@ -1136,7 +1158,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                     Err(code) => return error(&request.request_id, code),
+                 }
+             } else {
+-                let Some(thread) = loaded_threads(&state.project_root, cx)
++                let Some(thread) = loaded_threads(&state.project_roots, cx)
+                     .into_iter()
+                     .find(|thread| thread.read(cx).session_id().to_string() == id)
+                 else {
+@@ -1184,7 +1206,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                 return error(&request.request_id, "INVALID_REQUEST");
+             };
+             if !state.exposed_threads.borrow().contains(id)
+-                || !loaded_threads(&state.project_root, cx)
++                || !loaded_threads(&state.project_roots, cx)
+                     .into_iter()
+                     .any(|thread| thread.read(cx).session_id().to_string() == id)
+             {
+@@ -1306,27 +1328,7 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         }
+     }
+ 
+-    let panel = workspace::AppState::global(cx)
+-        .workspace_store
+-        .read(cx)
+-        .workspaces()
+-        .filter_map(|workspace| workspace.upgrade())
+-        .find_map(|workspace| {
+-            let workspace = workspace.read(cx);
+-            let project = workspace.project().clone();
+-            let matches_project = project
+-                .read(cx)
+-                .visible_worktrees(cx)
+-                .any(|worktree| worktree.read(cx).abs_path().as_ref() == state.project_root);
+-            matches_project
+-                .then(|| {
+-                    workspace
+-                        .panel::<AgentPanel>(cx)
+-                        .map(|panel| (panel, project))
+-                })
+-                .flatten()
+-        });
+-    let Some((panel, project)) = panel else {
++    let Some((panel, project, _)) = session_creation_target(state, cx) else {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     };
+     let agent = if agent_id == agent::ZED_AGENT_ID.as_ref() {
+@@ -1399,28 +1401,25 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     )
+ }
+ 
++/// New remote sessions open in the first configured root, in settings order,
++/// that is open in a workspace with an Agent panel.
++fn session_creation_target(
++    state: &ProbeState,
++    cx: &App,
++) -> Option<(Entity<AgentPanel>, Entity<project::Project>, PathBuf)> {
++    state.project_roots.iter().find_map(|project_root| {
++        loaded_project_workspaces(std::slice::from_ref(project_root), cx)
++            .into_iter()
++            .find_map(|workspace| {
++                let workspace = workspace.read(cx);
++                let panel = workspace.panel::<AgentPanel>(cx)?;
++                Some((panel, workspace.project().clone(), project_root.clone()))
++            })
++    })
++}
++
+ fn create_thread_options(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
+-    let panel = workspace::AppState::global(cx)
+-        .workspace_store
+-        .read(cx)
+-        .workspaces()
+-        .filter_map(|workspace| workspace.upgrade())
+-        .find_map(|workspace| {
+-            let workspace = workspace.read(cx);
+-            let project = workspace.project().clone();
+-            let matches_project = project
+-                .read(cx)
+-                .visible_worktrees(cx)
+-                .any(|worktree| worktree.read(cx).abs_path().as_ref() == state.project_root);
+-            matches_project
+-                .then(|| {
+-                    workspace
+-                        .panel::<AgentPanel>(cx)
+-                        .map(|panel| (panel, project))
+-                })
+-                .flatten()
+-        });
+-    let Some((_panel, project)) = panel else {
++    let Some((_panel, project, project_root)) = session_creation_target(state, cx) else {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     };
+     let agent_store = project.read(cx).agent_server_store().clone();
+@@ -1442,7 +1441,7 @@ fn create_thread_options(request: &ProbeRequest, state: &ProbeState, cx: &mut Ap
+         json!({
+             "instance_id": state.instance_id,
+             "epoch": state.epoch,
+-            "project": state.project_root.file_name().and_then(|name| name.to_str()),
++            "project": project_root.file_name().and_then(|name| name.to_str()),
+             "agents": agents,
+         }),
+     )
+@@ -1467,7 +1466,7 @@ fn rename_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some(thread) = loaded_threads(&state.project_root, cx)
++    let Some(thread) = loaded_threads(&state.project_roots, cx)
+         .into_iter()
+         .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -1515,7 +1514,7 @@ fn finish_thread_creation(
+     thread: &Entity<AcpThread>,
+     cx: &mut App,
+ ) {
+-    if !thread_belongs_to_project(thread, &state.project_root, cx) {
++    if !thread_belongs_to_project(thread, &state.project_roots, cx) {
+         return;
+     }
+     let thread_id = thread.read(cx).session_id().to_string();
+@@ -1774,7 +1773,7 @@ fn approval_list(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -1819,7 +1818,7 @@ fn approval_response(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -
+                 Err(code) => return error(&request.request_id, code),
+             }
+         } else {
+-            let Some(thread) = loaded_threads(&state.project_root, cx)
++            let Some(thread) = loaded_threads(&state.project_roots, cx)
+                 .into_iter()
+                 .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+             else {
+@@ -1978,7 +1977,7 @@ fn cancel_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> V
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -2003,7 +2002,7 @@ fn exposed_subagent_thread_view(
+     if !state.exposed_threads.borrow().contains(parent_thread_id) {
+         return Err("THREAD_NOT_EXPOSED");
+     }
+-    let Some((parent, parent_view)) = loaded_thread_views(&state.project_root, cx)
++    let Some((parent, parent_view)) = loaded_thread_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == parent_thread_id)
+     else {
+@@ -2249,7 +2248,7 @@ fn command_list(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Val
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -2456,7 +2455,7 @@ fn exposed_thread_view(
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return None;
+     }
+-    let (thread, view) = loaded_thread_views(&state.project_root, cx)
++    let (thread, view) = loaded_thread_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)?;
+     Some((thread, view))
+@@ -2876,24 +2875,29 @@ fn exposed_thread_for_request(
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return Err("THREAD_NOT_EXPOSED");
+     }
+-    loaded_threads(&state.project_root, cx)
++    loaded_threads(&state.project_roots, cx)
+         .into_iter()
+         .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+         .ok_or("THREAD_NOT_EXPOSED")
+ }
+ 
++/// Returns the folder of the thread's configured root together with that
++/// root, which confines every file path the request may touch.
+ fn exposed_worktree(
+     request: &ProbeRequest,
+     state: &ProbeState,
+     cx: &App,
+-) -> std::result::Result<Entity<worktree::Worktree>, &'static str> {
++) -> std::result::Result<(Entity<worktree::Worktree>, PathBuf), &'static str> {
+     let thread = exposed_thread_for_request(request, state, cx)?;
++    let project_root =
++        thread_project_root(&thread, &state.project_roots, cx).ok_or("INSTANCE_UNAVAILABLE")?;
+     let project = thread.read(cx).project().clone();
+-    project
++    let worktree = project
+         .read(cx)
+         .visible_worktrees(cx)
+-        .find(|worktree| worktree.read(cx).abs_path().as_ref() == state.project_root)
+-        .ok_or("INSTANCE_UNAVAILABLE")
++        .find(|worktree| worktree.read(cx).abs_path().as_ref() == project_root.as_path())
++        .ok_or("INSTANCE_UNAVAILABLE")?;
++    Ok((worktree, project_root))
+ }
+ 
+ fn excluded_remote_path(path: &str) -> bool {
+@@ -2946,7 +2950,7 @@ fn safe_project_entry(
+     {
+         return Err("INVALID_REQUEST");
+     }
+-    let worktree = exposed_worktree(request, state, cx)?;
++    let (worktree, project_root) = exposed_worktree(request, state, cx)?;
+     let allowed = worktree.read(cx).entries(false, 0).any(|entry| {
+         entry.path.as_unix_str() == path
+             && !entry.is_dir()
+@@ -2960,16 +2964,16 @@ fn safe_project_entry(
+         return Err("FILE_UNAVAILABLE");
+     }
+     let candidate =
+-        fs::canonicalize(state.project_root.join(relative)).map_err(|_| "FILE_UNAVAILABLE")?;
+-    if !candidate.starts_with(&state.project_root) || !candidate.is_file() {
++        fs::canonicalize(project_root.join(relative)).map_err(|_| "FILE_UNAVAILABLE")?;
++    if !candidate.starts_with(&project_root) || !candidate.is_file() {
+         return Err("FILE_UNAVAILABLE");
+     }
+     Ok(candidate)
+ }
+ 
+ fn project_files(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
+-    let worktree = match exposed_worktree(request, state, cx) {
+-        Ok(worktree) => worktree,
++    let (worktree, project_root) = match exposed_worktree(request, state, cx) {
++        Ok(exposed) => exposed,
+         Err(code) => return error(&request.request_id, code),
+     };
+     let directory = if request.method == "project.directory" {
+@@ -2996,10 +3000,9 @@ fn project_files(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                     && !entry.is_fifo
+                     && !entry.is_ignored
+             });
+-            let absolute = fs::canonicalize(state.project_root.join(path));
++            let absolute = fs::canonicalize(project_root.join(path));
+             if !allowed
+-                || !absolute
+-                    .is_ok_and(|path| path.starts_with(&state.project_root) && path.is_dir())
++                || !absolute.is_ok_and(|path| path.starts_with(&project_root) && path.is_dir())
+             {
+                 return error(&request.request_id, "FILE_UNAVAILABLE");
+             }
+@@ -3180,8 +3183,8 @@ fn project_search(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> V
+         .get("case_sensitive")
+         .and_then(Value::as_bool)
+         .unwrap_or(false);
+-    let worktree = match exposed_worktree(request, state, cx) {
+-        Ok(worktree) => worktree,
++    let (worktree, project_root) = match exposed_worktree(request, state, cx) {
++        Ok(exposed) => exposed,
+         Err(code) => return error(&request.request_id, code),
+     };
+     let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
+@@ -3231,7 +3234,6 @@ fn project_search(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> V
+         .searches
+         .borrow_mut()
+         .insert(key.clone(), SearchRecord::Loading);
+-    let project_root = state.project_root.clone();
+     let query = query.to_string();
+     let task = cx.background_spawn(async move {
+         search_project_paths(
+@@ -3283,6 +3285,9 @@ fn changes_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         Ok(thread) => thread,
+         Err(code) => return error(&request.request_id, code),
+     };
++    let Some(project_root) = thread_project_root(&thread, &state.project_roots, cx) else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
+     let project = thread.read(cx).project().clone();
+     let Some(repository) = project.read(cx).active_repository(cx) else {
+         return success(
+@@ -3306,7 +3311,7 @@ fn changes_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         .filter(|entry| {
+             repository
+                 .repo_path_to_abs_path(&entry.repo_path)
+-                .starts_with(&state.project_root)
++                .starts_with(&project_root)
+         })
+         .map(|entry| {
+             json!({
+@@ -3468,6 +3473,9 @@ fn change_stage(request: &ProbeRequest, state: &ProbeState, stage: bool, cx: &mu
+     if path_values.is_empty() || path_values.len() > 100 {
+         return error(&request.request_id, "INVALID_REQUEST");
+     }
++    let Some(project_root) = thread_project_root(&thread, &state.project_roots, cx) else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
+     let project = thread.read(cx).project().clone();
+     let Some(repository) = project.read(cx).active_repository(cx) else {
+         return error(&request.request_id, "REPOSITORY_UNAVAILABLE");
+@@ -3499,7 +3507,7 @@ fn change_stage(request: &ProbeRequest, state: &ProbeState, stage: bool, cx: &mu
+             };
+             if !repository
+                 .repo_path_to_abs_path(&entry.repo_path)
+-                .starts_with(&state.project_root)
++                .starts_with(&project_root)
+                 || (stage && entry.status.staging() == StageStatus::Staged)
+                 || (!stage && entry.status.staging() == StageStatus::Unstaged)
+             {
+@@ -3688,7 +3696,7 @@ fn send_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Val
+     }
+     drop(submissions);
+ 
+-    let Some((thread, view)) = loaded_thread_views(&state.project_root, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -3961,8 +3969,8 @@ fn zedlink_retry_value(retry: Option<(String, usize, usize, u64)>) -> Value {
+     }
+ }
+ 
+-fn loaded_threads(project_root: &Path, cx: &App) -> Vec<Entity<AcpThread>> {
+-    loaded_thread_views(project_root, cx)
++fn loaded_threads(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<AcpThread>> {
++    loaded_thread_views(project_roots, cx)
+         .into_iter()
+         .map(|(thread, _)| thread)
+         .collect()
+@@ -3978,13 +3986,16 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+     let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
+         return error(&request.request_id, "INVALID_REQUEST");
+     };
+-    if !state.exposed_threads.borrow().contains(thread_id)
+-        || !loaded_threads(&state.project_root, cx)
+-            .iter()
+-            .any(|thread| thread.read(cx).session_id().to_string() == thread_id)
+-    {
++    if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
++    let Some(project_root) = loaded_threads(&state.project_roots, cx)
++        .iter()
++        .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
++        .and_then(|thread| thread_project_root(thread, &state.project_roots, cx))
++    else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
+     let digest = match payload_digest(&request.params) {
+         Ok(digest) => digest,
+         Err(code) => return error(&request.request_id, code),
+@@ -3999,13 +4010,13 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+     if state.terminal_creations.borrow().len() >= 256 {
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+-    let Some(workspace) = loaded_project_workspaces(&state.project_root, cx)
++    let Some(workspace) = loaded_project_workspaces(std::slice::from_ref(&project_root), cx)
+         .into_iter()
+         .next()
+     else {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     };
+-    let working_directory = state.project_root.clone();
++    let working_directory = project_root;
+     let creation = cx.with_window(workspace.entity_id(), |window, cx| {
+         workspace.update(cx, |workspace, cx| {
+             TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
+@@ -4028,7 +4039,7 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         cx.update(|cx| {
+             let response = match created {
+                 Ok(terminal) => {
+-                    match loaded_terminal_views(&state.project_root, cx)
++                    match loaded_terminal_views(&state.project_roots, cx)
+                         .into_iter()
+                         .find(|view| view.read(cx).terminal().entity_id() == terminal.entity_id())
+                     {
+@@ -4051,7 +4062,7 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+ }
+ 
+ fn terminal_list(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
+-    let terminals = loaded_terminal_views(&state.project_root, cx)
++    let terminals = loaded_terminal_views(&state.project_roots, cx)
+         .iter()
+         .map(|view| terminal_value(view, cx))
+         .collect::<Vec<_>>();
+@@ -4070,7 +4081,7 @@ fn terminal_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Va
+     let Some(id) = request.params.get("terminal_id").and_then(Value::as_str) else {
+         return error(&request.request_id, "INVALID_REQUEST");
+     };
+-    let Some(view) = loaded_terminal_views(&state.project_root, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4209,7 +4220,7 @@ fn terminal_input(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> V
+             error(&request.request_id, "REQUEST_ID_CONFLICT")
+         };
+     }
+-    let Some(view) = loaded_terminal_views(&state.project_root, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4274,7 +4285,7 @@ fn terminal_resize(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+             error(&request.request_id, "REQUEST_ID_CONFLICT")
+         };
+     }
+-    let Some(view) = loaded_terminal_views(&state.project_root, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4299,7 +4310,7 @@ fn terminal_resize(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+ }
+ 
+ fn task_list(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
+-    let tasks = loaded_terminal_views(&state.project_root, cx)
++    let tasks = loaded_terminal_views(&state.project_roots, cx)
+         .into_iter()
+         .filter_map(|view| {
+             let id = terminal_id(&view);
+@@ -4349,7 +4360,7 @@ fn task_stop(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value
+             error(&request.request_id, "REQUEST_ID_CONFLICT")
+         };
+     }
+-    let Some(view) = loaded_terminal_views(&state.project_root, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4378,7 +4389,7 @@ fn task_catalog(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
+     if !matches_instance(request, state) {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     }
+-    let tasks = configured_tasks(&state.project_root, cx)
++    let tasks = configured_tasks(&state.project_roots, cx)
+         .into_iter()
+         .map(|(_, source, task)| {
+             json!({
+@@ -4429,7 +4440,7 @@ fn task_run(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
+     if state.terminal_operations.borrow().len() >= 256 {
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+-    let Some((workspace, source, task)) = configured_tasks(&state.project_root, cx)
++    let Some((workspace, source, task)) = configured_tasks(&state.project_roots, cx)
+         .into_iter()
+         .find(|(_, _, task)| task.id.0 == task_id)
+     else {
+@@ -4457,7 +4468,7 @@ fn debugger_catalog(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Val
+     if !matches_instance(request, state) {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     }
+-    let scenarios = configured_debug_scenarios(&state.project_root, cx)
++    let scenarios = configured_debug_scenarios(&state.project_roots, cx)
+         .into_iter()
+         .map(|(_, source, scenario, _)| {
+             json!({
+@@ -4510,7 +4521,7 @@ fn debugger_launch(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+     let Some((workspace, source, scenario, context)) =
+-        configured_debug_scenarios(&state.project_root, cx)
++        configured_debug_scenarios(&state.project_roots, cx)
+             .into_iter()
+             .find(|(_, source, scenario, _)| debug_scenario_id(source, scenario) == scenario_id)
+     else {
+@@ -4550,7 +4561,7 @@ fn debugger_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     }
+     let mut sessions = Vec::new();
+-    for panel in loaded_debug_panels(&state.project_root, cx) {
++    for panel in loaded_debug_panels(&state.project_roots, cx) {
+         let debug_sessions = panel.read(cx).sessions().collect::<Vec<_>>();
+         for debug_session in debug_sessions {
+             let session = debug_session.read(cx).session(cx);
+@@ -4654,7 +4665,7 @@ fn debugger_control(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+     if state.terminal_operations.borrow().len() >= 256 {
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+-    let debug_session = loaded_debug_panels(&state.project_root, cx)
++    let debug_session = loaded_debug_panels(&state.project_roots, cx)
+         .into_iter()
+         .flat_map(|panel| panel.read(cx).sessions().collect::<Vec<_>>())
+         .find(|debug_session| {
+@@ -4768,39 +4779,52 @@ fn params_contain_only(params: &Value, allowed: &[&str]) -> bool {
+         .is_some_and(|params| params.keys().all(|key| allowed.contains(&key.as_str())))
+ }
+ 
++/// Visible folders of the project that are configured roots, with their root path.
++fn exposed_worktrees(
++    project: &project::Project,
++    project_roots: &[PathBuf],
++    cx: &App,
++) -> Vec<(worktree::WorktreeId, PathBuf)> {
++    project
++        .visible_worktrees(cx)
++        .filter_map(|worktree| {
++            let worktree = worktree.read(cx);
++            project_roots
++                .iter()
++                .find(|root| worktree.abs_path().as_ref() == root.as_path())
++                .map(|root| (worktree.id(), root.clone()))
++        })
++        .collect()
++}
++
+ fn configured_tasks(
+-    project_root: &Path,
++    project_roots: &[PathBuf],
+     cx: &App,
+ ) -> Vec<(Entity<workspace::Workspace>, TaskSourceKind, ResolvedTask)> {
+     let mut tasks = Vec::new();
+-    for workspace in loaded_project_workspaces(project_root, cx) {
++    for workspace in loaded_project_workspaces(project_roots, cx) {
+         let project = workspace.read(cx).project().clone();
+         let project = project.read(cx);
+-        let Some(worktree) = project
+-            .visible_worktrees(cx)
+-            .find(|worktree| worktree.read(cx).abs_path().as_ref() == project_root)
+-        else {
+-            continue;
+-        };
+-        let worktree_id = worktree.read(cx).id();
+-        let mut task_variables = TaskVariables::default();
+-        task_variables.insert(
+-            VariableName::WorktreeRoot,
+-            project_root.to_string_lossy().into_owned(),
+-        );
+-        let context = TaskContext {
+-            cwd: Some(project_root.to_path_buf()),
+-            task_variables,
+-            project_env: project.cli_environment(cx).unwrap_or_default(),
+-        };
+         let Some(inventory) = project.task_store().read(cx).task_inventory().cloned() else {
+             continue;
+         };
+-        for (source, task) in inventory
+-            .read(cx)
+-            .configured_tasks_for_worktree(worktree_id, &context)
+-        {
+-            tasks.push((workspace.clone(), source, task));
++        for (worktree_id, project_root) in exposed_worktrees(project, project_roots, cx) {
++            let mut task_variables = TaskVariables::default();
++            task_variables.insert(
++                VariableName::WorktreeRoot,
++                project_root.to_string_lossy().into_owned(),
++            );
++            let context = TaskContext {
++                cwd: Some(project_root),
++                task_variables,
++                project_env: project.cli_environment(cx).unwrap_or_default(),
++            };
++            for (source, task) in inventory
++                .read(cx)
++                .configured_tasks_for_worktree(worktree_id, &context)
++            {
++                tasks.push((workspace.clone(), source, task));
++            }
+         }
+     }
+     tasks.sort_by(|left, right| left.2.display_label().cmp(right.2.display_label()));
+@@ -4809,7 +4833,7 @@ fn configured_tasks(
+ }
+ 
+ fn configured_debug_scenarios(
+-    project_root: &Path,
++    project_roots: &[PathBuf],
+     cx: &App,
+ ) -> Vec<(
+     Entity<workspace::Workspace>,
+@@ -4818,34 +4842,29 @@ fn configured_debug_scenarios(
+     TaskContext,
+ )> {
+     let mut scenarios = Vec::new();
+-    for workspace in loaded_project_workspaces(project_root, cx) {
++    for workspace in loaded_project_workspaces(project_roots, cx) {
+         let project = workspace.read(cx).project().clone();
+         let project = project.read(cx);
+-        let Some(worktree) = project
+-            .visible_worktrees(cx)
+-            .find(|worktree| worktree.read(cx).abs_path().as_ref() == project_root)
+-        else {
+-            continue;
+-        };
+-        let worktree_id = worktree.read(cx).id();
+-        let mut task_variables = TaskVariables::default();
+-        task_variables.insert(
+-            VariableName::WorktreeRoot,
+-            project_root.to_string_lossy().into_owned(),
+-        );
+-        let context = TaskContext {
+-            cwd: Some(project_root.to_path_buf()),
+-            task_variables,
+-            project_env: project.cli_environment(cx).unwrap_or_default(),
+-        };
+         let Some(inventory) = project.task_store().read(cx).task_inventory().cloned() else {
+             continue;
+         };
+-        for (source, scenario) in inventory
+-            .read(cx)
+-            .configured_debug_scenarios_for_worktree(worktree_id)
+-        {
+-            scenarios.push((workspace.clone(), source, scenario, context.clone()));
++        for (worktree_id, project_root) in exposed_worktrees(project, project_roots, cx) {
++            let mut task_variables = TaskVariables::default();
++            task_variables.insert(
++                VariableName::WorktreeRoot,
++                project_root.to_string_lossy().into_owned(),
++            );
++            let context = TaskContext {
++                cwd: Some(project_root),
++                task_variables,
++                project_env: project.cli_environment(cx).unwrap_or_default(),
++            };
++            for (source, scenario) in inventory
++                .read(cx)
++                .configured_debug_scenarios_for_worktree(worktree_id)
++            {
++                scenarios.push((workspace.clone(), source, scenario, context.clone()));
++            }
+         }
+     }
+     scenarios.sort_by(|left, right| left.2.label.cmp(&right.2.label));
+@@ -4875,33 +4894,31 @@ fn task_source_label(source: &TaskSourceKind) -> &'static str {
+     }
+ }
+ 
+-fn loaded_debug_panels(project_root: &Path, cx: &App) -> Vec<Entity<DebugPanel>> {
+-    loaded_project_workspaces(project_root, cx)
++fn loaded_debug_panels(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<DebugPanel>> {
++    loaded_project_workspaces(project_roots, cx)
+         .into_iter()
+         .filter_map(|workspace| workspace.read(cx).panel::<DebugPanel>(cx))
+         .collect()
+ }
+ 
+-fn loaded_project_workspaces(project_root: &Path, cx: &App) -> Vec<Entity<workspace::Workspace>> {
++fn loaded_project_workspaces(
++    project_roots: &[PathBuf],
++    cx: &App,
++) -> Vec<Entity<workspace::Workspace>> {
+     workspace::AppState::global(cx)
+         .workspace_store
+         .read(cx)
+         .workspaces()
+         .filter_map(|workspace| workspace.upgrade())
+         .filter(|workspace| {
+-            workspace
+-                .read(cx)
+-                .project()
+-                .read(cx)
+-                .visible_worktrees(cx)
+-                .any(|worktree| worktree.read(cx).abs_path().as_ref() == project_root)
++            project_root_for(workspace.read(cx).project(), project_roots, cx).is_some()
+         })
+         .collect()
+ }
+ 
+-fn loaded_terminal_views(project_root: &Path, cx: &App) -> Vec<Entity<TerminalView>> {
++fn loaded_terminal_views(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<TerminalView>> {
+     let mut terminals = Vec::new();
+-    for workspace in loaded_project_workspaces(project_root, cx) {
++    for workspace in loaded_project_workspaces(project_roots, cx) {
+         let center_panes = workspace.read(cx).panes().to_vec();
+         for pane in center_panes {
+             for item in pane.read(cx).items() {
+@@ -4959,7 +4976,7 @@ fn terminal_value(view: &Entity<TerminalView>, cx: &App) -> Value {
+ }
+ 
+ fn loaded_thread_views(
+-    project_root: &Path,
++    project_roots: &[PathBuf],
+     cx: &App,
+ ) -> Vec<(Entity<AcpThread>, Entity<ThreadView>)> {
+     let workspaces = workspace::AppState::global(cx)
+@@ -4982,7 +4999,7 @@ fn loaded_thread_views(
+                 continue;
+             };
+             let thread = view.read(cx).thread.clone();
+-            if thread_belongs_to_project(&thread, project_root, cx) {
++            if thread_belongs_to_project(&thread, project_roots, cx) {
+                 threads.push((thread, view));
+             }
+         }
+@@ -4990,12 +5007,47 @@ fn loaded_thread_views(
+     threads
+ }
+ 
+-fn thread_belongs_to_project(thread: &Entity<AcpThread>, project_root: &Path, cx: &App) -> bool {
+-    let project = thread.read(cx).project().clone();
+-    project
+-        .read(cx)
+-        .visible_worktrees(cx)
+-        .any(|worktree| worktree.read(cx).abs_path().as_ref() == project_root)
++fn thread_belongs_to_project(
++    thread: &Entity<AcpThread>,
++    project_roots: &[PathBuf],
++    cx: &App,
++) -> bool {
++    thread_project_root(thread, project_roots, cx).is_some()
++}
++
++fn thread_project_root(
++    thread: &Entity<AcpThread>,
++    project_roots: &[PathBuf],
++    cx: &App,
++) -> Option<PathBuf> {
++    project_root_for(thread.read(cx).project(), project_roots, cx)
++}
++
++/// Returns the first configured root, in settings order, that is exactly one
++/// of the project's visible folders. A folder nested inside a root doesn't
++/// count, so opening a parent directory never widens what is exposed.
++fn project_root_for(
++    project: &Entity<project::Project>,
++    project_roots: &[PathBuf],
++    cx: &App,
++) -> Option<PathBuf> {
++    let project = project.read(cx);
++    project_roots
++        .iter()
++        .find(|root| {
++            project
++                .visible_worktrees(cx)
++                .any(|worktree| worktree.read(cx).abs_path().as_ref() == root.as_path())
++        })
++        .cloned()
++}
++
++fn project_names(project_roots: &[PathBuf]) -> String {
++    project_roots
++        .iter()
++        .filter_map(|root| root.file_name().and_then(|name| name.to_str()))
++        .collect::<Vec<_>>()
++        .join(", ")
+ }
+ 
+ fn success(request_id: &str, result: Value) -> Value {
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index f3c69f2..964f9cc 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -354,10 +354,17 @@ pub struct ZedLinkSettingsContent {
+     /// created in its `probe` child directory.
+     pub state_directory: Option<String>,
+ 
+-    /// Absolute path of the one project whose explicitly exposed Agent threads
+-    /// may be controlled through ZedLink.
++    /// Absolute path of the primary project whose explicitly exposed Agent
++    /// threads may be controlled through ZedLink.
+     pub project_root: Option<String>,
+ 
++    /// Absolute paths of additional projects whose explicitly exposed Agent
++    /// threads may be controlled through ZedLink. Each path must exactly match
++    /// a folder opened in a Zed workspace.
++    ///
++    /// Default: []
++    pub project_roots: Option<Vec<String>>,
++
+     /// Starts the configured ZedLink gateway when the local bridge starts.
+     ///
+     /// Default: true
+-- 
+2.54.0 (Apple Git-157)
+
