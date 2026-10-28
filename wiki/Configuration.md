@@ -77,6 +77,17 @@ Clients keep authorization and drafts separate for each paired gateway. One gate
 
 An unavailable target remains selected and visibly unavailable. ZedLink does not reroute an uncertain send to another target.
 
+Each patched Zed **process** needs its own private probe socket and an explicit project root. Opening another folder in a second process that inherited the first process's ZedLink settings does not create another target: the first process owns that socket, and the bridge remains scoped to the first project. Start the second process with distinct probe settings:
+
+```sh
+mkdir -p -m 700 "$HOME/.local/state/zedlink/probes/second"
+ZEDLINK_PROBE_DIR="$HOME/.local/state/zedlink/probes/second" \
+ZEDLINK_PROBE_PROJECT_ROOT="/absolute/path/to/second-project" \
+  /path/to/patched/zed "/absolute/path/to/second-project"
+```
+
+In **ZedLink: Manage Zed targets**, add a unique target ID and label with the socket path `~/.local/state/zedlink/probes/second/zedlink.sock` expanded to its absolute path. Restart **only the gateway** to load the target list; running desktop Agent turns continue. Then open the intended Agent conversation in the second patched Zed window and run `/remote-control` there. A new target starts with zero exposed threads. On the phone or browser, select the same paired gateway and switch the **Zed target** to that project. Each target's thread selection and pending sends remain separate.
+
 ## Models and external agents
 
 ZedLink uses the model and Agent configuration already selected in Zed. It does not store provider keys or call an LLM directly. New native Agent sessions use the current Zed model/profile. Codex, Claude Code, and other ACP agents retain their configuration in Zed.

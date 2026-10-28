@@ -38,6 +38,46 @@ struct ConnectionsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Saved connections") {
+                    if profiles.profiles.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("No connections").font(.headline)
+                            Text("Use Pair a device on your workstation, then scan its QR or paste its pairing link here.")
+                                .font(.subheadline).foregroundStyle(ZLTheme.muted)
+                        }.padding(.vertical, 8)
+                    }
+                    ForEach(profiles.profiles) { profile in
+                        HStack(spacing: 8) {
+                            Button {
+                                profiles.markUsed(profile)
+                                Task {
+                                    await session.connect(profile)
+                                }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(profile.name).font(.headline).foregroundStyle(ZLTheme.ink)
+                                        Text(profile.endpoint).font(.caption.monospaced()).foregroundStyle(ZLTheme.muted)
+                                            .lineLimit(1).truncationMode(.middle)
+                                    }
+                                    Spacer(minLength: 4)
+                                    if session.profile?.id == profile.id { ConnectionStatusView(state: session.state) }
+                                    else { Text("Connect").font(.caption) }
+                                }
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("connect-\(profile.id)")
+                            NavigationLink { ConnectionDetailView(profileID: profile.id) } label: {
+                                Image(systemName: "info.circle").frame(minWidth: 44, minHeight: 44)
+                            }
+                            .accessibilityLabel("Details for \(profile.name)")
+                        }
+                    }
+                    Button("Add connection") { showingAdd = true }
+                        .frame(minHeight: 44).accessibilityIdentifier("add-connection")
+                }
                 if let profile = currentProfile {
                     Section("Current connection") {
                         HStack(alignment: .top) {
@@ -124,29 +164,6 @@ struct ConnectionsView: View {
                                 .font(.footnote).foregroundStyle(ZLTheme.muted)
                         }
                     }
-                }
-                Section("Saved connections") {
-                    if profiles.profiles.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("No connections").font(.headline)
-                            Text("Use Pair a device on your workstation, then scan its QR or paste its pairing link here.")
-                                .font(.subheadline).foregroundStyle(ZLTheme.muted)
-                        }.padding(.vertical, 8)
-                    }
-                    ForEach(profiles.profiles) { profile in
-                        NavigationLink { ConnectionDetailView(profileID: profile.id) } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(profile.name).font(.headline)
-                                    Text(profile.route.rawValue).font(.caption).foregroundStyle(ZLTheme.muted)
-                                }
-                                Spacer()
-                                if session.profile?.id == profile.id { ConnectionStatusView(state: session.state) }
-                                else { Text("Saved").font(.caption).foregroundStyle(ZLTheme.muted) }
-                            }.padding(.vertical, 6)
-                        }.accessibilityIdentifier("connection-\(profile.id)")
-                    }
-                    Button("Add connection") { showingAdd = true }.accessibilityIdentifier("add-connection")
                 }
                 if let profile = session.profile {
                     Section("Workspaces · \(profile.name)") {
@@ -356,12 +373,12 @@ private struct ConnectionDetailView: View {
                     }
                     Button(session.profile?.id == profile.id ? "Reconnect" : "Connect") {
                         connecting = true
+                        profiles.markUsed(profile)
                         Task {
                             defer { connecting = false }
                             await session.connect(profile)
-                            if session.state == .live, session.profile?.id == profile.id { profiles.markUsed(profile) }
                         }
-                    }.disabled(connecting || session.state == .connecting || session.state == .reconnecting)
+                    }.disabled(connecting)
                         .accessibilityIdentifier("connect-\(profile.id)")
                     Button("Edit connection") { draft = ConnectionDraft(profile); editing = true }.disabled(connecting)
                 }
@@ -404,6 +421,7 @@ struct AddConnectionView: View {
     private var deviceName: String { get { draft.deviceName } nonmutating set { draft.deviceName = newValue } }
     @State private var issue = ""
     @State private var busy = false
+    @State private var busyStage = ""
     @State private var showingScanner = false
     @State private var showingIdentity = false
     @State private var observedID = "" // the gateway identity seen by the last Test; never kept in the draft
@@ -423,70 +441,6 @@ struct AddConnectionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if !draft.editing { Section("Quick setup") {
-                    Button("Scan workstation QR") { Task { await scanPairingLink() } }
-                        .disabled(!DataScannerViewController.isSupported || busy).accessibilityIdentifier("scan-pairing-qr")
-                    Button("Use pairing link from clipboard") {
-                        if let link = UIPasteboard.general.string { applyPairingLink(link) }
-                        else { issue = "Copy the desktop pairing link first." }
-                    }
-                    if !DataScannerViewController.isSupported {
-                        Text("QR scanning needs a supported iPhone camera. Paste the desktop link or enter the address below.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                }
-                Section("Route") {
-                    Picker("Connection type", selection: $draft.route) {
-                        ForEach(RouteKind.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    Text(route.guidance).font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("Gateway") {
-                    TextField("Name", text: $draft.name)
-                    TextField("https://hostname:port", text: $draft.endpoint)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                        .accessibilityIdentifier("gateway-endpoint")
-                    Button("Test HTTPS endpoint") { Task { await testEndpoint() } }
-                        .disabled(busy).accessibilityIdentifier("test-connection")
-                    
-                    DisclosureGroup("Gateway identity", isExpanded: $showingIdentity) {
-                        if !observedID.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Observed gateway ID").font(.footnote).foregroundStyle(ZLTheme.muted)
-                                Text(observedID).font(.footnote.monospaced()).textSelection(.enabled)
-                            }
-                        }
-                        TextField("Expected gateway ID from workstation", text: $draft.expectedID)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .disabled(draft.editing).accessibilityIdentifier("expected-gateway-id")
-                    }
-                }
-                Section(draft.editing ? "Save connection" : "Pair this iPhone") {
-                    if !draft.editing {
-                    TextField("Device name", text: $draft.deviceName)
-                    SecureField("10-digit pairing code", text: $draft.code)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.numberPad)
-                        .accessibilityIdentifier("pairing-code")
-                    if !code.isEmpty {
-                        Label("One-time code loaded", systemImage: "checkmark.circle")
-                            .font(.footnote).foregroundStyle(ZLTheme.healthy)
-                    }
-                    Text(pairingNextStep)
-                        .font(.footnote).foregroundStyle(ZLTheme.muted)
-                    Button("Pair and save") { Task { await pair() } }
-                        .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(candidate.gatewayID) != .orderedSame || code.isEmpty)
-                        .buttonStyle(ZLPrimaryButtonStyle())
-                        .accessibilityIdentifier("pair-and-save")
-                    }
-                    if savedGateway != nil {
-                        Button(draft.editing ? "Save changes and connect" : "Save another address") { Task { await saveExistingRoute() } }
-                            .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(expectedID) != .orderedSame)
-                            .accessibilityIdentifier("save-existing-route")
-                        Text("This gateway is already paired. Save this address as another connection and reuse its protected Keychain credential.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
                 if !issue.isEmpty {
                     Section("Connection diagnostic") {
                         Label {
@@ -503,8 +457,88 @@ struct AddConnectionView: View {
                         }
                     }
                 }
+                if !draft.editing { Section("Quick setup") {
+                    Button("Scan workstation QR") { Task { await scanPairingLink() } }
+                        .disabled(!DataScannerViewController.isSupported || busy).accessibilityIdentifier("scan-pairing-qr")
+                    Button("Use pairing link from clipboard") {
+                        if let link = UIPasteboard.general.string { applyPairingLink(link) }
+                        else { issue = "Copy the desktop pairing link first." }
+                    }.disabled(busy)
+                    if !DataScannerViewController.isSupported {
+                        Text("QR scanning needs a supported iPhone camera. Paste the desktop link or enter the address below.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                }
+                Section("Route") {
+                    Picker("Connection type", selection: $draft.route) {
+                        ForEach(RouteKind.allCases) { Text($0.rawValue).tag($0) }
+                    }.disabled(busy)
+                    Text(route.guidance).font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Gateway") {
+                    TextField("Name", text: $draft.name)
+                        .disabled(busy)
+                    TextField("https://hostname:port", text: $draft.endpoint)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        .disabled(busy)
+                        .accessibilityIdentifier("gateway-endpoint")
+                    Button("Test HTTPS endpoint") { Task { await testEndpoint() } }
+                        .disabled(busy).accessibilityIdentifier("test-connection")
+                    
+                    DisclosureGroup("Gateway identity", isExpanded: $showingIdentity) {
+                        if !observedID.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Observed gateway ID").font(.footnote).foregroundStyle(ZLTheme.muted)
+                                Text(observedID).font(.footnote.monospaced()).textSelection(.enabled)
+                            }
+                        }
+                        TextField("Expected gateway ID from workstation", text: $draft.expectedID)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .disabled(draft.editing || busy).accessibilityIdentifier("expected-gateway-id")
+                    }
+                }
+                Section(draft.editing ? "Save connection" : "Pair this iPhone") {
+                    if savedGateway != nil {
+                        Button(draft.editing ? "Save changes and connect" : "Save another address") { Task { await saveExistingRoute() } }
+                            .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(expectedID) != .orderedSame)
+                            .accessibilityIdentifier("save-existing-route")
+                        Text("This gateway is already paired. Save this address as another connection and reuse its protected Keychain credential.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if !draft.editing {
+                    TextField("Device name", text: $draft.deviceName)
+                        .disabled(busy)
+                    SecureField("10-digit pairing code", text: $draft.code)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.numberPad)
+                        .disabled(busy)
+                        .accessibilityIdentifier("pairing-code")
+                    if !code.isEmpty {
+                        Label("One-time code loaded", systemImage: "checkmark.circle")
+                            .font(.footnote).foregroundStyle(ZLTheme.healthy)
+                    }
+                    Text(pairingNextStep)
+                        .font(.footnote).foregroundStyle(ZLTheme.muted)
+                    Button("Pair and save") { Task { await pair() } }
+                        .disabled(busy || observedID.isEmpty || observedID.caseInsensitiveCompare(candidate.gatewayID) != .orderedSame || code.isEmpty)
+                        .buttonStyle(ZLPrimaryButtonStyle())
+                        .accessibilityIdentifier("pair-and-save")
+                    }
+                }
             }
-            .disabled(busy)
+            .safeAreaInset(edge: .bottom) {
+                if busy {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text(busyStage).font(.footnote).foregroundStyle(ZLTheme.ink)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .frame(maxWidth: .infinity)
+                    .background(ZLTheme.background)
+                    .accessibilityIdentifier("connection-progress")
+                }
+            }
             .navigationTitle(draft.editing ? "Edit connection" : "Add connection").navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled(busy)
             .onChange(of: endpoint) { _, _ in observedID = "" }
@@ -525,7 +559,8 @@ struct AddConnectionView: View {
 
     private func scanPairingLink() async {
         guard !busy else { return }
-        busy = true; defer { busy = false }
+        busy = true; busyStage = "Opening camera…"
+        defer { busy = false; busyStage = "" }
         guard DataScannerViewController.isSupported else {
             issue = "This iPhone does not support live QR scanning. Use the clipboard or manual fields."; return
         }
@@ -563,9 +598,14 @@ struct AddConnectionView: View {
 
     private func testEndpoint() async {
         guard !busy else { return }
-        busy = true; defer { busy = false }; observedID = ""
+        busy = true; busyStage = "Checking gateway HTTPS…"
+        defer { busy = false; busyStage = "" }; observedID = ""
         do {
             observedID = try await GatewayClient(profile: candidate, token: nil).gatewayID()
+            if expectedID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let existing = profiles.profiles.first(where: { $0.gatewayID.caseInsensitiveCompare(observedID) == .orderedSame }) {
+                expectedID = existing.gatewayID
+            }
             showingIdentity = true
             issue = identityIssue
         } catch { issue = error.localizedDescription }
@@ -577,6 +617,9 @@ struct AddConnectionView: View {
         }
         if observedID.caseInsensitiveCompare(candidate.gatewayID) != .orderedSame {
             return "HTTPS reached, but this gateway ID differs from the workstation value. Check the address and expected ID before pairing."
+        }
+        if savedGateway != nil {
+            return "HTTPS and gateway identity verified. Save this address using the existing device credential, or pair again with a fresh code."
         }
         return code.isEmpty
             ? "HTTPS and gateway identity verified. Enter a fresh one-time code, then choose Pair and save."
@@ -597,7 +640,8 @@ struct AddConnectionView: View {
 
     private func pair() async {
         guard !busy else { return }
-        busy = true; defer { busy = false }
+        busy = true; busyStage = "Verifying gateway and pairing this iPhone…"
+        defer { busy = false; busyStage = "" }
         let profile = candidate
         guard !profile.name.isEmpty, observedID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame else {
             issue = "Gateway ID differs from the workstation value. No pairing code was sent."; return
@@ -610,16 +654,20 @@ struct AddConnectionView: View {
             code = ""
             try await CredentialVault.shared.write(paired.token, for: profile)
             let saved = profiles.save(profile)
-            await session.connect(saved)
-            if session.state == .live, session.profile?.id == saved.id { profiles.markUsed(saved) }
+            profiles.markUsed(saved)
             draft = ConnectionDraft()
             dismiss()
+            let session = session
+            Task { @MainActor in
+                await session.connect(saved)
+            }
         } catch { issue = error.localizedDescription }
     }
 
     private func saveExistingRoute() async {
         guard !busy else { return }
-        busy = true; defer { busy = false }
+        busy = true; busyStage = "Checking saved device credential…"
+        defer { busy = false; busyStage = "" }
         let profile = candidate
         guard observedID.caseInsensitiveCompare(profile.gatewayID) == .orderedSame, savedGateway != nil else {
             issue = "Test the new HTTPS address and confirm the same gateway identity first."; return
@@ -628,10 +676,13 @@ struct AddConnectionView: View {
             issue = "The saved device credential is missing. Pair this device again once."; return
         }
         let saved = profiles.save(profile)
-        await session.connect(saved)
-        if session.state == .live, session.profile?.id == saved.id { profiles.markUsed(saved) }
+        profiles.markUsed(saved)
         draft = ConnectionDraft()
         dismiss()
+        let session = session
+        Task { @MainActor in
+            await session.connect(saved)
+        }
     }
 }
 

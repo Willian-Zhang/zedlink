@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
+from collections import Counter
 from pathlib import Path
 
 from websockets.sync.client import connect
@@ -46,6 +47,7 @@ class ProbeFixture:
         self.seen_sends = {}
         self.created_requests = {}
         self.accepted = 0
+        self.method_calls = Counter()
         self.entries = ['<img src=x onerror="window.syntheticXss=1">']
         self.sequence = 0
         self.event_delay = 0
@@ -132,6 +134,7 @@ class ProbeFixture:
             with connection:
                 request = json.loads(connection.makefile("rb").readline())
                 method = request["method"]
+                self.method_calls[method] += 1
                 params = request["params"]
                 if method == "thread.send" and self.drop_send_before_accept_once:
                     self.drop_send_before_accept_once = False
@@ -1037,6 +1040,7 @@ def main():
                                for option in Select(browser.find_element(By.ID, "target-select")).options]
                     raise AssertionError(f"target selector value {selected_target!r}; options {options!r}")
                 assert "Fixture Zed" in browser.find_element(By.ID, "connection-target").get_attribute("textContent")
+                assert browser.execute_async_script("const done=arguments[0]; checkGatewayHTTPS().then(done)") is True
                 assert browser.find_element(By.ID, "notification-state")
                 assert browser.find_element(By.ID, "enable-notifications")
                 wait.until(lambda driver: "checking" not in driver.find_element(By.ID, "notification-state").text.casefold())
@@ -1397,6 +1401,10 @@ def main():
                 wait.until(lambda driver: driver.find_element(By.ID, "agent-connection-state").get_attribute("textContent") == "Compacting context")
                 assert "this page" in browser.find_element(By.ID, "last-conversation-change").get_attribute("textContent")
                 assert browser.find_element(By.ID, "last-live-update").get_attribute("textContent") != "None yet"
+                snapshots_before_idle_stream = probe.method_calls["thread.snapshot"]
+                time.sleep(6)
+                active_snapshot_count = probe.method_calls["thread.snapshot"] - snapshots_before_idle_stream
+                assert 1 <= active_snapshot_count <= 5, active_snapshot_count
                 probe.activity = {"phase": "responding", "label": "Agent is responding", "detail": None}
                 progress = browser.find_element(By.ID, "thread-state")
                 assert progress.is_displayed()

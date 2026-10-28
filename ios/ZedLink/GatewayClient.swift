@@ -38,7 +38,9 @@ struct GatewayClient {
     private static let session = URLSession(configuration: .ephemeral, delegate: redirectDelegate, delegateQueue: nil)
     private static func identitySession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.waitsForConnectivity = true
+        // An explicit endpoint test must finish with a result even when a VPN route is absent.
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForResource = 20
         return URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
     }
     let profile: ConnectionProfile

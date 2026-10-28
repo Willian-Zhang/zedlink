@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.24.3";
+const UI_BUILD = "2026.10.25.2";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -55,6 +55,8 @@ const state = {
   snapshotPromise: null,
   snapshotQueued: false,
   lastSnapshotAt: 0,
+  lastAuxiliaryAt: 0,
+  lastAuxiliaryScope: "",
   lastThreadsAt: 0,
   gatewayVerified: false,
   stoppingTurn: false,
@@ -782,7 +784,7 @@ async function keepPairingStorage() {
 }
 async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), 20000);
   let response;
   let data;
   try {
@@ -796,10 +798,19 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     state.gatewayReachable = true;
     renderConnectionHealth();
   } catch (cause) {
-    state.gatewayReachable = false;
+    if (cause?.name !== "AbortError" && response) {
+      state.gatewayReachable = true;
+      renderConnectionHealth();
+      throw new Error("The gateway returned an unreadable response.");
+    }
+    const reachable = await checkGatewayHTTPS();
+    state.gatewayReachable = reachable;
     renderConnectionHealth();
-    const error = new Error(cause?.name === "AbortError" ? "The gateway request timed out." : "The gateway connection was interrupted.");
-    error.code = "TRANSPORT_UNAVAILABLE";
+    const timedOut = cause?.name === "AbortError";
+    const error = new Error(reachable
+      ? `Zed request ${method} ${timedOut ? "timed out" : "was interrupted"}; gateway HTTPS still responds.`
+      : `Gateway HTTPS ${timedOut ? "timed out" : "was interrupted"} during ${method}. Check this device's private route.`);
+    error.code = reachable ? "NATIVE_REQUEST_TIMEOUT" : "TRANSPORT_UNAVAILABLE";
     throw error;
   } finally { clearTimeout(timeout); }
   if (response.status === 401) {
@@ -843,6 +854,17 @@ async function rpc(method, params = {}, requestId = crypto.randomUUID()) {
     throw error;
   }
   return data.result;
+}
+
+async function checkGatewayHTTPS() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch("/v1/gateway", { cache: "no-store", redirect: "error", signal: controller.signal });
+    const result = await response.json();
+    return response.ok && result.version === 1 && result.gateway_id === state.gatewayId;
+  } catch { return false; }
+  finally { clearTimeout(timeout); }
 }
 
 function closeEventStream(nextState = "idle") {
@@ -915,7 +937,8 @@ function startEventStream() {
         state.totalEntries = 0;
         $("transcript-entries").replaceChildren();
       }
-      if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle")) {
+      if (result.events.length || (state.threadStatus && state.threadStatus !== "Idle"
+          && Date.now() - state.lastSnapshotAt >= 2500)) {
         refreshSnapshot().catch((error) => notice(error.message));
       }
     } catch (error) {
@@ -960,7 +983,7 @@ async function loadGateway() {
   const expectedFromLink = pairingLink.get("gateway");
   if (oneScanCode) history.replaceState(null, "", location.pathname + location.search);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const response = await fetch("/v1/gateway", { cache: "no-store", redirect: "error", signal: controller.signal });
     const result = await response.json();
@@ -1021,26 +1044,33 @@ async function loadGateway() {
     renderConnectionHealth();
     connection(error.message.includes("gateway identity differs") ? "Gateway identity mismatch"
       : error.message.includes("pairing link") ? "Pairing link invalid" : "Gateway unavailable", "offline");
-    notice(error.message);
+    notice(error?.name === "AbortError"
+      ? "Gateway discovery timed out. Check this device's private route and retry."
+      : error.message);
   } finally { clearTimeout(timeout); }
 }
 
 async function pairBrowser(code, deviceName) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
   let response;
+  let result;
   try {
     response = await fetch("/v1/pair", {
-      method: "POST", cache: "no-store", redirect: "error",
+      method: "POST", cache: "no-store", redirect: "error", signal: controller.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code, device_name: deviceName }),
     });
+    result = await response.json();
     state.gatewayReachable = true;
-  } catch {
+  } catch (cause) {
     state.gatewayReachable = false;
     renderConnectionHealth();
-    throw new Error("The gateway connection was interrupted while pairing.");
-  }
+    throw new Error(cause?.name === "AbortError"
+      ? "Pairing timed out. Check the private route, then use a fresh one-time code if this code was consumed."
+      : "The gateway connection was interrupted while pairing.");
+  } finally { clearTimeout(timeout); }
   renderConnectionHealth();
-  const result = await response.json();
   if (!response.ok) throw new Error(apiError(result.error));
   if (result.gateway_id !== state.gatewayId || !/^[0-9a-f]{64}$/.test(result.token)) {
     throw new Error("Pairing identity or token was invalid.");
@@ -3000,12 +3030,15 @@ function renderQueue(queue) {
 
 async function refreshAuxiliaryState() {
   if (!state.threadId) return;
+  const scope = [targetScope(), state.instanceId, state.epoch, state.threadId].join("|");
+  const params = baseThreadParams();
   const requests = [
-    state.capabilities.includes("thread.elicitations") ? rpc("thread.elicitations", baseThreadParams()) : Promise.resolve({ elicitations: [] }),
-    state.capabilities.includes("thread.edit_review") ? rpc("thread.edit_review", baseThreadParams()) : Promise.resolve(null),
-    state.capabilities.includes("thread.queue") ? rpc("thread.queue", baseThreadParams()) : Promise.resolve(null),
+    state.capabilities.includes("thread.elicitations") ? rpc("thread.elicitations", params) : Promise.resolve({ elicitations: [] }),
+    state.capabilities.includes("thread.edit_review") ? rpc("thread.edit_review", params) : Promise.resolve(null),
+    state.capabilities.includes("thread.queue") ? rpc("thread.queue", params) : Promise.resolve(null),
   ];
   const [elicitations, edits, queue] = await Promise.all(requests);
+  if (scope !== [targetScope(), state.instanceId, state.epoch, state.threadId].join("|")) return;
   renderElicitations(elicitations?.elicitations);
   renderEditReview(edits);
   renderQueue(queue);
@@ -4024,7 +4057,14 @@ async function snapshot() {
   renderSubagents(result.subagents);
   const childApprovals = state.subagents.flatMap((agent) => Array.isArray(agent.pending_approvals) ? agent.pending_approvals : []);
   renderApprovals([...(Array.isArray(result.pending_approvals) ? result.pending_approvals : []), ...childApprovals]);
-  await refreshAuxiliaryState();
+  if (state.lastAuxiliaryScope !== snapshotScope || Date.now() - state.lastAuxiliaryAt >= 5000) {
+    state.lastAuxiliaryScope = snapshotScope;
+    state.lastAuxiliaryAt = Date.now();
+    refreshAuxiliaryState().catch((error) => {
+      if (state.lastAuxiliaryScope === snapshotScope) state.lastAuxiliaryAt = 0;
+      notice(`Agent controls could not refresh: ${error.message}`);
+    });
+  }
   if (document.body.classList.contains("context-open")) renderActivityIndex();
   if (follow) {
     scroller.scrollTop = scroller.scrollHeight;
@@ -4139,11 +4179,12 @@ async function poll() {
         else state.sequence = result.last_sequence;
         startEventStream();
       }
-      if ((state.threadStatus && state.threadStatus !== "Idle") || Date.now() - state.lastSnapshotAt > 3000) {
+      const snapshotInterval = state.threadStatus && state.threadStatus !== "Idle" ? 2500 : 15000;
+      if (Date.now() - state.lastSnapshotAt >= snapshotInterval) {
         await refreshSnapshot();
       }
     }
-    if (!state.threadId || Date.now() - state.lastThreadsAt > 2000) await loadThreads();
+    if (!state.threadId || Date.now() - state.lastThreadsAt > 5000) await loadThreads();
     if (state.selectedTerminalId && $("context-terminal-tab").getAttribute("aria-selected") === "true"
         && !$("context-panel").classList.contains("hidden") && Date.now() - state.lastTerminalSnapshotAt > 1500) {
       await loadTerminalSnapshot();
@@ -4170,7 +4211,8 @@ async function poll() {
     }
     connection(error.code === "UNAUTHENTICATED" ? pairingStatus()
       : error.code === "INSTANCE_UNAVAILABLE" ? "Zed unavailable"
-        : error.message.includes("timed out") ? "Gateway request timed out"
+        : error.code === "NATIVE_REQUEST_TIMEOUT" ? "Zed request timed out"
+          : error.message.includes("timed out") ? "Gateway request timed out"
           : navigator.onLine === false ? "Device offline" : "Gateway disconnected", "offline");
   } finally { state.polling = false; }
 }
