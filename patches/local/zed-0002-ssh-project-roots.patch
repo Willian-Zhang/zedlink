@@ -1,0 +1,384 @@
+From b43d3fb9423dc36a67127fda3b7a9178908a12cc Mon Sep 17 00:00:00 2001
+From: Willian Z <willian@willian.email>
+Date: Wed, 28 Oct 2026 18:23:19 -0400
+Subject: [PATCH] Allow ZedLink to expose SSH project folders
+
+Roots written as ssh://host/absolute/path match only a folder of a project connected to that SSH host, and local roots now match only local projects. Remote roots have no files on this machine, so project files, search and Git return UNSUPPORTED_CAPABILITY for them; threads, approvals, terminals and tasks work as for local roots.
+---
+ crates/agent_ui/src/zedlink_probe.rs          | 174 ++++++++++++++----
+ .../settings_content/src/settings_content.rs  |   4 +-
+ 2 files changed, 139 insertions(+), 39 deletions(-)
+
+diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
+index 9b7a306..5df552f 100644
+--- a/crates/agent_ui/src/zedlink_probe.rs
++++ b/crates/agent_ui/src/zedlink_probe.rs
+@@ -79,8 +79,75 @@ struct ProbeCommand {
+     response: mpsc::Sender<Value>,
+ }
+ 
++/// A configured exposed folder: local, or on an SSH host (`ssh://host/path`).
++#[derive(Clone, PartialEq)]
++struct ProjectRoot {
++    ssh_host: Option<String>,
++    path: PathBuf,
++}
++
++impl ProjectRoot {
++    fn parse_remote(value: &str) -> Option<std::result::Result<Self, &'static str>> {
++        let remote = value.strip_prefix("ssh://")?;
++        let Some(separator) = remote.find('/') else {
++            return Some(Err("needs ssh://host/absolute/path"));
++        };
++        let (host, path) = remote.split_at(separator);
++        if host.is_empty() || host.contains(['@', ':']) {
++            return Some(Err("host must be a plain SSH host name"));
++        }
++        let path = Path::new(path);
++        if path
++            .components()
++            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
++        {
++            return Some(Err("remote path must be absolute without '.' or '..'"));
++        }
++        Some(Ok(Self {
++            ssh_host: Some(host.to_string()),
++            path: path.components().collect(),
++        }))
++    }
++
++    /// A folder counts only when it is exactly the root path on the same
++    /// machine: a local root never matches a remote project with the same
++    /// path, and a remote root only matches a project on that SSH host.
++    fn matches(&self, project: &project::Project, worktree: &worktree::Worktree, cx: &App) -> bool {
++        if worktree.abs_path().as_ref() != self.path.as_path() {
++            return false;
++        }
++        match &self.ssh_host {
++            None => project.is_local(),
++            Some(host) => match project.remote_connection_options(cx) {
++                Some(remote::RemoteConnectionOptions::Ssh(options)) => {
++                    options.host.to_string() == *host
++                        || options.nickname.as_deref() == Some(host.as_str())
++                }
++                _ => false,
++            },
++        }
++    }
++
++    /// Remote roots have no local files, so local file, search and Git
++    /// access is refused for them instead of touching the Mac's disk.
++    fn local_path(&self) -> std::result::Result<PathBuf, &'static str> {
++        match self.ssh_host {
++            None => Ok(self.path.clone()),
++            Some(_) => Err("UNSUPPORTED_CAPABILITY"),
++        }
++    }
++
++    fn display_name(&self) -> Option<String> {
++        let name = self.path.file_name()?.to_str()?;
++        Some(match &self.ssh_host {
++            None => name.to_string(),
++            Some(host) => format!("{name} ({host})"),
++        })
++    }
++}
++
+ struct ProbeState {
+-    project_roots: Vec<PathBuf>,
++    project_roots: Vec<ProjectRoot>,
+     permissions: Cell<ProbePermissions>,
+     instance_id: String,
+     epoch: String,
+@@ -383,6 +450,7 @@ pub fn init(cx: &mut App) {
+             PathBuf::from(std::env::var_os("ZEDLINK_PROBE_DIR")?),
+             std::env::split_paths(&std::env::var_os("ZEDLINK_PROBE_PROJECT_ROOT")?)
+                 .filter(|path| !path.as_os_str().is_empty())
++                .map(|path| path.to_string_lossy().into_owned())
+                 .collect::<Vec<_>>(),
+         ))
+     };
+@@ -401,7 +469,7 @@ pub fn init(cx: &mut App) {
+             .chain(settings.project_roots.iter().flatten())
+             .map(|path| path.trim())
+             .filter(|path| !path.is_empty())
+-            .map(PathBuf::from)
++            .map(str::to_string)
+             .collect::<Vec<_>>();
+         Some((PathBuf::from(state_directory).join("probe"), project_roots))
+     };
+@@ -416,17 +484,32 @@ pub fn init(cx: &mut App) {
+     // what is exposed, and one stale entry shouldn't disable the whole bridge.
+     let mut project_roots = Vec::new();
+     for root in configured_roots {
+-        if !root.is_absolute() {
+-            log::warn!("ZedLink skipped project root that isn't absolute: {root:?}");
+-            continue;
+-        }
+-        match fs::canonicalize(&root) {
+-            Ok(canonical) if canonical.is_dir() => {
+-                if !project_roots.contains(&canonical) {
+-                    project_roots.push(canonical);
++        let parsed = match ProjectRoot::parse_remote(&root) {
++            Some(Ok(remote)) => remote,
++            Some(Err(reason)) => {
++                log::warn!("ZedLink skipped remote project root {root:?}: {reason}");
++                continue;
++            }
++            None => {
++                let path = PathBuf::from(&root);
++                if !path.is_absolute() {
++                    log::warn!("ZedLink skipped project root that isn't absolute: {root:?}");
++                    continue;
++                }
++                match fs::canonicalize(&path) {
++                    Ok(canonical) if canonical.is_dir() => ProjectRoot {
++                        ssh_host: None,
++                        path: canonical,
++                    },
++                    _ => {
++                        log::warn!("ZedLink skipped unavailable project root: {root:?}");
++                        continue;
++                    }
+                 }
+             }
+-            _ => log::warn!("ZedLink skipped unavailable project root: {root:?}"),
++        };
++        if !project_roots.contains(&parsed) {
++            project_roots.push(parsed);
+         }
+     }
+     if project_roots.is_empty() {
+@@ -1406,7 +1489,7 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+ fn session_creation_target(
+     state: &ProbeState,
+     cx: &App,
+-) -> Option<(Entity<AgentPanel>, Entity<project::Project>, PathBuf)> {
++) -> Option<(Entity<AgentPanel>, Entity<project::Project>, ProjectRoot)> {
+     state.project_roots.iter().find_map(|project_root| {
+         loaded_project_workspaces(std::slice::from_ref(project_root), cx)
+             .into_iter()
+@@ -1441,7 +1524,7 @@ fn create_thread_options(request: &ProbeRequest, state: &ProbeState, cx: &mut Ap
+         json!({
+             "instance_id": state.instance_id,
+             "epoch": state.epoch,
+-            "project": project_root.file_name().and_then(|name| name.to_str()),
++            "project": project_root.display_name(),
+             "agents": agents,
+         }),
+     )
+@@ -2889,8 +2972,7 @@ fn exposed_worktree(
+     cx: &App,
+ ) -> std::result::Result<(Entity<worktree::Worktree>, PathBuf), &'static str> {
+     let thread = exposed_thread_for_request(request, state, cx)?;
+-    let project_root =
+-        thread_project_root(&thread, &state.project_roots, cx).ok_or("INSTANCE_UNAVAILABLE")?;
++    let project_root = thread_local_project_root(&thread, &state.project_roots, cx)?;
+     let project = thread.read(cx).project().clone();
+     let worktree = project
+         .read(cx)
+@@ -3285,8 +3367,9 @@ fn changes_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         Ok(thread) => thread,
+         Err(code) => return error(&request.request_id, code),
+     };
+-    let Some(project_root) = thread_project_root(&thread, &state.project_roots, cx) else {
+-        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    let project_root = match thread_local_project_root(&thread, &state.project_roots, cx) {
++        Ok(project_root) => project_root,
++        Err(code) => return error(&request.request_id, code),
+     };
+     let project = thread.read(cx).project().clone();
+     let Some(repository) = project.read(cx).active_repository(cx) else {
+@@ -3342,6 +3425,9 @@ fn changes_diff(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Val
+         Ok(thread) => thread,
+         Err(code) => return error(&request.request_id, code),
+     };
++    if let Err(code) = thread_local_project_root(&thread, &state.project_roots, cx) {
++        return error(&request.request_id, code);
++    }
+     let Some(expected_revision) = request.params.get("revision").and_then(Value::as_str) else {
+         return error(&request.request_id, "INVALID_REQUEST");
+     };
+@@ -3473,8 +3559,9 @@ fn change_stage(request: &ProbeRequest, state: &ProbeState, stage: bool, cx: &mu
+     if path_values.is_empty() || path_values.len() > 100 {
+         return error(&request.request_id, "INVALID_REQUEST");
+     }
+-    let Some(project_root) = thread_project_root(&thread, &state.project_roots, cx) else {
+-        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    let project_root = match thread_local_project_root(&thread, &state.project_roots, cx) {
++        Ok(project_root) => project_root,
++        Err(code) => return error(&request.request_id, code),
+     };
+     let project = thread.read(cx).project().clone();
+     let Some(repository) = project.read(cx).active_repository(cx) else {
+@@ -3969,7 +4056,7 @@ fn zedlink_retry_value(retry: Option<(String, usize, usize, u64)>) -> Value {
+     }
+ }
+ 
+-fn loaded_threads(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<AcpThread>> {
++fn loaded_threads(project_roots: &[ProjectRoot], cx: &App) -> Vec<Entity<AcpThread>> {
+     loaded_thread_views(project_roots, cx)
+         .into_iter()
+         .map(|(thread, _)| thread)
+@@ -4016,7 +4103,7 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+     else {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     };
+-    let working_directory = project_root;
++    let working_directory = project_root.path;
+     let creation = cx.with_window(workspace.entity_id(), |window, cx| {
+         workspace.update(cx, |workspace, cx| {
+             TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
+@@ -4782,7 +4869,7 @@ fn params_contain_only(params: &Value, allowed: &[&str]) -> bool {
+ /// Visible folders of the project that are configured roots, with their root path.
+ fn exposed_worktrees(
+     project: &project::Project,
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> Vec<(worktree::WorktreeId, PathBuf)> {
+     project
+@@ -4791,14 +4878,14 @@ fn exposed_worktrees(
+             let worktree = worktree.read(cx);
+             project_roots
+                 .iter()
+-                .find(|root| worktree.abs_path().as_ref() == root.as_path())
+-                .map(|root| (worktree.id(), root.clone()))
++                .find(|root| root.matches(project, worktree, cx))
++                .map(|root| (worktree.id(), root.path.clone()))
+         })
+         .collect()
+ }
+ 
+ fn configured_tasks(
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> Vec<(Entity<workspace::Workspace>, TaskSourceKind, ResolvedTask)> {
+     let mut tasks = Vec::new();
+@@ -4833,7 +4920,7 @@ fn configured_tasks(
+ }
+ 
+ fn configured_debug_scenarios(
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> Vec<(
+     Entity<workspace::Workspace>,
+@@ -4894,7 +4981,7 @@ fn task_source_label(source: &TaskSourceKind) -> &'static str {
+     }
+ }
+ 
+-fn loaded_debug_panels(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<DebugPanel>> {
++fn loaded_debug_panels(project_roots: &[ProjectRoot], cx: &App) -> Vec<Entity<DebugPanel>> {
+     loaded_project_workspaces(project_roots, cx)
+         .into_iter()
+         .filter_map(|workspace| workspace.read(cx).panel::<DebugPanel>(cx))
+@@ -4902,7 +4989,7 @@ fn loaded_debug_panels(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<DebugP
+ }
+ 
+ fn loaded_project_workspaces(
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> Vec<Entity<workspace::Workspace>> {
+     workspace::AppState::global(cx)
+@@ -4916,7 +5003,7 @@ fn loaded_project_workspaces(
+         .collect()
+ }
+ 
+-fn loaded_terminal_views(project_roots: &[PathBuf], cx: &App) -> Vec<Entity<TerminalView>> {
++fn loaded_terminal_views(project_roots: &[ProjectRoot], cx: &App) -> Vec<Entity<TerminalView>> {
+     let mut terminals = Vec::new();
+     for workspace in loaded_project_workspaces(project_roots, cx) {
+         let center_panes = workspace.read(cx).panes().to_vec();
+@@ -4976,7 +5063,7 @@ fn terminal_value(view: &Entity<TerminalView>, cx: &App) -> Value {
+ }
+ 
+ fn loaded_thread_views(
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> Vec<(Entity<AcpThread>, Entity<ThreadView>)> {
+     let workspaces = workspace::AppState::global(cx)
+@@ -5009,7 +5096,7 @@ fn loaded_thread_views(
+ 
+ fn thread_belongs_to_project(
+     thread: &Entity<AcpThread>,
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> bool {
+     thread_project_root(thread, project_roots, cx).is_some()
+@@ -5017,35 +5104,46 @@ fn thread_belongs_to_project(
+ 
+ fn thread_project_root(
+     thread: &Entity<AcpThread>,
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+-) -> Option<PathBuf> {
++) -> Option<ProjectRoot> {
+     project_root_for(thread.read(cx).project(), project_roots, cx)
+ }
+ 
++/// The thread's root as a local path, for operations that read the Mac's disk.
++fn thread_local_project_root(
++    thread: &Entity<AcpThread>,
++    project_roots: &[ProjectRoot],
++    cx: &App,
++) -> std::result::Result<PathBuf, &'static str> {
++    thread_project_root(thread, project_roots, cx)
++        .ok_or("THREAD_NOT_EXPOSED")?
++        .local_path()
++}
++
+ /// Returns the first configured root, in settings order, that is exactly one
+ /// of the project's visible folders. A folder nested inside a root doesn't
+ /// count, so opening a parent directory never widens what is exposed.
+ fn project_root_for(
+     project: &Entity<project::Project>,
+-    project_roots: &[PathBuf],
++    project_roots: &[ProjectRoot],
+     cx: &App,
+-) -> Option<PathBuf> {
++) -> Option<ProjectRoot> {
+     let project = project.read(cx);
+     project_roots
+         .iter()
+         .find(|root| {
+             project
+                 .visible_worktrees(cx)
+-                .any(|worktree| worktree.read(cx).abs_path().as_ref() == root.as_path())
++                .any(|worktree| root.matches(project, worktree.read(cx), cx))
+         })
+         .cloned()
+ }
+ 
+-fn project_names(project_roots: &[PathBuf]) -> String {
++fn project_names(project_roots: &[ProjectRoot]) -> String {
+     project_roots
+         .iter()
+-        .filter_map(|root| root.file_name().and_then(|name| name.to_str()))
++        .filter_map(ProjectRoot::display_name)
+         .collect::<Vec<_>>()
+         .join(", ")
+ }
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 964f9cc..b4fcc69 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -360,7 +360,9 @@ pub struct ZedLinkSettingsContent {
+ 
+     /// Absolute paths of additional projects whose explicitly exposed Agent
+     /// threads may be controlled through ZedLink. Each path must exactly match
+-    /// a folder opened in a Zed workspace.
++    /// a folder opened in a Zed workspace. Use `ssh://host/absolute/path` for a
++    /// folder of an SSH project; remote projects don't offer file, search or
++    /// Git access.
+     ///
+     /// Default: []
+     pub project_roots: Option<Vec<String>>,
+-- 
+2.54.0 (Apple Git-157)
+
