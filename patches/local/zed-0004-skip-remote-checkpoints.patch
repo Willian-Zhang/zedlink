@@ -1,0 +1,50 @@
+From 6ea1f8f5bcae320052ab0f0211931a2a2367e548 Mon Sep 17 00:00:00 2001
+From: Willian Z <willian@willian.email>
+Date: Wed, 28 Oct 2026 19:18:45 -0400
+Subject: [PATCH] Skip agent git checkpoints in remote projects
+
+Zed downloads the latest Nightly remote server, which no longer handles GitCreateCheckpoint after upstream removed agent checkpoints (#65989). The request never gets a reply, so every send in an SSH project hung before reaching the agent and blocked that repository's git job queue. Remote projects now skip the checkpoint; Restore Checkpoint is unavailable there.
+---
+ crates/acp_thread/src/acp_thread.rs | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 4196029..e3eb394 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -4087,6 +4087,14 @@ impl AcpThread {
+         client_id.is_some() && self.parent_session_id.is_none() && self.supports_truncate(cx)
+     }
+ 
++    /// Remote projects skip checkpoints: this fork's client can be paired with a
++    /// newer downloaded remote server that no longer handles `GitCreateCheckpoint`
++    /// (upstream removed agent checkpoints in #65989), and that request never
++    /// gets a reply, so the send would wait forever before reaching the agent.
++    fn should_checkpoint(&self, client_id: Option<&ClientUserMessageId>, cx: &App) -> bool {
++        self.can_rewind_to(client_id, cx) && !self.project.read(cx).is_via_remote_server()
++    }
++
+     pub fn work_dirs(&self) -> Option<&PathList> {
+         self.session_info.work_dirs.as_ref()
+     }
+@@ -6746,7 +6754,7 @@ impl AcpThread {
+         content: Vec<acp_v2::ContentBlock>,
+         cx: &mut Context<Self>,
+     ) -> Result<Task<()>> {
+-        let should_checkpoint = !content.is_empty() && self.can_rewind_to(Some(&id), cx);
++        let should_checkpoint = !content.is_empty() && self.should_checkpoint(Some(&id), cx);
+         self.upsert_local_user_message(id.clone(), content, cx)?;
+         if !should_checkpoint {
+             return Ok(Task::ready(()));
+@@ -6824,7 +6832,7 @@ impl AcpThread {
+         let client_id = client_user_message_ids
+             .as_ref()
+             .map(|client_user_message_ids| client_user_message_ids.new_id());
+-        let should_checkpoint = self.can_rewind_to(client_id.as_ref(), cx);
++        let should_checkpoint = self.should_checkpoint(client_id.as_ref(), cx);
+ 
+         self.run_turn(id, cx, async move |this, cx| {
+             if push_user_message {
+-- 
+2.54.0 (Apple Git-157)
+
