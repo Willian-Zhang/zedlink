@@ -94,8 +94,13 @@ def main() -> None:
         raise SystemExit(f"build the optimized patched Zed first: {BINARY}")
     if APP.exists() and not (APP / "Contents/Resources" / MARKER).is_file():
         raise SystemExit(f"refusing to replace an app not managed by ZedLink: {APP}")
-    running = subprocess.run(["pgrep", "-f", str(APP / "Contents/MacOS/zed")],
-                             capture_output=True).returncode == 0
+    # `ps` rather than `pgrep`: pgrep silently finds nothing when it can't query
+    # sysmond (e.g. in some agent terminals), which would replace a running app.
+    processes = subprocess.run(["/bin/ps", "-axo", "command="], capture_output=True,
+                               text=True, check=True).stdout.splitlines()
+    executable = str(APP / "Contents/MacOS/zed")
+    running = any(line == executable or line.startswith(executable + " ")
+                  for line in processes)
     if running:
         raise SystemExit("quit ZedLink before reinstalling it")
     APP.parent.mkdir(exist_ok=True)
