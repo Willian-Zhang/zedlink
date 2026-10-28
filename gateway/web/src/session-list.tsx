@@ -13,6 +13,7 @@ type Session = {
   pinned: boolean;
   updated: boolean;
   tag: string;
+  project: string;
   seenAt: number;
 };
 
@@ -35,7 +36,7 @@ function SessionList({ groups, emptyMessage, canClear, onSelect, onPin, onClear 
       <button type="button" data-thread-id={session.id}
         className={`thread-item ${session.active ? "active" : ""} ${session.running ? "running" : ""} ${session.attention ? "error" : ""}`}
         aria-current={session.active ? "page" : undefined}
-        aria-label={`${session.title}, ${session.agent}, ${session.status}${session.updated ? ", new activity" : ""}`}
+        aria-label={`${session.title}, ${session.agent}${session.project ? `, ${session.project}` : ""}, ${session.status}${session.updated ? ", new activity" : ""}`}
         onClick={() => onSelect(session.id)}>
         <span className="thread-badge">{session.agent}</span>
         <span className={`thread-status ${session.running ? "busy" : ""} ${session.attention ? "error" : ""}`}>
@@ -43,6 +44,7 @@ function SessionList({ groups, emptyMessage, canClear, onSelect, onPin, onClear 
           <span>{session.status}</span>
         </span>
         <strong>{session.title}</strong>
+        {session.project && <small className="session-project">{session.project}</small>}
         {session.tag && <small className="session-tag">{session.tag}</small>}
         {session.updated && <small>New activity</small>}
       </button>

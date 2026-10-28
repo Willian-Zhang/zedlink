@@ -1,0 +1,187 @@
+From 57273af89ba84097587a95c4a2e027b3d99631ee Mon Sep 17 00:00:00 2001
+From: Willian Z <willian@willian.email>
+Date: Wed, 28 Oct 2026 18:42:00 -0400
+Subject: [PATCH] Report ZedLink project groups and let remote sessions pick
+ one
+
+thread.list includes each thread's project group (its window's exposed folders and how many other folders it has). thread.create.options lists the windows where a session can be created, and thread.create accepts an optional project_group_id; a group that is no longer open returns PROJECT_UNAVAILABLE.
+---
+ crates/agent_ui/src/zedlink_probe.rs | 108 ++++++++++++++++++++++-----
+ 1 file changed, 91 insertions(+), 17 deletions(-)
+
+diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
+index 5df552f..144823b 100644
+--- a/crates/agent_ui/src/zedlink_probe.rs
++++ b/crates/agent_ui/src/zedlink_probe.rs
+@@ -391,6 +391,7 @@ struct SubmissionRecord {
+ struct CreationRecord {
+     title: Option<String>,
+     agent_id: String,
++    project_group_id: Option<String>,
+     thread_id: Option<String>,
+ }
+ 
+@@ -1048,6 +1049,11 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                                 "agent_error": agent_error,
+                                 "retry_status": retry_status,
+                                 "activity": thread_activity_value(thread),
++                                "project_group": project_group_value(
++                                    thread.project(),
++                                    &state.project_roots,
++                                    cx,
++                                ),
+                             })
+                         },
+                     )
+@@ -1397,11 +1403,19 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         }
+         _ => return error(&request.request_id, "INVALID_REQUEST"),
+     };
++    let project_group_id = match request.params.get("project_group_id") {
++        None | Some(Value::Null) => None,
++        Some(Value::String(id)) if !id.is_empty() && id.len() <= 32 => Some(id.clone()),
++        _ => return error(&request.request_id, "INVALID_REQUEST"),
++    };
+ 
+     {
+         let creations = state.creations.borrow();
+         if let Some(previous) = creations.get(&request.request_id) {
+-            if previous.title != title || previous.agent_id != agent_id {
++            if previous.title != title
++                || previous.agent_id != agent_id
++                || previous.project_group_id != project_group_id
++            {
+                 return error(&request.request_id, "REQUEST_CONFLICT");
+             }
+             return creation_result(&request.request_id, previous);
+@@ -1411,8 +1425,21 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         }
+     }
+ 
+-    let Some((panel, project, _)) = session_creation_target(state, cx) else {
+-        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    let target = match &project_group_id {
++        None => session_creation_targets(state, cx).into_iter().next(),
++        Some(id) => session_creation_targets(state, cx)
++            .into_iter()
++            .find(|(_, project)| project_group_id_for(project) == *id),
++    };
++    let Some((panel, project)) = target else {
++        return error(
++            &request.request_id,
++            if project_group_id.is_some() {
++                "PROJECT_UNAVAILABLE"
++            } else {
++                "INSTANCE_UNAVAILABLE"
++            },
++        );
+     };
+     let agent = if agent_id == agent::ZED_AGENT_ID.as_ref() {
+         Agent::NativeAgent
+@@ -1458,6 +1485,7 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         CreationRecord {
+             title,
+             agent_id,
++            project_group_id,
+             thread_id: None,
+         },
+     );
+@@ -1484,27 +1512,71 @@ fn create_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     )
+ }
+ 
+-/// New remote sessions open in the first configured root, in settings order,
+-/// that is open in a workspace with an Agent panel.
+-fn session_creation_target(
++/// Workspaces (project groups) where a remote session may be created, ordered
++/// by the first configured root each contains; the first one is the default.
++fn session_creation_targets(
+     state: &ProbeState,
+     cx: &App,
+-) -> Option<(Entity<AgentPanel>, Entity<project::Project>, ProjectRoot)> {
+-    state.project_roots.iter().find_map(|project_root| {
+-        loaded_project_workspaces(std::slice::from_ref(project_root), cx)
+-            .into_iter()
+-            .find_map(|workspace| {
+-                let workspace = workspace.read(cx);
+-                let panel = workspace.panel::<AgentPanel>(cx)?;
+-                Some((panel, workspace.project().clone(), project_root.clone()))
+-            })
++) -> Vec<(Entity<AgentPanel>, Entity<project::Project>)> {
++    let mut targets: Vec<(Entity<AgentPanel>, Entity<project::Project>)> = Vec::new();
++    for project_root in &state.project_roots {
++        for workspace in loaded_project_workspaces(std::slice::from_ref(project_root), cx) {
++            let workspace = workspace.read(cx);
++            let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
++                continue;
++            };
++            let project = workspace.project().clone();
++            if !targets
++                .iter()
++                .any(|(_, existing)| existing.entity_id() == project.entity_id())
++            {
++                targets.push((panel, project));
++            }
++        }
++    }
++    targets
++}
++
++fn project_group_id_for(project: &Entity<project::Project>) -> String {
++    project.entity_id().as_u64().to_string()
++}
++
++/// The window's exposed folders, plus how many other folders the agent in that
++/// window can also reach, so the phone shows the real scope of a session.
++fn project_group_value(
++    project: &Entity<project::Project>,
++    project_roots: &[ProjectRoot],
++    cx: &App,
++) -> Value {
++    let project_ref = project.read(cx);
++    let mut exposed = Vec::new();
++    let mut other_folders = 0;
++    for worktree in project_ref.visible_worktrees(cx) {
++        match project_roots
++            .iter()
++            .find(|root| root.matches(project_ref, worktree.read(cx), cx))
++        {
++            Some(root) => exposed.extend(root.display_name()),
++            None => other_folders += 1,
++        }
++    }
++    json!({
++        "id": project_group_id_for(project),
++        "label": exposed.join(", "),
++        "other_folders": other_folders,
+     })
+ }
+ 
+ fn create_thread_options(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
+-    let Some((_panel, project, project_root)) = session_creation_target(state, cx) else {
++    let targets = session_creation_targets(state, cx);
++    let Some((_panel, project)) = targets.first() else {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     };
++    let project_groups = targets
++        .iter()
++        .map(|(_, project)| project_group_value(project, &state.project_roots, cx))
++        .collect::<Vec<_>>();
++    let default_group = project_groups.first().cloned().unwrap_or(Value::Null);
+     let agent_store = project.read(cx).agent_server_store().clone();
+     let store = agent_store.read(cx);
+     let mut agents = vec![json!({
+@@ -1524,7 +1596,9 @@ fn create_thread_options(request: &ProbeRequest, state: &ProbeState, cx: &mut Ap
+         json!({
+             "instance_id": state.instance_id,
+             "epoch": state.epoch,
+-            "project": project_root.display_name(),
++            "project": default_group["label"],
++            "project_groups": project_groups,
++            "default_project_group_id": default_group["id"],
+             "agents": agents,
+         }),
+     )
+-- 
+2.54.0 (Apple Git-157)
+

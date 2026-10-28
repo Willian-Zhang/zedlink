@@ -147,6 +147,7 @@ input[type=search] { appearance: none; }
 .conversation-toolbar { min-height: 76px; padding: 8px 20px; }
 .conversation-head { display: flex; align-items: center; gap: 17px; min-width: 0; min-height: 60px; padding: 7px max(4px, calc((100% - 1220px) / 2)); }
 .conversation-title { flex: 1; min-width: 0; }
+.thread-project { overflow: hidden; margin: 2px 0 0; color: var(--muted); font-size: .72rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-session-meta { display: none; }
 .conversation-back { display: none; place-items: center; flex: none; width: 40px; height: 40px; min-height: 40px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 1.3rem; line-height: 1; }
 .conversation-back:hover { background: var(--raised); color: var(--ink); }
@@ -580,6 +581,7 @@ body.pairing .workspace, body.pairing .mobile-tabs { display: none !important; }
   .conversation-title .eyebrow, .conversation-head #thread-meta { display: none; }
   .conversation-head h2 { display: block; overflow: visible; margin: 0; white-space: normal; overflow-wrap: anywhere; -webkit-line-clamp: unset; font-size: .96rem; line-height: 1.3; }
   .mobile-session-meta { display: block; overflow: hidden; margin: 4px 0 0; color: var(--subtle); font-size: .65rem; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+  .thread-project { margin-top: 3px; font-size: .65rem; }
   body:not(.thread-open) .conversation-head { visibility: visible; }
   .state-pill { display: none; width: 30px; min-height: 36px; overflow: hidden; padding: 0; font-size: 0; }
   .state-pill.working { display: inline-flex; }

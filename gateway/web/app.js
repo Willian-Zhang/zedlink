@@ -34,6 +34,7 @@ const state = {
   historyLoading: false,
   creatingThread: false,
   createOptions: null,
+  instanceProject: "",
   eventSocket: null,
   eventThreadId: null,
   eventReconnectTimer: null,
@@ -289,7 +290,29 @@ function selectedAgent() {
   return normalizeAgent(state.threadSettings?.agent || thread?.agent);
 }
 
+// A project group is the desktop Zed window a session lives in. Other folders
+// in that window are counted because the agent there can reach them too.
+function projectGroupLabel(group) {
+  if (!group || typeof group !== "object" || typeof group.label !== "string" || !group.label) return "";
+  const others = Number.isInteger(group.other_folders) && group.other_folders > 0 ? group.other_folders : 0;
+  return others ? `${group.label} + ${others} other folder${others === 1 ? "" : "s"}` : group.label;
+}
+
+function renderSelectedProject() {
+  const selected = state.threads.find((item) => item.thread_id === state.threadId);
+  const label = selected ? projectGroupLabel(selected.project_group) : "";
+  if ($("thread-project").textContent !== (label ? `Project · ${label}` : "")) {
+    $("thread-project").textContent = label ? `Project · ${label}` : "";
+  }
+  $("thread-project").title = label;
+  $("thread-project").classList.toggle("hidden", !label);
+  const context = label || state.instanceProject || "Selected Zed project";
+  $("context-project").textContent = context;
+  $("context-project").title = context;
+}
+
 function renderSelectedAgent() {
+  renderSelectedProject();
   const agent = selectedAgent();
   const selected = state.threads.find((item) => item.thread_id === state.threadId);
   const external = agent.kind === "external_acp";
@@ -740,6 +763,7 @@ function apiError(code) {
   if (code === "RESYNC_REQUIRED") return "Event history changed. Reloading the native snapshot.";
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
   if (code === "REQUEST_CONFLICT") return "That request ID was already used for different content.";
+  if (code === "PROJECT_UNAVAILABLE") return "That project window is no longer open in desktop Zed. Reopen New session to refresh the list.";
   if (code === "THREAD_BUSY") return "Wait for the current Zed turn to finish before changing its settings.";
   if (code === "STALE_SEQUENCE") return "The native thread changed. Refresh it before trying this action again.";
   if (code === "FILE_UNAVAILABLE") return "That file is unavailable or excluded from remote project access.";
@@ -1201,8 +1225,8 @@ async function connect() {
       notice("Desktop Zed restarted. Select an exposed thread again; uncertain sends were not repeated.");
     }
     $("host-label").textContent = `${info.project ? `Project · ${info.project} · ` : ""}Zed instance ${info.instance_id.slice(0, 8)}…`;
-    $("context-project").textContent = info.project ? String(info.project).split(/[\\/]/).filter(Boolean).pop() : "Selected Zed project";
-    $("context-project").title = info.project || "";
+    state.instanceProject = info.project ? String(info.project).split(/[\\/]/).filter(Boolean).pop() : "";
+    renderSelectedProject();
     const prior = safeStore.read(pendingKey());
     if (prior && !state.pending) {
       try { state.pending = { ...JSON.parse(prior), text: null }; } catch { safeStore.remove(pendingKey()); }
@@ -1277,6 +1301,7 @@ async function loadThreads() {
     $("thread-title").title = title;
   }
   renderThreads();
+  renderSelectedProject();
   if (state.threadId && !state.threads.some((thread) => thread.thread_id === state.threadId)) {
     closeEventStream();
     state.threadId = null;
@@ -1328,6 +1353,7 @@ async function createSession(event) {
   const requestId = crypto.randomUUID();
   const title = $("new-session-title").value.trim();
   const agentId = $("new-session-agent").value || null;
+  const projectGroupId = $("new-session-project").value || null;
   state.creatingThread = true;
   $("create-session").disabled = true;
   showCreateAvailability();
@@ -1339,6 +1365,7 @@ async function createSession(event) {
         epoch: state.epoch,
         title: title || null,
         agent_id: agentId,
+        ...(projectGroupId ? { project_group_id: projectGroupId } : {}),
       }, requestId);
       if (result.outcome === "ready" && typeof result.thread_id === "string") {
         $("new-session-title").value = "";
@@ -1364,9 +1391,13 @@ async function createSession(event) {
 async function loadCreateOptions() {
   const row = $("new-session-agent-row");
   const select = $("new-session-agent");
+  const projectRow = $("new-session-project-row");
+  const projectSelect = $("new-session-project");
   state.createOptions = null;
   select.replaceChildren();
   row.classList.add("hidden");
+  projectSelect.replaceChildren();
+  projectRow.classList.add("hidden");
   if (!state.capabilities.includes("thread.create.options")) return;
   const result = await rpc("thread.create.options", {
     instance_id: state.instanceId,
@@ -1383,8 +1414,25 @@ async function loadCreateOptions() {
     select.append(option);
   }
   row.classList.toggle("hidden", select.options.length < 2);
-  $("new-session-help").textContent = `Project ${result.project || "approved in Zed"} · configuration remains in the selected agent.`;
+  const groups = Array.isArray(result.project_groups) ? result.project_groups : [];
+  for (const group of groups) {
+    const label = projectGroupLabel(group);
+    if (typeof group.id !== "string" || !label) continue;
+    projectSelect.append(new Option(label, group.id));
+  }
+  if ([...projectSelect.options].some((option) => option.value === result.default_project_group_id)) {
+    projectSelect.value = result.default_project_group_id;
+  }
+  projectRow.classList.toggle("hidden", projectSelect.options.length < 2);
+  renderCreateProjectHelp();
 }
+
+function renderCreateProjectHelp() {
+  const option = $("new-session-project").selectedOptions[0];
+  const project = option?.textContent || state.createOptions?.project || "approved in Zed";
+  $("new-session-help").textContent = `Project ${project} · configuration remains in the selected agent.`;
+}
+$("new-session-project").addEventListener("change", renderCreateProjectHelp);
 
 function validAgentError(error) {
   if (!error || typeof error !== "object") return null;
@@ -1531,7 +1579,7 @@ function clearSessionSearch() {
   $("session-search").focus();
 }
 function renderThreads() {
-  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated]]);
+  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count, projectGroupLabel(thread.project_group)]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated]]);
   if (signature === threadsRenderSignature) return;
   threadsRenderSignature = signature;
   const list = $("thread-list"); const scrollTop = list.scrollTop;
@@ -1548,7 +1596,7 @@ function renderThreads() {
   }
   $("edit-session-tag").disabled = !state.threadId;
   const searched = state.threads.filter((thread) =>
-    `${thread.title || ""} ${normalizeAgent(thread.agent).name} ${thread.thread_id} ${tags[thread.thread_id] || ""}`.toLocaleLowerCase().includes(query)
+    `${thread.title || ""} ${normalizeAgent(thread.agent).name} ${thread.thread_id} ${tags[thread.thread_id] || ""} ${projectGroupLabel(thread.project_group)}`.toLocaleLowerCase().includes(query)
     && (!tagSelect.value || tags[thread.thread_id] === tagSelect.value));
   const counts = { All: searched.length, "Needs attention": 0, Running: 0, Pinned: 0 };
   for (const thread of searched) {
@@ -1578,7 +1626,7 @@ function renderThreads() {
     label: group,
     sessions: visible.filter((thread) => { const activity = sessionActivity(thread); return (activity.attention ? "Needs attention" : activity.running ? "Running" : "Ready & other") === group; }).map((thread) => {
       const activity = sessionActivity(thread);
-      return { id: thread.thread_id, title: thread.title || "Untitled Agent thread", agent: normalizeAgent(thread.agent).name.toLocaleUpperCase(),
+      return { id: thread.thread_id, title: thread.title || "Untitled Agent thread", agent: normalizeAgent(thread.agent).name.toLocaleUpperCase(), project: projectGroupLabel(thread.project_group),
         status: `${state.live ? "" : "Last known: "}${activity.label}`, running: !!(activity.running && state.live), attention: !!activity.attention,
         active: thread.thread_id === state.threadId, pinned: pins.has(thread.thread_id), updated: sessionUpdated.has(sessionKey(thread)) };
     }),
