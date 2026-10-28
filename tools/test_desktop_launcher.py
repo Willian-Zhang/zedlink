@@ -2,8 +2,11 @@
 """Verify the generated Linux application launcher without touching the user profile."""
 
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
+
+from unittest.mock import patch
 
 import zedlink_manager as manager
 
@@ -27,9 +30,10 @@ def main() -> None:
         assert "StartupWMClass=dev.zed.Zed-Dev" in contents
         assert "StartupNotify=false" in contents
         assert manager.DESKTOP_ENTRY_MARKER in contents
-        validator = subprocess.run(
-            ["desktop-file-validate", str(path)], capture_output=True, text=True)
-        assert validator.returncode == 0, validator.stderr
+        if shutil.which("desktop-file-validate"):
+            validator = subprocess.run(
+                ["desktop-file-validate", str(path)], capture_output=True, text=True)
+            assert validator.returncode == 0, validator.stderr
 
         assert manager.install_desktop_launcher(path) == path
         assert manager.remove_desktop_launcher(path)
@@ -67,7 +71,17 @@ def main() -> None:
             }],
             "zed_user_data_dir": "",
         }
-        installed_cli = manager.install_cli_launcher(data, cli)
+        app = root / "ZedLink.app"
+        app.mkdir()
+        with patch.object(manager, "IS_MACOS", True), patch.object(manager, "MACOS_APP", app):
+            mac_cli = manager.install_cli_launcher(data, root / "bin" / "zedlink-zed")
+        mac_contents = mac_cli.read_text()
+        assert "/usr/bin/open" in mac_contents and str(app) in mac_contents
+        assert repr(str(root)) not in mac_contents, "macOS launcher must not force project_root"
+        assert manager.remove_cli_launcher(mac_cli)
+
+        with patch.object(manager, "MACOS_APP", root / "missing.app"):
+            installed_cli = manager.install_cli_launcher(data, cli)
         cli_contents = installed_cli.read_text()
         assert manager.CLI_LAUNCHER_MARKER in cli_contents
         assert str(manager.ZED) in cli_contents
@@ -75,9 +89,17 @@ def main() -> None:
         assert installed_cli.stat().st_mode & 0o111
         assert manager.remove_cli_launcher(cli)
 
+        with patch.object(manager, "IS_MACOS", True):
+            assert manager.install_desktop_launcher() is None
+            assert manager.remove_desktop_launcher() is False
+            assert manager.cli_launcher_path().name == "zedlink-zed"
+        with patch.object(manager, "IS_MACOS", False):
+            assert manager.cli_launcher_path().name == "zed"
+
         cli.write_text("#!/bin/sh\n")
         try:
-            manager.install_cli_launcher(data, cli)
+            with patch.object(manager, "MACOS_APP", root / "missing.app"):
+                manager.install_cli_launcher(data, cli)
         except ValueError as error:
             assert "not managed" in str(error)
         else:

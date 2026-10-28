@@ -187,7 +187,8 @@ def main() -> None:
             issue_cert.assert_called_once(); sync.assert_called_once(); restart.assert_called_once()
 
         unit_directory = root / "systemd-user"
-        with patch.object(manager, "systemd_user_directory", return_value=unit_directory), \
+        with patch.object(manager, "IS_MACOS", False), \
+             patch.object(manager, "systemd_user_directory", return_value=unit_directory), \
              patch.object(manager, "certificate_health", return_value=(
                  True, "valid for workstation.example.ts.net until 2099-01-01")), \
              patch.object(manager.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as systemctl:
@@ -198,6 +199,23 @@ def main() -> None:
         assert "OnUnitActiveSec=12h" in timer
         assert "RandomizedDelaySec=1h" in timer
         assert systemctl.call_count == 2
+
+        agent_path = root / "LaunchAgents" / f"{manager.LAUNCH_AGENT_LABEL}.plist"
+        with patch.object(manager, "IS_MACOS", True), \
+             patch.object(manager, "launch_agent_path", return_value=agent_path), \
+             patch.object(manager, "certificate_health", return_value=(
+                 True, "valid for workstation.example.ts.net until 2099-01-01")), \
+             patch.object(manager.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as launchctl:
+            manager.install_certificate_renewal(data)
+            assert manager.renewal_schedule_state() == (True, True)
+            manager.remove_certificate_renewal()
+        assert not agent_path.exists()
+        commands = [call.args[0] for call in launchctl.call_args_list]
+        assert commands[0][:2] == ["launchctl", "bootout"]
+        assert commands[1][:2] == ["launchctl", "bootstrap"]
+        assert commands[1][3] == str(agent_path)
+        assert commands[2][:2] == ["launchctl", "print"]
+        assert commands[3][:2] == ["launchctl", "bootout"]
 
     print("PASS: Tailscale preflight, staged TLS install, live reload, and automatic renewal units")
 

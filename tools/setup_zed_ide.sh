@@ -13,7 +13,7 @@ usage() {
   cat <<'TEXT'
 Usage: bash tools/setup_zed_ide.sh [options]
 
-Guided Linux setup for the patched ZedLink build and Zed IDE tasks.
+Guided Linux and macOS setup for the patched ZedLink build and Zed IDE tasks.
 
   --yes                  Accept the safe defaults
   --skip-build           Do not build patched Zed or the gateway
@@ -82,7 +82,7 @@ done
 
 if ! python3 -c 'import qrcode' >/dev/null 2>&1; then
   printf 'Note: Python qrcode is missing. Build and configuration can continue, but Pair a device will need it.\n'
-  printf 'Install the qrcode package supplied by your Linux distribution before pairing.\n\n'
+  printf 'Install the qrcode package (your Linux distribution, or pip on macOS) before pairing.\n\n'
 fi
 
 if ! $skip_build; then

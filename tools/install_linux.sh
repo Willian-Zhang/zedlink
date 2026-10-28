@@ -34,6 +34,27 @@ else
   exit 1
 fi
 
-RUSTUP_TOOLCHAIN=stable cargo build --manifest-path "$source_root/Cargo.toml" -p zed
-RUSTUP_TOOLCHAIN=stable cargo build --manifest-path "$project_root/gateway/Cargo.toml"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  # rustup may default to an x86_64 host on Apple silicon, and "stable" may be older
+  # than Zed requires, so build with Zed's pinned toolchain for the native architecture.
+  channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' "$source_root/rust-toolchain.toml")"
+  arch="$(uname -m)"
+  [[ "$arch" == "arm64" ]] && arch="aarch64"
+  toolchain="$channel-$arch-apple-darwin"
+  rustup toolchain install "$toolchain" --profile minimal --no-self-update
+  features=()
+  if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+    printf 'Metal Toolchain not installed; compiling shaders at runtime instead.\n'
+    features=(--features gpui_platform/runtime_shaders)
+  fi
+  # The pinned patch sets RELEASE_CHANNEL to stable. Build an optimized Nightly instead so
+  # patched Zed never shares the official Zed's single-instance port or Stable database,
+  # and still keeps credentials in the Keychain (Dev builds use a plain-text file).
+  ZED_RELEASE_CHANNEL=nightly RUSTUP_TOOLCHAIN="$toolchain" \
+    cargo build --release --manifest-path "$source_root/Cargo.toml" -p zed ${features[@]+"${features[@]}"}
+  RUSTUP_TOOLCHAIN="$toolchain" cargo build --manifest-path "$project_root/gateway/Cargo.toml"
+else
+  RUSTUP_TOOLCHAIN=stable cargo build --manifest-path "$source_root/Cargo.toml" -p zed
+  RUSTUP_TOOLCHAIN=stable cargo build --manifest-path "$project_root/gateway/Cargo.toml"
+fi
 printf 'Built patched Zed and ZedLink gateway. Open ZedLink: Configure in Zed.\n'

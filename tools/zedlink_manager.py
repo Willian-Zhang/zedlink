@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Local, terminal-backed setup actions for Zed's task picker."""
 
+# Patched Zed runs plain `python3`, which on macOS can be the system Python 3.9;
+# this keeps the `X | None` annotations from being evaluated there.
+from __future__ import annotations
+
 import argparse
 from datetime import datetime, timezone
 import ipaddress
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import socket
@@ -23,7 +28,14 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 GATEWAY = ROOT / "gateway/target/debug/zedlink-gateway"
-ZED = ROOT / "zed-source/target/debug/zed"
+# On macOS, ~/Applications/ZedLink.app is created by tools/install_macos_app.py.
+MACOS_APP = Path.home() / "Applications/ZedLink.app"
+# Prefer the installed app, then the optimized build (macOS builds it as Nightly),
+# then the debug build.
+ZED = next((path for path in (MACOS_APP / "Contents/MacOS/zed",
+                              ROOT / "zed-source/target/release/zed",
+                              ROOT / "zed-source/target/debug/zed") if path.is_file()),
+           ROOT / "zed-source/target/debug/zed")
 PROVIDERS = {
     "tailscale": "Tailscale",
     "netbird": "NetBird",
@@ -46,6 +58,10 @@ TAILSCALE_CERT_RENEWAL_WINDOW = "720h"
 TAILSCALE_CERT_RENEWAL_SECONDS = 30 * 24 * 60 * 60
 RENEWAL_SERVICE = "zedlink-certificate-renewal.service"
 RENEWAL_TIMER = "zedlink-certificate-renewal.timer"
+IS_MACOS = sys.platform == "darwin"
+LAUNCH_AGENT_LABEL = "dev.zedlink.certificate-renewal"
+# launchd starts agents with a minimal PATH; tailscale and Homebrew OpenSSL live outside it.
+LAUNCH_AGENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 
 def config_path() -> Path:
@@ -148,8 +164,12 @@ def desktop_launcher_path() -> Path:
 
 
 def cli_launcher_path() -> Path:
-    """Return the conventional per-user CLI location used by Zed's installer."""
-    return Path.home() / ".local/bin/zed"
+    """Return the conventional per-user CLI location used by Zed's installer.
+
+    On macOS, ~/.local/bin usually precedes the official /usr/local/bin/zed on
+    PATH, so the patched build gets its own name instead of shadowing it.
+    """
+    return Path.home() / (".local/bin/zedlink-zed" if IS_MACOS else ".local/bin/zed")
 
 
 def install_cli_launcher(data: dict, path: Path | None = None) -> Path:
@@ -164,6 +184,25 @@ def install_cli_launcher(data: dict, path: Path | None = None) -> Path:
         raise ValueError(f"zed command already exists and is not managed by ZedLink: {destination}")
     default_args = [data["project_root"]]
     user_data_dir = str(data.get("zed_user_data_dir", "")).strip()
+    if IS_MACOS and MACOS_APP.is_dir():
+        # Open through LaunchServices so the app isn't tied to (or killed with) the terminal.
+        # With no arguments the app restores its last session instead of opening project_root.
+        contents = "\n".join((
+            "#!/usr/bin/env python3",
+            CLI_LAUNCHER_MARKER,
+            "import os",
+            "import sys",
+            f"app = {str(MACOS_APP)!r}",
+            f"user_data_dir = {user_data_dir!r}",
+            "arguments = [os.path.abspath(argument) for argument in sys.argv[1:]]",
+            "if user_data_dir:",
+            "    command = ['/usr/bin/open', '-n', '-a', app, '--args', '--user-data-dir', user_data_dir, *arguments]",
+            "else:",
+            "    command = ['/usr/bin/open', '-a', app, *arguments]",
+            "os.execv(command[0], command)",
+            "",
+        ))
+        return write_cli_launcher(destination, contents)
     contents = "\n".join((
         "#!/usr/bin/env python3",
         CLI_LAUNCHER_MARKER,
@@ -182,6 +221,10 @@ def install_cli_launcher(data: dict, path: Path | None = None) -> Path:
         "os.execve(executable, command, environment)",
         "",
     ))
+    return write_cli_launcher(destination, contents)
+
+
+def write_cli_launcher(destination: Path, contents: str) -> Path:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{destination.name}.", dir=destination.parent)
     temporary = Path(temporary_name)
@@ -221,7 +264,9 @@ def refresh_desktop_database(directory: Path) -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def install_desktop_launcher(path: Path | None = None) -> Path:
+def install_desktop_launcher(path: Path | None = None) -> Path | None:
+    if IS_MACOS and path is None:
+        return None
     destination = path or desktop_launcher_path()
     destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     if destination.is_symlink():
@@ -264,6 +309,8 @@ def install_desktop_launcher(path: Path | None = None) -> Path:
 
 
 def remove_desktop_launcher(path: Path | None = None) -> bool:
+    if IS_MACOS and path is None:
+        return False
     destination = path or desktop_launcher_path()
     if not destination.exists():
         return False
@@ -439,8 +486,7 @@ def tailscale_connection_checks(data: dict | None) -> dict:
     except (OSError, subprocess.SubprocessError, ValueError, KeyError):
         report("https", "fail", "HTTPS discovery failed; no pairing request was sent")
     try:
-        timer = subprocess.run(["systemctl", "--user", "is-enabled", "--quiet", RENEWAL_TIMER], timeout=5, capture_output=True).returncode == 0
-        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", RENEWAL_TIMER], timeout=5, capture_output=True).returncode == 0
+        timer, active = renewal_schedule_state()
         report("renewal", "pass" if timer and active else "warn",
                "Automatic renewal enabled and timer active" if timer and active else "Renewal timer enabled but inactive" if timer else "Automatic renewal not enabled")
     except (OSError, subprocess.SubprocessError): report("renewal", "unknown", "Renewal timer unavailable")
@@ -1003,6 +1049,28 @@ def renewal_unit_paths() -> tuple[Path, Path]:
     return directory / RENEWAL_SERVICE, directory / RENEWAL_TIMER
 
 
+def launch_agent_path() -> Path:
+    return Path.home() / "Library/LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
+def launch_agent_target() -> str:
+    return f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"
+
+
+def renewal_schedule_state() -> tuple[bool, bool]:
+    """Return whether automatic renewal is enabled and currently scheduled."""
+    if IS_MACOS:
+        enabled = launch_agent_path().is_file()
+        active = subprocess.run(["launchctl", "print", launch_agent_target()],
+                                capture_output=True, timeout=5).returncode == 0
+        return enabled, active
+    enabled = subprocess.run(["systemctl", "--user", "is-enabled", "--quiet", RENEWAL_TIMER],
+                             capture_output=True, timeout=5).returncode == 0
+    active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", RENEWAL_TIMER],
+                            capture_output=True, timeout=5).returncode == 0
+    return enabled, active
+
+
 def write_private_text(path: Path, content: str) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=path.name + "-", dir=path.parent)
@@ -1027,6 +1095,10 @@ def install_certificate_renewal(data: dict) -> None:
         healthy, detail = certificate_health(Path(route["cert"]), Path(route["key"]), hostname, require_trust=True)
         if not healthy:
             raise ValueError(f"set up the {route['label']} certificate first: {detail}")
+    if IS_MACOS:
+        install_launch_agent(data)
+        print_renewal_enabled()
+        return
     service_path, timer_path = renewal_unit_paths()
     manager = systemd_quote(str(Path(__file__).resolve()))
     python = systemd_quote(sys.executable)
@@ -1056,21 +1128,46 @@ WantedBy=timers.target
     write_private_text(timer_path, timer)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", RENEWAL_TIMER], check=True)
+    print_renewal_enabled()
+
+
+def install_launch_agent(data: dict) -> None:
+    state = Path(data["state_dir"])
+    private_directory(state)
+    log = str(state / "certificate-renewal.log")
+    agent = {
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": [sys.executable, str(Path(__file__).resolve()), "renew-certificates"],
+        "EnvironmentVariables": {"PATH": LAUNCH_AGENT_PATH},
+        "StartInterval": 12 * 60 * 60,
+        "RunAtLoad": True,
+        "ProcessType": "Background",
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+    }
+    path = launch_agent_path()
+    write_private_text(path, plistlib.dumps(agent).decode("utf-8"))
+    subprocess.run(["launchctl", "bootout", launch_agent_target()],
+                   capture_output=True, text=True)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
+
+
+def print_renewal_enabled() -> None:
     print("Automatic Tailscale certificate renewal is enabled.")
     print("ZedLink checks every 12 hours and renews only inside the final 30 days.")
     print("A running gateway reloads the validated certificate without losing pairings or sessions.")
 
 
 def certificate_renewal_status(data: dict) -> None:
-    service_path, timer_path = renewal_unit_paths()
-    enabled = subprocess.run(
-        ["systemctl", "--user", "is-enabled", "--quiet", RENEWAL_TIMER]).returncode == 0
-    active = subprocess.run(
-        ["systemctl", "--user", "is-active", "--quiet", RENEWAL_TIMER]).returncode == 0
+    enabled, active = renewal_schedule_state()
     print(f"Automatic renewal: {'enabled' if enabled else 'disabled'}")
     print(f"Renewal timer: {'active' if active else 'inactive'}")
-    print(f"Service file: {'installed' if service_path.is_file() else 'missing'}")
-    print(f"Timer file: {'installed' if timer_path.is_file() else 'missing'}")
+    if IS_MACOS:
+        print(f"Launch agent: {'installed' if launch_agent_path().is_file() else 'missing'}")
+    else:
+        service_path, timer_path = renewal_unit_paths()
+        print(f"Service file: {'installed' if service_path.is_file() else 'missing'}")
+        print(f"Timer file: {'installed' if timer_path.is_file() else 'missing'}")
     for route in data["routes"]:
         if route["enabled"] and route["provider"] == "tailscale":
             hostname = urlsplit(route["url"]).hostname or ""
@@ -1081,6 +1178,14 @@ def certificate_renewal_status(data: dict) -> None:
 
 
 def remove_certificate_renewal() -> None:
+    if IS_MACOS:
+        subprocess.run(["launchctl", "bootout", launch_agent_target()],
+                       capture_output=True, text=True)
+        path = launch_agent_path()
+        if path.exists():
+            path.unlink()
+        print("Automatic Tailscale certificate renewal is disabled.")
+        return
     service_path, timer_path = renewal_unit_paths()
     subprocess.run(
         ["systemctl", "--user", "disable", "--now", RENEWAL_TIMER],
@@ -1283,9 +1388,13 @@ def quick_setup(project_root: str) -> None:
     cli = install_cli_launcher(data)
     print(f"\nZedLink is configured for this Zed project: {project}")
     print("Global ZedLink tasks are installed and available from any Zed project.")
-    print(f"Application launcher installed: {launcher}")
+    if launcher:
+        print(f"Application launcher installed: {launcher}")
     print(f"Patched Zed command installed: {cli}")
-    print("Next: open 'ZedLink — Patched Zed', then use /remote-control in its Agent thread.")
+    if launcher:
+        print("Next: open 'ZedLink — Patched Zed', then use /remote-control in its Agent thread.")
+    else:
+        print(f"Next: run '{cli.name}', then use /remote-control in its Agent thread.")
 
 
 def netbird_defaults() -> tuple[str | None, str | None]:
@@ -1972,15 +2081,18 @@ def main() -> None:
             print(json.dumps(gateway_status(data)))
         elif args.action == "install-launcher":
             launcher = install_desktop_launcher()
-            print(f"Installed application launcher: {launcher}")
-            print("Open 'ZedLink — Patched Zed' from the application menu for future remote-control sessions.")
+            if launcher is None:
+                print(f"macOS has no application launcher; use the '{cli_launcher_path().name}' command instead.")
+            else:
+                print(f"Installed application launcher: {launcher}")
+                print("Open 'ZedLink — Patched Zed' from the application menu for future remote-control sessions.")
         elif args.action == "remove-launcher":
             removed = remove_desktop_launcher()
             print("Removed the ZedLink application launcher." if removed else "ZedLink application launcher is not installed.")
         elif args.action == "install-cli":
             cli = install_cli_launcher(data)
             print(f"Installed patched Zed command: {cli}")
-            print("Use 'zed', 'zed .', or 'zed path/to/file'.")
+            print(f"Use '{cli.name}', '{cli.name} .', or '{cli.name} path/to/file'.")
         elif args.action == "remove-cli":
             removed = remove_cli_launcher()
             print("Removed the ZedLink zed command." if removed else "ZedLink zed command is not installed.")
