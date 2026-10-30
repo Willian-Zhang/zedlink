@@ -1459,3 +1459,68 @@ body[data-reading-code-wrap="true"] .tool-output pre { white-space: pre-wrap; ov
 #show-context .context-icon { display: inline-flex; align-items: center; justify-content: center; }
 #show-context .context-icon svg { display: block; width: 20px; height: 20px; }
 @media (max-width: 760px) { #desktop-session-filter { display: none; } }
+
+/* Connect sits beside New session only while desktop Zed allows remote attach. */
+#sessions-panel .sidebar-primary { display: flex; gap: 6px; }
+#sessions-panel .sidebar-primary > button { flex: 1 1 0; min-width: 0; }
+#sessions-panel #connect-session { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-height: 40px; padding: 0 12px; border: 0; border-radius: 6px; background: #222427; color: var(--ink); font-size: .84rem; font-weight: 650; text-align: left; }
+#sessions-panel #connect-session:hover:not(:disabled) { background: #303236; }
+#sessions-panel .sidebar-primary > button[aria-expanded="true"] { background: #303236; box-shadow: inset 0 0 0 1px #4a4d52; }
+#connect-session .nav-icon { color: var(--ink); font-size: 1.1rem; }
+.sidebar-primary.has-connect .sidebar-new-long { display: none; }
+.connect-session-panel { flex: none; margin: 10px 0 0; padding: 12px 4px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.connect-session-panel h2 { margin: 0; color: var(--ink); font-size: .84rem; font-weight: 650; }
+.connect-session-panel > p { margin: 5px 0 8px; color: var(--subtle); font-size: .69rem; line-height: 1.4; }
+.attachable-list { display: grid; gap: 2px; max-height: min(40vh, 300px); overflow-y: auto; overscroll-behavior: contain; }
+.attachable-list > p { margin: 6px 4px; color: var(--muted); font-size: .76rem; line-height: 1.4; }
+.attachable-list > .attachable-error { color: var(--warning); }
+.attachable-group { margin: 10px 6px 3px; color: #a7abb1; font: 600 .64rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.attachable-row { display: block; width: 100%; min-height: 48px; padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; }
+.attachable-row:hover:not(:disabled) { background: #1e2023; }
+.attachable-row strong { display: block; overflow: hidden; font-size: .81rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.attachable-row small { display: block; margin-top: 3px; color: var(--muted); font-size: .7rem; }
+.attachable-row.waiting small { color: var(--warning); }
+
+.session-group-by { display: inline-flex; flex: none; margin-left: auto; padding: 2px; border-radius: 6px; background: #1b1d20; }
+.session-group-by button { min-height: 30px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: 500 .72rem Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; text-transform: none; }
+.session-group-by button:hover { color: var(--ink); }
+.session-group-by button[aria-pressed="true"] { background: #303236; color: var(--ink); }
+.session-group-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; text-transform: inherit; }
+.session-group-toggle:hover { color: var(--ink); }
+.session-group-chevron { flex: none; width: 10px; font-size: .72rem; }
+.session-group-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-group-current { flex: none; margin-left: auto; padding: 1px 6px; border-radius: 4px; background: #26282b; color: var(--ink); font-size: .6rem; }
+.session-group-toggle > .unread-dot { margin: 0 4px 0 auto; }
+.session-group-current + .unread-dot { margin-left: 0; }
+.unread-dot { display: inline-block; flex: none; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #3b8cff; vertical-align: .06em; }
+@media (min-width: 761px) {
+  #sessions-panel .list-label { flex: none; flex-wrap: wrap; row-gap: 5px; }
+  #sessions-panel .session-group-by { order: 3; flex-basis: 100%; }
+  #sessions-panel .session-group-by button { flex: 1; }
+}
+@media (max-width: 760px) {
+  #sessions-panel #connect-session { min-height: 44px; border-radius: 9px; }
+  #sessions-panel .list-label { align-items: center; }
+  .attachable-list { max-height: none; }
+  .attachable-row { min-height: 56px; }
+  .session-group-by button { min-height: 40px; padding: 0 12px; font-size: .8rem; }
+  .session-group-toggle { min-height: 44px; }
+}
+
+/* Per-entry queue controls mirror the desktop queue (steer, send now, edit, remove). */
+#queue-review { max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
+.queue-entry .queue-preview { color: var(--ink); white-space: pre-wrap; }
+.queue-entry .queue-meta { color: var(--subtle); }
+.queue-actions button[aria-pressed="true"] { border-color: #7fb0ff; background: #1d2a3a; color: #d7e9fc; }
+.queue-edit { display: grid; grid-column: 1 / -1; gap: 8px; }
+.queue-edit label { margin: 0; color: var(--muted); font-size: .75rem; }
+.queue-edit textarea { width: 100%; min-height: 84px; resize: vertical; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--ink); font-size: .88rem; line-height: 1.45; }
+.queue-edit .approval-actions { max-width: none; }
+@media (max-width: 760px) {
+  .queue-actions, .queue-edit .approval-actions { justify-content: stretch; max-width: none; }
+  .queue-actions button, .queue-edit .approval-actions button { flex: 1 1 auto; min-height: 44px; }
+  .approval-card.queue-head { grid-template-columns: minmax(0, 1fr) auto; }
+  .queue-head small { display: none; }
+  .queue-head .queue-clear { min-height: 44px; }
+  .queue-edit textarea { font-size: 16px; }
+}

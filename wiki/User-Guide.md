@@ -4,7 +4,7 @@
 
 ## Sessions and live activity
 
-Sessions are grouped by attention, running, and pinned state. Select a saved gateway first, then select the Zed target when a gateway advertises more than one instance. Drafts, event cursors, and uncertain sends remain scoped to that exact gateway, target, epoch, and thread.
+Sessions are grouped by attention and running state, or by project with the **Status | Project** toggle; tap a group header to collapse it. A blue dot marks sessions with new activity or newly exposed sessions until you open them. When the desktop allows it, **Connect** lists threads already open in desktop Zed and exposes the one you pick. Select a saved gateway first, then select the Zed target when a gateway advertises more than one instance. Drafts, event cursors, and uncertain sends remain scoped to that exact gateway, target, epoch, and thread.
 
 The conversation view renders streamed responses, thinking, tool activity, failures, approvals, and current native Agent phase. Active phases can include responding, preparing or running a tool, waiting for approval, and compacting context. **Stop** cancels only the authoritative active turn.
 
@@ -26,8 +26,10 @@ Type `/` or open the command picker. The list comes from the selected native thr
 | Skills | Scoped skills load through Zed and keep editable instructions |
 | MCP | Supported prompts appear with their advertised arguments |
 | ACP agents | Codex, Claude Code, and other agents provide their own dynamic commands |
-| `/remote-control` | Stops exposure after confirmation; starting exposure remains a desktop action |
+| `/remote-control` | Stops exposure after confirmation; starting exposure is a desktop action, or **Connect** when the desktop enables it |
 | Feedback actions | Follow Zed's native feedback flow and require explicit confirmation |
+
+Messages sent while the Agent is busy wait in Zed's native queue. Each queued message offers **Steer** (end the current turn at the next tool boundary, then send), **Send now** (stop the current turn and send immediately, as on the desktop), **Edit** for text-only messages, and **Remove**.
 
 Unknown commands are rejected. Local actions are never converted into model prompts. Commands that do not support attachments reject them rather than silently dropping them.
 

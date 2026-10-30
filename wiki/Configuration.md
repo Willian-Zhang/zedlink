@@ -19,9 +19,13 @@ The important settings are:
 | **Project Root** | Limits project operations to the selected worktree |
 | **Start Gateway on Launch** | Starts the saved gateway profile with patched Zed |
 | **ZedLink Manager** | Points Zed to this repository's management script |
-| **Remote Permissions** | Separately enables session creation, attachments, files, Git changes, approvals, terminals, debugger actions, and Agent settings |
+| **Remote Permissions** | Separately enables connecting to open threads, session creation, attachments, files, Git changes, approvals, terminals, debugger actions, and Agent settings |
 
 Permissions apply only to explicitly exposed conversations. Disable capabilities that are unnecessary for your use.
+
+**Connect to Open Threads** (`allow_remote_attach`, off by default) lets a paired device list Agent threads already open in a configured project and expose one itself, instead of running `/remote-control` on the desktop. Zed shows a toast in that thread when a device connects. Only the desktop can turn it on. Threads in an SSH window that is still connecting are listed as waiting; connecting to one, from the phone or with `/remote-control`, exposes it once its folders load and match a configured root.
+
+Changes to `project_root` and `project_roots` apply without restarting Zed. Removing a root stops exposing its threads immediately; turning `enabled` off empties the list. Changing `enabled` from off to on or changing `state_directory` still needs a restart.
 
 ## Recommended Tailscale setup
 

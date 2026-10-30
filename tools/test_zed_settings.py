@@ -61,6 +61,7 @@ def main() -> None:
             "project_root": data["project_root"],
             "start_gateway_on_launch": True,
             "manager_path": str(Path(manager.__file__).resolve()),
+            "allow_remote_attach": False,
             "allow_session_creation": True,
             "allow_attachments": True,
             "allow_project_context": True,
@@ -96,6 +97,7 @@ def main() -> None:
         saved["zedlink"]["allow_debugger_read"] = True
         saved["zedlink"]["allow_debugger_start"] = True
         saved["zedlink"]["allow_debugger_control"] = True
+        saved["zedlink"]["allow_remote_attach"] = True
         settings_path.write_text(json.dumps(saved), encoding="utf-8")
         assert manager.has_native_zedlink_settings(data)
         assert json.loads(settings_path.read_text())["zedlink"]["enabled"] is False
@@ -107,6 +109,7 @@ def main() -> None:
         assert repaired["allow_debugger_read"] is True
         assert repaired["allow_debugger_start"] is True
         assert repaired["allow_debugger_control"] is True
+        assert repaired["allow_remote_attach"] is True
 
         connection_settings = {"zedlink": dict(repaired)}
         connection_settings["zedlink"].update({

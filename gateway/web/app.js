@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.25.2";
+const UI_BUILD = "2026.10.29.1";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -104,6 +104,8 @@ const state = {
   queue: null,
   rewindPoints: [],
 };
+const attachState = { open: false, timer: null, loading: false, rows: null, error: "", signature: "", scope: "", pending: new Set(), tapped: null, busy: new Set() };
+const queueUi = { busy: false, editing: null, signature: "" };
 function resetTranscriptObservation() {
   state.threadActivity = null;
   state.transcriptObservedAt = 0;
@@ -232,6 +234,18 @@ function showCreateAvailability() {
   $("new-session").title = available
     ? "Create a native Zed Agent session"
     : "Start patched Zed to create a session";
+  const attach = canAttachThreads();
+  for (const id of ["connect-session", "empty-connect"]) {
+    $(id).classList.toggle("hidden", !attach);
+    $(id).disabled = !(attach && state.live);
+  }
+  $("sidebar-tip-connect").classList.toggle("hidden", !attach);
+  document.querySelector(".sidebar-primary").classList.toggle("has-connect", attach);
+  if (!attach && attachState.open) closeConnectPanel();
+}
+// Both capabilities are only advertised while desktop Zed allows remote attach.
+function canAttachThreads() {
+  return state.capabilities.includes("thread.attachable") && state.capabilities.includes("thread.attach");
 }
 
 function renderEmptyWorkspace() {
@@ -243,7 +257,9 @@ function renderEmptyWorkspace() {
   $("empty-description").textContent = connected
     ? state.threads.length
       ? "Choose an exposed session from the sidebar to continue its conversation."
-      : "Desktop Zed is connected, but no agent thread is currently exposed. Start a Zed Agent session here or expose an existing Zed or ACP conversation."
+      : canAttachThreads()
+        ? "Desktop Zed is connected, but no agent thread is currently exposed. Start a Zed Agent session here, or connect a thread that is already open in desktop Zed."
+        : "Desktop Zed is connected, but no agent thread is currently exposed. Start a Zed Agent session here or expose an existing Zed or ACP conversation."
     : "Start the patched Zed Dev window, then refresh this page when the desktop bridge is online.";
   $("thread-title").textContent = state.threads.length ? "Choose a session" : "No remote sessions";
   $("thread-meta").textContent = connected
@@ -759,6 +775,7 @@ function focusLiveActivity() {
 function apiError(code) {
   if (code === "UNAUTHENTICATED") return "Browser credential revoked or missing. Pair again.";
   if (code === "THREAD_NOT_EXPOSED") return "This thread is no longer exposed in desktop Zed.";
+  if (code === "THREAD_UNAVAILABLE") return "That thread is no longer open in desktop Zed.";
   if (code === "INSTANCE_UNAVAILABLE") return "Desktop Zed is unavailable. Check that it is running.";
   if (code === "RESYNC_REQUIRED") return "Event history changed. Reloading the native snapshot.";
   if (code === "UNSUPPORTED_CAPABILITY") return "This command is unavailable in this Zed thread.";
@@ -1269,6 +1286,8 @@ async function loadThreads() {
     nextSelected.status, nextSelected.current_turn_id, nextSelected.had_error,
     nextSelected.agent_error, nextSelected.retry_status,
   ]) : null;
+  const listKey = JSON.stringify([state.gatewayId, state.targetId]);
+  const listedBefore = sessionListsLoaded.has(listKey);
   for (const thread of result.threads) {
     if (scope !== JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch])) return;
     const key = sessionKey(thread);
@@ -1291,8 +1310,11 @@ async function loadThreads() {
     }
     const signature = JSON.stringify([thread.status, thread.current_turn_id, !!thread.had_error, !!validRetryStatus(thread.retry_status), thread.approval_count, thread.input_count]);
     if (sessionObserved.has(key) && sessionObserved.get(key) !== signature && state.threadId !== thread.thread_id) sessionUpdated.add(key);
+    // A thread exposed after this list was first shown is new to this device.
+    if (!sessionObserved.has(key) && listedBefore && state.threadId !== thread.thread_id) sessionUpdated.add(key);
     sessionObserved.set(key, signature);
   }
+  sessionListsLoaded.add(listKey);
   state.threads = result.threads;
   state.lastThreadsAt = Date.now();
   if (state.threadId && nextSelected) {
@@ -1370,6 +1392,7 @@ async function createSession(event) {
       if (result.outcome === "ready" && typeof result.thread_id === "string") {
         $("new-session-title").value = "";
         $("new-session-form").classList.add("hidden");
+        $("new-session").setAttribute("aria-expanded", "false");
         await loadThreads();
         await selectThread(result.thread_id);
         notice("");
@@ -1433,6 +1456,178 @@ function renderCreateProjectHelp() {
   $("new-session-help").textContent = `Project ${project} · configuration remains in the selected agent.`;
 }
 $("new-session-project").addEventListener("change", renderCreateProjectHelp);
+
+function attachScope() { return JSON.stringify([state.gatewayId, state.targetId, state.instanceId, state.epoch]); }
+function openConnectPanel() {
+  if ($("connect-session").disabled || !canAttachThreads()) return;
+  $("new-session-form").classList.add("hidden");
+  $("new-session").setAttribute("aria-expanded", "false");
+  if (attachState.scope !== attachScope()) {
+    attachState.scope = attachScope();
+    attachState.pending.clear();
+    attachState.tapped = null;
+    attachState.rows = null;
+  }
+  attachState.open = true;
+  attachState.error = "";
+  $("connect-session-panel").classList.remove("hidden");
+  $("connect-session").setAttribute("aria-expanded", "true");
+  renderAttachable();
+  pollAttachable();
+}
+function closeConnectPanel() {
+  attachState.open = false;
+  clearTimeout(attachState.timer);
+  attachState.timer = null;
+  $("connect-session-panel").classList.add("hidden");
+  $("connect-session").setAttribute("aria-expanded", "false");
+}
+function scheduleAttachablePoll() {
+  clearTimeout(attachState.timer);
+  attachState.timer = attachState.open && !document.hidden ? setTimeout(pollAttachable, 2000) : null;
+}
+async function pollAttachable() {
+  clearTimeout(attachState.timer);
+  attachState.timer = null;
+  if (!attachState.open || document.hidden || attachState.loading) return;
+  const scope = attachScope();
+  attachState.loading = true;
+  $("attachable-list").setAttribute("aria-busy", "true");
+  try {
+    const result = await rpc("thread.attachable", baseInstanceParams());
+    if (!attachState.open || scope !== attachScope()) return;
+    identity(result);
+    if (!Array.isArray(result.threads)) throw new Error("Invalid list of open threads.");
+    attachState.rows = result.threads.filter((row) => row && typeof row.thread_id === "string");
+    attachState.error = "";
+    const listed = new Set(attachState.rows.map((row) => row.thread_id));
+    const settled = [...attachState.pending].filter((id) => !listed.has(id));
+    if (settled.length) {
+      // A pending thread leaves this list once Zed exposes it (or the desktop closes it).
+      await loadThreads();
+      if (!attachState.open || scope !== attachScope()) return;
+      for (const id of settled) {
+        attachState.pending.delete(id);
+        if (attachState.tapped !== id) continue;
+        attachState.tapped = null;
+        if (state.threads.some((thread) => thread.thread_id === id)) {
+          closeConnectPanel();
+          await selectThread(id);
+          return;
+        }
+        notice("That thread is no longer open in desktop Zed.");
+      }
+    }
+    renderAttachable();
+  } catch (error) {
+    if (!attachState.open || scope !== attachScope()) return;
+    if (error.code === "UNSUPPORTED_CAPABILITY") {
+      closeConnectPanel();
+      notice("Connect is turned off in desktop Zed.");
+      return;
+    }
+    attachState.error = `Could not list open threads: ${error.message}`;
+    renderAttachable();
+  } finally {
+    attachState.loading = false;
+    $("attachable-list").setAttribute("aria-busy", "false");
+    scheduleAttachablePoll();
+  }
+}
+function attachableGroupLabel(row) {
+  if (row.waiting && typeof row.waiting.host === "string" && row.waiting.host) return `${row.waiting.host} · connecting`;
+  return projectGroupLabel(row.project_group) || "Other project";
+}
+function attachableStatus(row) {
+  if (attachState.busy.has(row.thread_id)) return "Connecting…";
+  const host = typeof row.waiting?.host === "string" && row.waiting.host ? row.waiting.host : "host";
+  if (row.pending || attachState.pending.has(row.thread_id)) return row.waiting ? `Will connect when ${host} is ready` : "Connecting when Zed is ready";
+  if (row.waiting) return `Waiting for SSH connection (${host})`;
+  if (typeof row.activity?.label === "string" && row.activity.label) return row.activity.label;
+  return row.status === "Idle" ? "Ready" : typeof row.status === "string" && row.status ? row.status : "Unknown";
+}
+function renderAttachable() {
+  const list = $("attachable-list");
+  const rows = attachState.rows;
+  const signature = JSON.stringify([rows && rows.map((row) => [row.thread_id, row.title, normalizeAgent(row.agent).name, attachableGroupLabel(row), attachableStatus(row)]), attachState.error]);
+  if (signature === attachState.signature && list.childElementCount) return;
+  attachState.signature = signature;
+  const focused = list.contains(document.activeElement) ? document.activeElement.dataset.threadId : null;
+  list.replaceChildren();
+  if (attachState.error) {
+    const error = document.createElement("p"); error.className = "attachable-error"; error.textContent = attachState.error;
+    list.append(error);
+  }
+  if (rows === null) {
+    if (!attachState.error) { const loading = document.createElement("p"); loading.textContent = "Looking for open threads…"; list.append(loading); }
+    return;
+  }
+  if (!rows.length) {
+    const empty = document.createElement("p"); empty.textContent = "No other open threads in exposed projects.";
+    list.append(empty);
+    return;
+  }
+  const groups = new Map();
+  for (const row of rows) {
+    const label = attachableGroupLabel(row);
+    if (!groups.has(label)) groups.set(label, { waiting: !!row.waiting, rows: [] });
+    groups.get(label).rows.push(row);
+  }
+  const ordered = [...groups].sort(([a, first], [b, second]) => Number(first.waiting) - Number(second.waiting) || a.localeCompare(b));
+  for (const [label, group] of ordered) {
+    const heading = document.createElement("h3"); heading.className = "attachable-group"; heading.textContent = `${label} · ${group.rows.length}`;
+    list.append(heading);
+    for (const row of group.rows) {
+      const title = typeof row.title === "string" && row.title.trim() ? row.title : "Untitled Agent thread";
+      const agent = normalizeAgent(row.agent).name;
+      const status = attachableStatus(row);
+      const button = document.createElement("button"); button.type = "button"; button.className = "attachable-row";
+      button.dataset.threadId = row.thread_id;
+      button.classList.toggle("waiting", !!row.waiting);
+      button.disabled = attachState.busy.has(row.thread_id);
+      button.setAttribute("aria-label", `Connect ${title}, ${agent}, ${status}`);
+      const name = document.createElement("strong"); name.textContent = title;
+      const detail = document.createElement("small"); detail.textContent = `${agent} · ${status}`;
+      button.append(name, detail);
+      button.addEventListener("click", () => attachThread(row));
+      list.append(button);
+    }
+  }
+  if (focused) list.querySelector(`button[data-thread-id="${CSS.escape(focused)}"]`)?.focus();
+}
+async function attachThread(row) {
+  if (attachState.busy.has(row.thread_id) || !canAttachThreads()) return;
+  const scope = attachScope();
+  attachState.busy.add(row.thread_id);
+  renderAttachable();
+  try {
+    const result = await rpc("thread.attach", { ...baseInstanceParams(), thread_id: row.thread_id });
+    if (scope !== attachScope()) return;
+    if (result.outcome === "attached" || result.outcome === "already_attached") {
+      attachState.pending.delete(row.thread_id);
+      if (attachState.tapped === row.thread_id) attachState.tapped = null;
+      closeConnectPanel();
+      await loadThreads();
+      if (state.threads.some((thread) => thread.thread_id === row.thread_id)) await selectThread(row.thread_id);
+      else notice("Zed connected the thread, but it is not listed yet. Refresh Sessions in a moment.");
+      return;
+    }
+    if (result.outcome === "pending") {
+      attachState.pending.add(row.thread_id);
+      attachState.tapped = row.thread_id;
+      return;
+    }
+    throw new Error("Zed returned an unknown connect state.");
+  } catch (error) {
+    if (scope !== attachScope()) return;
+    if (error.code === "UNSUPPORTED_CAPABILITY") { closeConnectPanel(); notice("Connect is turned off in desktop Zed."); }
+    else notice(`Could not connect the thread: ${error.message}`);
+    if (error.code === "THREAD_UNAVAILABLE" && attachState.open) pollAttachable();
+  } finally {
+    attachState.busy.delete(row.thread_id);
+    if (attachState.open) renderAttachable();
+  }
+}
 
 function validAgentError(error) {
   if (!error || typeof error !== "object") return null;
@@ -1519,6 +1714,24 @@ let sessionFilter = "All";
 const sessionSummaryCache = new Map();
 const sessionObserved = new Map();
 const sessionUpdated = new Set();
+const sessionListsLoaded = new Set();
+const SESSION_GROUP_BY_KEY = "zedlink.sessionGroupBy";
+function sessionGroupBy() { return safeStore.read(SESSION_GROUP_BY_KEY) === "project" ? "project" : "status"; }
+function collapsedGroupsKey() { return `zedlink.sessionCollapsed.${targetScope()}.${sessionGroupBy()}`; }
+function collapsedGroups() {
+  try { const saved = JSON.parse(safeStore.read(collapsedGroupsKey()) || "[]"); return Array.isArray(saved) ? saved.filter((label) => typeof label === "string") : []; }
+  catch { return []; }
+}
+function toggleSessionGroup(label) {
+  const saved = new Set(collapsedGroups());
+  if (saved.has(label)) saved.delete(label); else saved.add(label);
+  safeStore.write(collapsedGroupsKey(), JSON.stringify([...saved]));
+  renderThreads();
+}
+function setSessionGroupBy(mode) {
+  safeStore.write(SESSION_GROUP_BY_KEY, mode === "project" ? "project" : "status");
+  renderThreads();
+}
 function sessionKey(thread) { return JSON.stringify([state.gatewayId, state.targetId, thread.thread_id]); }
 function sessionPins() {
   try { const saved = JSON.parse(safeStore.read(`zedlink.sessionPins.${targetScope()}`) || "[]"); return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []); }
@@ -1579,7 +1792,7 @@ function clearSessionSearch() {
   $("session-search").focus();
 }
 function renderThreads() {
-  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count, projectGroupLabel(thread.project_group)]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated]]);
+  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count, projectGroupLabel(thread.project_group)]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated], sessionGroupBy(), collapsedGroups(), canAttachThreads()]);
   if (signature === threadsRenderSignature) return;
   threadsRenderSignature = signature;
   const list = $("thread-list"); const scrollTop = list.scrollTop;
@@ -1622,9 +1835,19 @@ function renderThreads() {
       sessionFilter === "Running" && activity.running || sessionFilter === "Pinned" && pins.has(thread.thread_id);
   }).sort((a, b) => Number(pins.has(b.thread_id)) - Number(pins.has(a.thread_id)) || (Number(seen[b.thread_id]) || 0) - (Number(seen[a.thread_id]) || 0) || (a.title || "").localeCompare(b.title || ""));
   $("thread-count").textContent = String(visible.length);
-  const groups = ["Needs attention", "Running", "Ready & other"].map((group) => ({
+  const groupBy = sessionGroupBy();
+  for (const button of $("session-group-by").querySelectorAll("button[data-group-by]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.groupBy === groupBy));
+  }
+  const groupOf = groupBy === "project"
+    ? (thread) => projectGroupLabel(thread.project_group) || "Other project"
+    : (thread) => { const activity = sessionActivity(thread); return activity.attention ? "Needs attention" : activity.running ? "Running" : "Ready & other"; };
+  const groupLabels = groupBy === "project"
+    ? [...new Set(visible.map(groupOf))].sort((a, b) => a.localeCompare(b))
+    : ["Needs attention", "Running", "Ready & other"];
+  const groups = groupLabels.map((group) => ({
     label: group,
-    sessions: visible.filter((thread) => { const activity = sessionActivity(thread); return (activity.attention ? "Needs attention" : activity.running ? "Running" : "Ready & other") === group; }).map((thread) => {
+    sessions: visible.filter((thread) => groupOf(thread) === group).map((thread) => {
       const activity = sessionActivity(thread);
       return { id: thread.thread_id, title: thread.title || "Untitled Agent thread", agent: normalizeAgent(thread.agent).name.toLocaleUpperCase(), project: projectGroupLabel(thread.project_group),
         status: `${state.live ? "" : "Last known: "}${activity.label}`, running: !!(activity.running && state.live), attention: !!activity.attention,
@@ -1637,8 +1860,10 @@ function renderThreads() {
   }
   window.ZedLinkSessions.render({
     groups,
-    emptyMessage: state.threads.length ? "No sessions match this search or filter." : state.live ? "No exposed sessions. Choose /remote-control in desktop Zed or create a session using +." : "Sessions unavailable. Reconnect to refresh the list.",
+    emptyMessage: state.threads.length ? "No sessions match this search or filter." : state.live ? canAttachThreads() ? "No exposed sessions. Use Connect for a thread already open in desktop Zed, or create a session using +." : "No exposed sessions. Choose /remote-control in desktop Zed or create a session using +." : "Sessions unavailable. Reconnect to refresh the list.",
     canClear: !!(query || sessionFilter !== "All"),
+    collapsed: collapsedGroups(),
+    onToggleGroup: toggleSessionGroup,
     onSelect: (id) => { const thread = state.threads.find((item) => item.thread_id === id); if (thread) sessionUpdated.delete(sessionKey(thread)); selectThread(id); },
     onPin: (id) => { const saved = sessionPins(); if (saved.has(id)) saved.delete(id); else saved.add(id); safeStore.write(`zedlink.sessionPins.${targetScope()}`, JSON.stringify([...saved])); renderThreads(); },
     onClear: clearSessionSearch,
@@ -1652,6 +1877,10 @@ $("session-filters").addEventListener("click", (event) => {
   setSessionFilter(button.dataset.filter);
 });
 $("desktop-session-filter").addEventListener("change", (event) => setSessionFilter(event.target.value));
+$("session-group-by").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-group-by]"); if (!button) return;
+  setSessionGroupBy(button.dataset.groupBy);
+});
 $("session-tag-filter").addEventListener("change", renderThreads);
 $("edit-session-tag").addEventListener("click", () => {
   if (!state.threadId) return;
@@ -1680,6 +1909,8 @@ async function selectThread(threadId) {
   closeEventStream("connecting");
   state.errorSignature = null;
   state.threadId = threadId;
+  sessionUpdated.delete(sessionKey({ thread_id: threadId }));
+  closeConnectPanel();
   const seen = sessionSeen();
   seen[threadId] = Date.now();
   for (const id of Object.keys(seen)) if (!state.threads.some((thread) => thread.thread_id === id)) delete seen[id];
@@ -3060,7 +3291,9 @@ function renderEditReview(review) {
 }
 
 function renderQueue(queue) {
+  if (state.capabilities.includes("thread.queue.update")) { renderQueueControls(queue); return; }
   state.queue = queue;
+  queueUi.signature = "";
   const panel = $("queue-review");
   panel.replaceChildren();
   panel.classList.toggle("hidden", !queue?.count);
@@ -3074,6 +3307,135 @@ function renderQueue(queue) {
   clear.disabled = !state.capabilities.includes("thread.queue.clear");
   clear.addEventListener("click", async () => { try { await rpc("thread.queue.clear", baseThreadParams()); await refreshAuxiliaryState(); } catch (error) { notice(error.message); } });
   card.append(body, clear); panel.append(card);
+}
+
+// Periodic refreshes must not rebuild an unchanged queue, or an inline edit would
+// lose its caret; a rebuild restores the draft and the focused control instead.
+function renderQueueControls(queue) {
+  state.queue = queue;
+  const panel = $("queue-review");
+  const entries = (Array.isArray(queue?.entries) ? queue.entries : []).filter((entry) => entry && Number.isInteger(entry.id));
+  const editing = queueUi.editing;
+  if (editing && (editing.threadId !== state.threadId || !entries.some((entry) => entry.id === editing.id && entry.editable))) queueUi.editing = null;
+  const canClear = state.capabilities.includes("thread.queue.clear");
+  const signature = JSON.stringify([state.threadId, queue?.count, entries.map((entry) => [entry.id, entry.index, entry.preview, !!entry.steer, !!entry.editable, !!entry.remote]),
+    canClear, queueUi.busy, queueUi.editing?.id ?? null]);
+  if (signature === queueUi.signature) return;
+  queueUi.signature = signature;
+  const active = panel.contains(document.activeElement) ? document.activeElement.dataset.queueFocus : null;
+  panel.replaceChildren();
+  panel.classList.toggle("hidden", !queue?.count);
+  if (!queue?.count) return;
+  const head = document.createElement("article"); head.className = "approval-card queue-head";
+  const summary = document.createElement("div");
+  const title = document.createElement("strong"); title.textContent = `${queue.count} queued message${queue.count === 1 ? "" : "s"}`;
+  const hint = document.createElement("small"); hint.textContent = "Queued messages are sent in order after the current turn.";
+  summary.append(title, hint);
+  const clear = document.createElement("button"); clear.type = "button"; clear.className = "quiet queue-clear"; clear.textContent = "Clear queue";
+  clear.dataset.queueFocus = "clear";
+  clear.disabled = !canClear || queueUi.busy;
+  clear.addEventListener("click", async () => {
+    queueUi.busy = true; renderQueueControls(state.queue);
+    try { await rpc("thread.queue.clear", baseThreadParams()); } catch (error) { notice(error.message); }
+    finally { queueUi.busy = false; }
+    await refreshQueueAfterAction();
+  });
+  head.append(summary, clear);
+  panel.append(head);
+  entries.forEach((entry, position) => {
+    const label = entry.preview || "Attachment";
+    const card = document.createElement("article"); card.className = "approval-card queue-entry";
+    card.setAttribute("aria-label", `Queued message ${position + 1}${entry.steer ? ", steering" : ""}`);
+    if (queueUi.editing?.id === entry.id) {
+      const form = document.createElement("form"); form.className = "queue-edit";
+      const fieldId = `queue-edit-${entry.id}`;
+      const caption = document.createElement("label"); caption.htmlFor = fieldId; caption.textContent = `Edit queued message ${position + 1}`;
+      const field = document.createElement("textarea"); field.id = fieldId; field.rows = 3; field.dataset.queueFocus = `${entry.id}:text`;
+      field.value = queueUi.editing.draft;
+      field.addEventListener("input", () => { if (queueUi.editing?.id === entry.id) queueUi.editing.draft = field.value; });
+      field.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") { event.preventDefault(); queueUi.editing = null; renderQueueControls(state.queue); panel.querySelector(`[data-queue-focus="${entry.id}:edit"]`)?.focus(); }
+      });
+      const actions = document.createElement("div"); actions.className = "approval-actions";
+      const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "quiet"; cancel.textContent = "Cancel";
+      cancel.disabled = queueUi.busy;
+      cancel.addEventListener("click", () => { queueUi.editing = null; renderQueueControls(state.queue); panel.querySelector(`[data-queue-focus="${entry.id}:edit"]`)?.focus(); });
+      const save = document.createElement("button"); save.type = "submit"; save.className = "primary"; save.textContent = "Save";
+      save.disabled = queueUi.busy; save.dataset.queueFocus = `${entry.id}:save`;
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!field.value.trim()) { notice("A queued message cannot be empty. Use Remove instead."); field.focus(); return; }
+        updateQueueEntry(entry, "edit", { text: field.value });
+      });
+      actions.append(cancel, save);
+      form.append(caption, field, actions);
+      card.append(form);
+    } else {
+      const body = document.createElement("div");
+      const text = document.createElement("small"); text.className = "queue-preview"; text.textContent = label;
+      body.append(text);
+      const tags = [entry.steer ? "Steers at next tool boundary" : "", entry.remote ? "From a remote device" : ""].filter(Boolean);
+      if (tags.length) { const meta = document.createElement("small"); meta.className = "queue-meta"; meta.textContent = tags.join(" · "); body.append(meta); }
+      const actions = document.createElement("div"); actions.className = "approval-actions queue-actions";
+      const button = (text, className, focusKey, onClick) => {
+        const element = document.createElement("button"); element.type = "button"; element.className = className; element.textContent = text;
+        element.dataset.queueFocus = `${entry.id}:${focusKey}`; element.disabled = queueUi.busy;
+        element.addEventListener("click", onClick);
+        actions.append(element);
+        return element;
+      };
+      const steer = button("Steer", "quiet queue-steer", "steer", () => updateQueueEntry(entry, "steer", { steer: !entry.steer }));
+      steer.setAttribute("aria-pressed", String(!!entry.steer));
+      steer.title = "End the current turn at the next tool boundary and send this";
+      button("Send now", "primary", "send", () => updateQueueEntry(entry, "send_now"));
+      if (entry.editable) {
+        button("Edit", "quiet", "edit", () => {
+          queueUi.editing = { threadId: state.threadId, id: entry.id, draft: typeof entry.text === "string" ? entry.text : entry.preview || "" };
+          renderQueueControls(state.queue);
+          const field = $(`queue-edit-${entry.id}`);
+          if (field) { field.focus(); field.setSelectionRange(field.value.length, field.value.length); }
+        });
+      }
+      button("Remove", "quiet", "remove", () => updateQueueEntry(entry, "remove"));
+      card.append(body, actions);
+    }
+    panel.append(card);
+  });
+  if (active) panel.querySelector(`[data-queue-focus="${CSS.escape(active)}"]`)?.focus();
+}
+async function refreshQueueAfterAction() {
+  const threadId = state.threadId;
+  try { await refreshAuxiliaryState(); }
+  catch (error) {
+    notice(`Queue could not refresh: ${error.message}`);
+    if (state.threadId === threadId) renderQueue(state.queue);
+  }
+}
+async function updateQueueEntry(entry, action, extra = {}) {
+  if (queueUi.busy || !state.threadId) return;
+  if (action === "send_now" && state.threadStatus && state.threadStatus !== "Idle"
+    && !confirm("Stop the current turn and send this now?")) return;
+  const threadId = state.threadId;
+  queueUi.busy = true;
+  renderQueueControls(state.queue);
+  try {
+    const result = await rpc("thread.queue.update", { ...baseThreadParams(), queue_entry_id: entry.id, action, ...extra });
+    if (result.outcome === "not_queued") {
+      notice("That message already left the queue.");
+      if (queueUi.editing?.id === entry.id) queueUi.editing = null;
+    } else if (result.outcome === "rejected") {
+      notice(action === "send_now" ? "Zed refused to send it — check desktop Zed." : "Zed refused the change — check desktop Zed.");
+    } else if (["sent", "updated", "removed"].includes(result.outcome)) {
+      if (action === "edit" && queueUi.editing?.id === entry.id) queueUi.editing = null;
+    } else {
+      throw new Error("Zed returned an unknown queue state.");
+    }
+  } catch (error) {
+    notice(`Queue update failed: ${error.message}`);
+  } finally {
+    queueUi.busy = false;
+  }
+  if (state.threadId === threadId) await refreshQueueAfterAction();
 }
 
 async function refreshAuxiliaryState() {
@@ -4402,17 +4764,42 @@ $("empty-refresh").addEventListener("click", () => connect());
 $("empty-create").addEventListener("click", () => {
   if ($("new-session").disabled) return;
   if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
+  closeConnectPanel();
   $("new-session-form").classList.remove("hidden");
+  $("new-session").setAttribute("aria-expanded", "true");
   loadCreateOptions().catch((error) => notice(error.message));
   $("new-session-title").focus();
+});
+$("empty-connect").addEventListener("click", () => {
+  if ($("connect-session").disabled) return;
+  if (matchMedia("(max-width: 760px)").matches) showMobileView("sessions");
+  openConnectPanel();
+  $("connect-session").focus();
 });
 $("new-session").addEventListener("click", () => {
   const form = $("new-session-form");
   form.classList.toggle("hidden");
+  $("new-session").setAttribute("aria-expanded", String(!form.classList.contains("hidden")));
   if (!form.classList.contains("hidden")) {
+    closeConnectPanel();
     loadCreateOptions().catch((error) => notice(error.message));
     $("new-session-title").focus();
   }
+});
+$("connect-session").addEventListener("click", () => {
+  if (attachState.open) closeConnectPanel();
+  else openConnectPanel();
+});
+$("connect-session-panel").addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeConnectPanel();
+  $("connect-session").focus();
+});
+document.addEventListener("visibilitychange", () => {
+  if (!attachState.open) return;
+  if (document.hidden) scheduleAttachablePoll();
+  else pollAttachable();
 });
 $("new-session-form").addEventListener("submit", createSession);
 $("session-search").addEventListener("input", renderThreads);

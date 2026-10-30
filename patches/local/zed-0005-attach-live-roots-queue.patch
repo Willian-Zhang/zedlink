@@ -1,0 +1,1334 @@
+From c8314ea3c97ebf0cb2c7556d5605f8453ef5daf5 Mon Sep 17 00:00:00 2001
+From: Willian Z <willian@willian.email>
+Date: Thu, 29 Oct 2026 20:13:13 -0400
+Subject: [PATCH] Let ZedLink connect open threads, reload project roots live
+ and control queued messages
+
+- allow_remote_attach (off by default): thread.attachable / thread.attach expose a thread open in a configured project from a paired device, with a desktop toast.
+- Threads in SSH windows whose folders haven't loaded wait and are exposed once they match a configured root, from the phone or /remote-control.
+- project_root/project_roots changes apply without restarting; removed roots stop exposing their threads.
+- thread.queue.update: send now, set steer, edit text-only and remove any queued message through the desktop queue paths.
+- /remote-control distinguishes an unconfigured project from an unavailable probe.
+---
+ assets/settings/default.json                  |   1 +
+ .../src/conversation_view/thread_view.rs      |  73 +-
+ crates/agent_ui/src/zedlink_probe.rs          | 697 +++++++++++++++---
+ .../settings_content/src/settings_content.rs  |   6 +
+ crates/settings_ui/src/page_data.rs           |  24 +-
+ 5 files changed, 691 insertions(+), 110 deletions(-)
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index ef742d1..ebeabbd 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -2954,6 +2954,7 @@
+     "project_roots": [],
+     "start_gateway_on_launch": true,
+     "manager_path": "",
++    "allow_remote_attach": false,
+     "allow_session_creation": true,
+     "allow_attachments": true,
+     "allow_project_context": true,
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index bb9a70a..5b8f764 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -1503,18 +1503,38 @@ impl ThreadView {
+                 if self.parent_session_id.is_some() {
+                     return;
+                 }
++                use crate::zedlink_probe::ExposureChange;
+                 match crate::zedlink_probe::toggle_thread_exposure(&self.thread, cx) {
+-                    Some(true) => {
++                    ExposureChange::Exposed => {
+                         self.show_local_command_toast("Thread exposed to ZedLink locally", cx)
+                     }
+-                    Some(false) => self.show_local_command_toast("ZedLink exposure stopped", cx),
+-                    None => self.show_local_command_toast("ZedLink local probe unavailable", cx),
++                    ExposureChange::Stopped => {
++                        self.show_local_command_toast("ZedLink exposure stopped", cx)
++                    }
++                    ExposureChange::WaitingForConnection(host) => self.show_local_command_toast(
++                        format!("ZedLink will expose this thread once {host} is connected"),
++                        cx,
++                    ),
++                    ExposureChange::CancelledWaiting => {
++                        self.show_local_command_toast("ZedLink exposure cancelled", cx)
++                    }
++                    ExposureChange::NotInExposedProject => self.show_local_command_toast(
++                        "This thread's project isn't configured for ZedLink",
++                        cx,
++                    ),
++                    ExposureChange::ProbeUnavailable => {
++                        self.show_local_command_toast("ZedLink local probe unavailable", cx)
++                    }
+                 }
+             }
+         }
+     }
+ 
+-    fn show_local_command_toast(&self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
++    pub(crate) fn show_local_command_toast(
++        &self,
++        message: impl Into<SharedString>,
++        cx: &mut Context<Self>,
++    ) {
+         // Shown after positive feedback, replacing the inline button state.
+         let Some(workspace) = self.workspace.upgrade() else {
+             return;
+@@ -3240,6 +3260,51 @@ impl ThreadView {
+         cx.notify();
+     }
+ 
++    /// Sets rather than toggles, so a retried remote request can't flip the
++    /// flag back.
++    pub(crate) fn set_queue_entry_steer(
++        &mut self,
++        id: QueueEntryId,
++        steer: bool,
++        cx: &mut Context<Self>,
++    ) {
++        if let Some(entry) = self.message_queue.entry_by_id_mut(id) {
++            entry.steer = steer;
++        }
++        self.sync_queue_flag_to_native_thread(cx);
++        cx.notify();
++    }
++
++    /// Replaces a text-only queued message, keeping its place, steer flag and
++    /// remote origin. Messages with mentions or images are left untouched.
++    pub(crate) fn replace_queued_message_text(
++        &mut self,
++        id: QueueEntryId,
++        text: String,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        let Some(entry) = self.message_queue.entry_by_id_mut(id) else {
++            return false;
++        };
++        if entry.content.is_empty()
++            || !entry
++                .content
++                .iter()
++                .all(|block| matches!(block, acp_v2::ContentBlock::Text(_)))
++        {
++            return false;
++        }
++        let content = vec![acp_v2::ContentBlock::Text(acp_v2::TextContent::new(text))];
++        entry.content = content.clone();
++        entry.tracked_buffers.clear();
++        let editor = entry.editor.clone();
++        editor.update(cx, |editor, cx| editor.set_source_message(content, window, cx));
++        self.sync_queue_flag_to_native_thread(cx);
++        cx.notify();
++        true
++    }
++
+     pub fn sync_queue_flag_to_native_thread(&self, cx: &mut Context<Self>) {
+         if let Some(native_thread) = self.as_native_thread(cx) {
+             // By default queued messages wait for the turn to fully complete.
+diff --git a/crates/agent_ui/src/zedlink_probe.rs b/crates/agent_ui/src/zedlink_probe.rs
+index 144823b..ecbff10 100644
+--- a/crates/agent_ui/src/zedlink_probe.rs
++++ b/crates/agent_ui/src/zedlink_probe.rs
+@@ -27,7 +27,7 @@ use git::{
+     repository::{DiffType, RepoPath},
+     status::{FileStatus, StageStatus},
+ };
+-use gpui::{App, AppContext, ClipboardItem, Entity, Global, Subscription, Task};
++use gpui::{App, AppContext, ClipboardItem, Entity, Global, Subscription, Task, WeakEntity};
+ use language_model::LanguageModelRegistry;
+ use project::{TaskSourceKind, debugger::session::ThreadId};
+ use serde::Deserialize;
+@@ -118,13 +118,20 @@ impl ProjectRoot {
+         }
+         match &self.ssh_host {
+             None => project.is_local(),
+-            Some(host) => match project.remote_connection_options(cx) {
+-                Some(remote::RemoteConnectionOptions::Ssh(options)) => {
+-                    options.host.to_string() == *host
+-                        || options.nickname.as_deref() == Some(host.as_str())
+-                }
+-                _ => false,
+-            },
++            Some(_) => self.matches_ssh_host(project, cx),
++        }
++    }
++
++    fn matches_ssh_host(&self, project: &project::Project, cx: &App) -> bool {
++        let Some(host) = &self.ssh_host else {
++            return false;
++        };
++        match project.remote_connection_options(cx) {
++            Some(remote::RemoteConnectionOptions::Ssh(options)) => {
++                options.host.to_string() == *host
++                    || options.nickname.as_deref() == Some(host.as_str())
++            }
++            _ => false,
+         }
+     }
+ 
+@@ -147,7 +154,13 @@ impl ProjectRoot {
+ }
+ 
+ struct ProbeState {
+-    project_roots: Vec<ProjectRoot>,
++    project_roots: RefCell<Vec<ProjectRoot>>,
++    /// The raw configured entries `project_roots` was parsed from, so unrelated
++    /// settings changes don't re-read the disk or repeat warnings.
++    configured_roots: RefCell<Vec<String>>,
++    /// Roots given through `ZEDLINK_PROBE_PROJECT_ROOT` are fixed for the
++    /// process; settings-based roots follow settings changes.
++    roots_from_environment: bool,
+     permissions: Cell<ProbePermissions>,
+     instance_id: String,
+     epoch: String,
+@@ -155,6 +168,9 @@ struct ProbeState {
+     creations: RefCell<HashMap<String, CreationRecord>>,
+     exposed_threads: RefCell<HashSet<String>>,
+     subscriptions: RefCell<HashMap<String, Subscription>>,
++    /// Threads in SSH windows whose folders aren't loaded yet; each is exposed
++    /// once its project turns out to be a configured root.
++    pending_exposures: RefCell<HashMap<String, PendingExposure>>,
+     events: RefCell<HashMap<String, ThreadEvents>>,
+     diffs: RefCell<HashMap<String, DiffRecord>>,
+     searches: RefCell<HashMap<String, SearchRecord>>,
+@@ -164,8 +180,15 @@ struct ProbeState {
+     clipboard_operations: RefCell<HashMap<String, String>>,
+ }
+ 
++impl ProbeState {
++    fn project_roots(&self) -> Vec<ProjectRoot> {
++        self.project_roots.borrow().clone()
++    }
++}
++
+ #[derive(Clone, Copy)]
+ struct ProbePermissions {
++    remote_attach: bool,
+     session_creation: bool,
+     attachments: bool,
+     project_context: bool,
+@@ -190,6 +213,10 @@ impl ProbePermissions {
+             .zedlink
+             .clone();
+         Self {
++            remote_attach: settings
++                .as_ref()
++                .and_then(|settings| settings.allow_remote_attach)
++                .unwrap_or(false),
+             session_creation: settings
+                 .as_ref()
+                 .and_then(|settings| settings.allow_session_creation)
+@@ -261,6 +288,7 @@ impl ProbePermissions {
+             "thread.elicitations",
+             "thread.queue",
+             "thread.queue.remove",
++            "thread.queue.update",
+             "thread.edit_review",
+             "thread.send",
+             "thread.cancel",
+@@ -269,6 +297,9 @@ impl ProbePermissions {
+             "thread.approvals",
+             "request.status",
+         ];
++        if self.remote_attach {
++            capabilities.extend(["thread.attachable", "thread.attach"]);
++        }
+         if self.session_creation {
+             capabilities.extend([
+                 "thread.create",
+@@ -337,6 +368,7 @@ impl ProbePermissions {
+ 
+     fn allows(self, method: &str, params: &Value) -> bool {
+         match method {
++            "thread.attachable" | "thread.attach" => self.remote_attach,
+             "thread.create" | "thread.create.options" | "thread.rename" | "thread.unexpose" => {
+                 self.session_creation
+             }
+@@ -464,58 +496,25 @@ pub fn init(cx: &mut App) {
+         if state_directory.is_empty() {
+             return None;
+         }
+-        let project_roots = settings
+-            .project_root
+-            .iter()
+-            .chain(settings.project_roots.iter().flatten())
+-            .map(|path| path.trim())
+-            .filter(|path| !path.is_empty())
+-            .map(str::to_string)
+-            .collect::<Vec<_>>();
+-        Some((PathBuf::from(state_directory).join("probe"), project_roots))
++        Some((
++            PathBuf::from(state_directory).join("probe"),
++            configured_project_roots(settings),
++        ))
+     };
+-    let Some((directory, configured_roots)) = environment_paths().or_else(settings_paths) else {
++    let environment = environment_paths();
++    let roots_from_environment = environment.is_some();
++    let Some((directory, configured_roots)) = environment.or_else(settings_paths) else {
+         return;
+     };
+     if !directory.is_absolute() {
+         log::warn!("ZedLink probe requires an absolute state directory");
+         return;
+     }
+-    // Unusable roots are skipped rather than fatal: dropping one only narrows
+-    // what is exposed, and one stale entry shouldn't disable the whole bridge.
+-    let mut project_roots = Vec::new();
+-    for root in configured_roots {
+-        let parsed = match ProjectRoot::parse_remote(&root) {
+-            Some(Ok(remote)) => remote,
+-            Some(Err(reason)) => {
+-                log::warn!("ZedLink skipped remote project root {root:?}: {reason}");
+-                continue;
+-            }
+-            None => {
+-                let path = PathBuf::from(&root);
+-                if !path.is_absolute() {
+-                    log::warn!("ZedLink skipped project root that isn't absolute: {root:?}");
+-                    continue;
+-                }
+-                match fs::canonicalize(&path) {
+-                    Ok(canonical) if canonical.is_dir() => ProjectRoot {
+-                        ssh_host: None,
+-                        path: canonical,
+-                    },
+-                    _ => {
+-                        log::warn!("ZedLink skipped unavailable project root: {root:?}");
+-                        continue;
+-                    }
+-                }
+-            }
+-        };
+-        if !project_roots.contains(&parsed) {
+-            project_roots.push(parsed);
+-        }
+-    }
++    // Settings-based roots can be added later without restarting Zed, so an
++    // empty list only leaves nothing exposed for now.
++    let project_roots = parse_project_roots(configured_roots.clone());
+     if project_roots.is_empty() {
+-        log::warn!("ZedLink probe requires at least one available project root");
+-        return;
++        log::warn!("ZedLink probe has no available project root yet");
+     }
+ 
+     let setup = (|| -> Result<(UnixListener, ProbeState)> {
+@@ -544,7 +543,9 @@ pub fn init(cx: &mut App) {
+         Ok((
+             listener,
+             ProbeState {
+-                project_roots,
++                project_roots: RefCell::new(project_roots),
++                configured_roots: RefCell::new(configured_roots),
++                roots_from_environment,
+                 permissions: Cell::new(permissions),
+                 instance_id: uuid::Uuid::new_v4().to_string(),
+                 epoch: uuid::Uuid::new_v4().to_string(),
+@@ -552,6 +553,7 @@ pub fn init(cx: &mut App) {
+                 creations: RefCell::new(HashMap::new()),
+                 exposed_threads: RefCell::new(HashSet::new()),
+                 subscriptions: RefCell::new(HashMap::new()),
++                pending_exposures: RefCell::new(HashMap::new()),
+                 events: RefCell::new(HashMap::new()),
+                 diffs: RefCell::new(HashMap::new()),
+                 searches: RefCell::new(HashMap::new()),
+@@ -571,7 +573,12 @@ pub fn init(cx: &mut App) {
+ 
+     cx.observe_global::<SettingsStore>({
+         let state = state.clone();
+-        move |cx| state.permissions.set(ProbePermissions::from_settings(cx))
++        move |cx| {
++            state.permissions.set(ProbePermissions::from_settings(cx));
++            if !state.roots_from_environment {
++                reload_project_roots(&state, cx);
++            }
++        }
+     })
+     .detach();
+ 
+@@ -631,22 +638,247 @@ pub fn init(cx: &mut App) {
+     .detach();
+ }
+ 
+-pub(crate) fn toggle_thread_exposure(thread: &Entity<AcpThread>, cx: &mut App) -> Option<bool> {
+-    let state = cx.try_global::<ProbeGlobal>()?.0.clone();
+-    if !thread_belongs_to_project(thread, &state.project_roots, cx) {
+-        return None;
++fn configured_project_roots(settings: &settings::ZedLinkSettingsContent) -> Vec<String> {
++    settings
++        .project_root
++        .iter()
++        .chain(settings.project_roots.iter().flatten())
++        .map(|path| path.trim())
++        .filter(|path| !path.is_empty())
++        .map(str::to_string)
++        .collect()
++}
++
++fn parse_project_roots(configured_roots: Vec<String>) -> Vec<ProjectRoot> {
++    // Unusable roots are skipped rather than fatal: dropping one only narrows
++    // what is exposed, and one stale entry shouldn't disable the whole bridge.
++    let mut project_roots = Vec::new();
++    for root in configured_roots {
++        let parsed = match ProjectRoot::parse_remote(&root) {
++            Some(Ok(remote)) => remote,
++            Some(Err(reason)) => {
++                log::warn!("ZedLink skipped remote project root {root:?}: {reason}");
++                continue;
++            }
++            None => {
++                let path = PathBuf::from(&root);
++                if !path.is_absolute() {
++                    log::warn!("ZedLink skipped project root that isn't absolute: {root:?}");
++                    continue;
++                }
++                match fs::canonicalize(&path) {
++                    Ok(canonical) if canonical.is_dir() => ProjectRoot {
++                        ssh_host: None,
++                        path: canonical,
++                    },
++                    _ => {
++                        log::warn!("ZedLink skipped unavailable project root: {root:?}");
++                        continue;
++                    }
++                }
++            }
++        };
++        if !project_roots.contains(&parsed) {
++            project_roots.push(parsed);
++        }
++    }
++    project_roots
++}
++
++/// Applies `project_root`/`project_roots` edits without a restart. Turning
++/// `enabled` off empties the list. Threads whose project is no longer
++/// configured stop being exposed, so removing a root revokes access at once
++/// instead of hiding threads that would reappear if the root came back.
++fn reload_project_roots(state: &Rc<ProbeState>, cx: &mut App) {
++    let configured = cx
++        .global::<SettingsStore>()
++        .merged_settings()
++        .zedlink
++        .as_ref()
++        .filter(|settings| settings.enabled.unwrap_or(false))
++        .map(configured_project_roots)
++        .unwrap_or_default();
++    if *state.configured_roots.borrow() == configured {
++        return;
++    }
++    let project_roots = parse_project_roots(configured.clone());
++    *state.configured_roots.borrow_mut() = configured;
++    if *state.project_roots.borrow() == project_roots {
++        return;
++    }
++    log::info!(
++        "ZedLink project roots changed: {} available",
++        project_roots.len()
++    );
++    *state.project_roots.borrow_mut() = project_roots;
++
++    let project_roots = state.project_roots();
++    let eligible = loaded_threads(&project_roots, cx)
++        .into_iter()
++        .map(|thread| thread.read(cx).session_id().to_string())
++        .collect::<HashSet<_>>();
++    let revoked = state
++        .exposed_threads
++        .borrow()
++        .iter()
++        .filter(|id| !eligible.contains(*id))
++        .cloned()
++        .collect::<Vec<_>>();
++    for id in revoked {
++        stop_exposure(state, &id);
++    }
++    let pending = state
++        .pending_exposures
++        .borrow()
++        .keys()
++        .cloned()
++        .collect::<Vec<_>>();
++    for id in pending {
++        finish_pending_exposure(state, &id, cx);
+     }
++}
++
++fn stop_exposure(state: &ProbeState, thread_id: &str) -> bool {
++    let was_exposed = state.exposed_threads.borrow_mut().remove(thread_id);
++    state.subscriptions.borrow_mut().remove(thread_id);
++    state.events.borrow_mut().remove(thread_id);
++    was_exposed
++}
++
++pub(crate) enum ExposureChange {
++    Exposed,
++    Stopped,
++    /// The thread's SSH window is still connecting; it is exposed once its
++    /// folders load and match a configured root.
++    WaitingForConnection(String),
++    CancelledWaiting,
++    NotInExposedProject,
++    ProbeUnavailable,
++}
++
++pub(crate) fn toggle_thread_exposure(thread: &Entity<AcpThread>, cx: &mut App) -> ExposureChange {
++    let Some(state) = cx.try_global::<ProbeGlobal>().map(|global| global.0.clone()) else {
++        return ExposureChange::ProbeUnavailable;
++    };
+     let id = thread.read(cx).session_id().to_string();
++    if state.pending_exposures.borrow_mut().remove(&id).is_some() {
++        return ExposureChange::CancelledWaiting;
++    }
++    let project_roots = state.project_roots();
++    if !thread_belongs_to_project(thread, &project_roots, cx) {
++        return match ssh_waiting_host(thread, &project_roots, cx) {
++            Some(host) => {
++                expose_when_ready(&state, thread, cx);
++                ExposureChange::WaitingForConnection(host)
++            }
++            None => ExposureChange::NotInExposedProject,
++        };
++    }
+     let was_exposed = state.exposed_threads.borrow_mut().remove(&id);
+     if was_exposed {
+         state.subscriptions.borrow_mut().remove(&id);
+-        Some(false)
++        ExposureChange::Stopped
+     } else {
+         expose_thread(&state, thread, cx);
+-        Some(true)
++        ExposureChange::Exposed
++    }
++}
++
++struct PendingExposure {
++    thread: WeakEntity<AcpThread>,
++    _subscriptions: Vec<Subscription>,
++}
++
++fn expose_when_ready(state: &Rc<ProbeState>, thread: &Entity<AcpThread>, cx: &mut App) {
++    let id = thread.read(cx).session_id().to_string();
++    if state.pending_exposures.borrow().contains_key(&id) {
++        return;
++    }
++    let project = thread.read(cx).project().clone();
++    // Checks run deferred because finishing drops these subscriptions, which
++    // must not happen inside their own callbacks.
++    let schedule_check = {
++        let state = state.clone();
++        let id = id.clone();
++        move |cx: &mut App| {
++            let state = state.clone();
++            let id = id.clone();
++            cx.defer(move |cx| finish_pending_exposure(&state, &id, cx));
++        }
++    };
++    let mut subscriptions = vec![cx.subscribe(&project, {
++        let schedule_check = schedule_check.clone();
++        move |_, event: &project::Event, cx| {
++            if matches!(
++                event,
++                project::Event::WorktreeAdded(_) | project::Event::WorktreeRemoved(_)
++            ) {
++                schedule_check(cx);
++            }
++        }
++    })];
++    if let Some(remote_client) = project.read(cx).remote_client() {
++        subscriptions.push(cx.observe(&remote_client, {
++            let schedule_check = schedule_check.clone();
++            move |_, cx| schedule_check(cx)
++        }));
++    }
++    subscriptions.push(cx.observe_release(thread, {
++        let state = state.clone();
++        let id = id.clone();
++        move |_, cx| {
++            cx.defer(move |_| {
++                state.pending_exposures.borrow_mut().remove(&id);
++            });
++        }
++    }));
++    state.pending_exposures.borrow_mut().insert(
++        id,
++        PendingExposure {
++            thread: thread.downgrade(),
++            _subscriptions: subscriptions,
++        },
++    );
++}
++
++fn finish_pending_exposure(state: &Rc<ProbeState>, thread_id: &str, cx: &mut App) {
++    let thread = state
++        .pending_exposures
++        .borrow()
++        .get(thread_id)
++        .map(|pending| pending.thread.clone());
++    let Some(thread) = thread else {
++        return;
++    };
++    let Some(thread) = thread.upgrade() else {
++        state.pending_exposures.borrow_mut().remove(thread_id);
++        return;
++    };
++    let project_roots = state.project_roots();
++    if thread_belongs_to_project(&thread, &project_roots, cx) {
++        state.pending_exposures.borrow_mut().remove(thread_id);
++        expose_thread(state, &thread, cx);
++        show_thread_toast(&thread, "Thread exposed to ZedLink", cx);
++    } else if ssh_waiting_host(&thread, &project_roots, cx).is_none() {
++        state.pending_exposures.borrow_mut().remove(thread_id);
++        show_thread_toast(
++            &thread,
++            "ZedLink didn't expose this thread: its SSH folder isn't a configured project",
++            cx,
++        );
+     }
+ }
+ 
++fn show_thread_toast(thread: &Entity<AcpThread>, message: &'static str, cx: &mut App) {
++    let Some((_, view)) = all_root_thread_views(cx)
++        .into_iter()
++        .find(|(candidate, _)| candidate == thread)
++    else {
++        return;
++    };
++    view.update(cx, |view, cx| view.show_local_command_toast(message, cx));
++}
++
+ fn expose_thread(state: &Rc<ProbeState>, thread: &Entity<AcpThread>, cx: &mut App) {
+     let id = thread.read(cx).session_id().to_string();
+     if state.exposed_threads.borrow().contains(&id) {
+@@ -978,7 +1210,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                 "instance_id": state.instance_id,
+                 "epoch": state.epoch,
+                 "capabilities": permissions.capabilities(),
+-                "project": project_names(&state.project_roots),
++                "project": project_names(&state.project_roots()),
+                 "provisional": true,
+             }),
+         ),
+@@ -1007,7 +1239,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+             if !state.exposed_threads.borrow().contains(&record.thread_id) {
+                 return error(&request.request_id, "THREAD_NOT_EXPOSED");
+             }
+-            let entry_index = loaded_thread_views(&state.project_roots, cx)
++            let entry_index = loaded_thread_views(&state.project_roots(), cx)
+                 .into_iter()
+                 .find(|(thread, _)| thread.read(cx).session_id().to_string() == record.thread_id)
+                 .and_then(|(thread, view)| {
+@@ -1026,7 +1258,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         }
+         "thread.list" => {
+             let mut seen = HashSet::new();
+-            let threads = loaded_thread_views(&state.project_roots, cx)
++            let threads = loaded_thread_views(&state.project_roots(), cx)
+                 .into_iter()
+                 .filter_map(|(thread, view)| {
+                     let thread = thread.read(cx);
+@@ -1051,7 +1283,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                                 "activity": thread_activity_value(thread),
+                                 "project_group": project_group_value(
+                                     thread.project(),
+-                                    &state.project_roots,
++                                    &state.project_roots(),
+                                     cx,
+                                 ),
+                             })
+@@ -1072,6 +1304,8 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         "thread.create.options" => create_thread_options(&request, state, cx),
+         "thread.rename" => rename_thread(&request, state, cx),
+         "thread.unexpose" => unexpose_thread(&request, state),
++        "thread.attachable" => attachable_threads(&request, state, cx),
++        "thread.attach" => attach_thread(&request, state, cx),
+         "thread.snapshot" => {
+             let Some(id) = request.params.get("thread_id").and_then(Value::as_str) else {
+                 return error(&request.request_id, "INVALID_REQUEST");
+@@ -1079,7 +1313,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+             if !state.exposed_threads.borrow().contains(id) {
+                 return error(&request.request_id, "THREAD_NOT_EXPOSED");
+             }
+-            let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
++            let Some((thread, view)) = loaded_thread_views(&state.project_roots(), cx)
+                 .into_iter()
+                 .find(|(thread, _)| thread.read(cx).session_id().to_string() == id)
+             else {
+@@ -1247,7 +1481,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                     Err(code) => return error(&request.request_id, code),
+                 }
+             } else {
+-                let Some(thread) = loaded_threads(&state.project_roots, cx)
++                let Some(thread) = loaded_threads(&state.project_roots(), cx)
+                     .into_iter()
+                     .find(|thread| thread.read(cx).session_id().to_string() == id)
+                 else {
+@@ -1295,7 +1529,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+                 return error(&request.request_id, "INVALID_REQUEST");
+             };
+             if !state.exposed_threads.borrow().contains(id)
+-                || !loaded_threads(&state.project_roots, cx)
++                || !loaded_threads(&state.project_roots(), cx)
+                     .into_iter()
+                     .any(|thread| thread.read(cx).session_id().to_string() == id)
+             {
+@@ -1341,6 +1575,7 @@ fn handle_request(request: ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+         "elicitation.respond" => elicitation_response(&request, state, cx),
+         "thread.queue" => queue_state(&request, state, cx),
+         "thread.queue.remove" => remove_queued_request(&request, state, cx),
++        "thread.queue.update" => update_queued_message(&request, state, cx),
+         "thread.queue.clear" => clear_queue(&request, state, cx),
+         "thread.edit_review" => edit_review_state(&request, state, cx),
+         "thread.edit_review.respond" => edit_review_response(&request, state, cx),
+@@ -1519,7 +1754,7 @@ fn session_creation_targets(
+     cx: &App,
+ ) -> Vec<(Entity<AgentPanel>, Entity<project::Project>)> {
+     let mut targets: Vec<(Entity<AgentPanel>, Entity<project::Project>)> = Vec::new();
+-    for project_root in &state.project_roots {
++    for project_root in &state.project_roots() {
+         for workspace in loaded_project_workspaces(std::slice::from_ref(project_root), cx) {
+             let workspace = workspace.read(cx);
+             let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
+@@ -1574,7 +1809,7 @@ fn create_thread_options(request: &ProbeRequest, state: &ProbeState, cx: &mut Ap
+     };
+     let project_groups = targets
+         .iter()
+-        .map(|(_, project)| project_group_value(project, &state.project_roots, cx))
++        .map(|(_, project)| project_group_value(project, &state.project_roots(), cx))
+         .collect::<Vec<_>>();
+     let default_group = project_groups.first().cloned().unwrap_or(Value::Null);
+     let agent_store = project.read(cx).agent_server_store().clone();
+@@ -1623,7 +1858,7 @@ fn rename_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some(thread) = loaded_threads(&state.project_roots, cx)
++    let Some(thread) = loaded_threads(&state.project_roots(), cx)
+         .into_iter()
+         .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -1645,6 +1880,114 @@ fn rename_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     )
+ }
+ 
++/// Open threads in exposed projects that a paired device may connect to
++/// because the desktop enabled `allow_remote_attach`, plus threads in SSH
++/// windows that are still connecting to a configured host.
++fn attachable_threads(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    if !matches_instance(request, state) {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let project_roots = state.project_roots();
++    let exposed = state.exposed_threads.borrow().clone();
++    let pending = state
++        .pending_exposures
++        .borrow()
++        .keys()
++        .cloned()
++        .collect::<HashSet<_>>();
++    let mut seen = HashSet::new();
++    let threads = all_root_thread_views(cx)
++        .into_iter()
++        .filter_map(|(thread, view)| {
++            let id = thread.read(cx).session_id().to_string();
++            if exposed.contains(&id) || !seen.insert(id.clone()) {
++                return None;
++            }
++            let waiting_host = if thread_belongs_to_project(&thread, &project_roots, cx) {
++                None
++            } else {
++                Some(ssh_waiting_host(&thread, &project_roots, cx)?)
++            };
++            let thread = thread.read(cx);
++            Some(json!({
++                "thread_id": id,
++                "agent": thread_agent_value(&view, cx),
++                "title": thread.title().map(|title| title.to_string()),
++                "status": format!("{:?}", thread.status()),
++                "activity": thread_activity_value(thread),
++                "project_group": if waiting_host.is_none() {
++                    project_group_value(thread.project(), &project_roots, cx)
++                } else {
++                    Value::Null
++                },
++                "waiting": waiting_host
++                    .map(|host| json!({"kind": "ssh_connection", "host": host})),
++                "pending": pending.contains(&id),
++            }))
++        })
++        .collect::<Vec<_>>();
++    success(
++        &request.request_id,
++        json!({
++            "instance_id": state.instance_id,
++            "epoch": state.epoch,
++            "threads": threads,
++        }),
++    )
++}
++
++fn attach_thread(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    if !matches_instance(request, state) {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let Some(thread_id) = request
++        .params
++        .get("thread_id")
++        .and_then(Value::as_str)
++        .filter(|id| !id.is_empty() && id.len() <= 128)
++    else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let outcome = |outcome: &str| {
++        success(
++            &request.request_id,
++            json!({"thread_id": thread_id, "outcome": outcome}),
++        )
++    };
++    if state.exposed_threads.borrow().contains(thread_id) {
++        return outcome("already_attached");
++    }
++    if state.pending_exposures.borrow().contains_key(thread_id) {
++        return outcome("pending");
++    }
++    let Some((thread, view)) = all_root_thread_views(cx)
++        .into_iter()
++        .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
++    else {
++        return error(&request.request_id, "THREAD_UNAVAILABLE");
++    };
++    let probe_state = cx.global::<ProbeGlobal>().0.clone();
++    let project_roots = state.project_roots();
++    if thread_belongs_to_project(&thread, &project_roots, cx) {
++        expose_thread(&probe_state, &thread, cx);
++        view.update(cx, |view, cx| {
++            view.show_local_command_toast("A paired device connected to this thread", cx)
++        });
++        outcome("attached")
++    } else if ssh_waiting_host(&thread, &project_roots, cx).is_some() {
++        expose_when_ready(&probe_state, &thread, cx);
++        view.update(cx, |view, cx| {
++            view.show_local_command_toast(
++                "A paired device will connect to this thread once SSH is ready",
++                cx,
++            )
++        });
++        outcome("pending")
++    } else {
++        error(&request.request_id, "THREAD_UNAVAILABLE")
++    }
++}
++
+ fn unexpose_thread(request: &ProbeRequest, state: &ProbeState) -> Value {
+     if request.params.get("instance_id").and_then(Value::as_str) != Some(state.instance_id.as_str())
+         || request.params.get("epoch").and_then(Value::as_str) != Some(state.epoch.as_str())
+@@ -1654,11 +1997,9 @@ fn unexpose_thread(request: &ProbeRequest, state: &ProbeState) -> Value {
+     let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
+         return error(&request.request_id, "INVALID_REQUEST");
+     };
+-    if !state.exposed_threads.borrow_mut().remove(thread_id) {
++    if !stop_exposure(state, thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    state.subscriptions.borrow_mut().remove(thread_id);
+-    state.events.borrow_mut().remove(thread_id);
+     success(
+         &request.request_id,
+         json!({"thread_id": thread_id, "outcome": "unexposed"}),
+@@ -1671,7 +2012,7 @@ fn finish_thread_creation(
+     thread: &Entity<AcpThread>,
+     cx: &mut App,
+ ) {
+-    if !thread_belongs_to_project(thread, &state.project_roots, cx) {
++    if !thread_belongs_to_project(thread, &state.project_roots(), cx) {
+         return;
+     }
+     let thread_id = thread.read(cx).session_id().to_string();
+@@ -1930,7 +2271,7 @@ fn approval_list(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Va
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -1975,7 +2316,7 @@ fn approval_response(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -
+                 Err(code) => return error(&request.request_id, code),
+             }
+         } else {
+-            let Some(thread) = loaded_threads(&state.project_roots, cx)
++            let Some(thread) = loaded_threads(&state.project_roots(), cx)
+                 .into_iter()
+                 .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+             else {
+@@ -2134,7 +2475,7 @@ fn cancel_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> V
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -2159,7 +2500,7 @@ fn exposed_subagent_thread_view(
+     if !state.exposed_threads.borrow().contains(parent_thread_id) {
+         return Err("THREAD_NOT_EXPOSED");
+     }
+-    let Some((parent, parent_view)) = loaded_thread_views(&state.project_roots, cx)
++    let Some((parent, parent_view)) = loaded_thread_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == parent_thread_id)
+     else {
+@@ -2405,7 +2746,7 @@ fn command_list(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Val
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -2612,7 +2953,7 @@ fn exposed_thread_view(
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return None;
+     }
+-    let (thread, view) = loaded_thread_views(&state.project_roots, cx)
++    let (thread, view) = loaded_thread_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)?;
+     Some((thread, view))
+@@ -2805,10 +3146,15 @@ fn queue_state(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Valu
+                 })
+                 .collect::<Vec<_>>()
+                 .join("\n");
++            let text = queued_plain_text(&entry.content);
+             json!({
+                 "index": index,
++                "id": entry.id.as_usize(),
+                 "preview": preview.chars().take(500).collect::<String>(),
+                 "steer": entry.steer,
++                "editable": text.is_some(),
++                "text": text,
++                "remote": entry.remote_request_id.is_some(),
+             })
+         })
+         .collect::<Vec<_>>();
+@@ -2822,6 +3168,122 @@ fn queue_state(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Valu
+     )
+ }
+ 
++/// The full text of a queued message that holds nothing but text, which is the
++/// only kind a paired device can edit without dropping mentions or images.
++fn queued_plain_text(content: &[acp::ContentBlock]) -> Option<String> {
++    let mut texts = Vec::new();
++    for block in content {
++        match block {
++            acp::ContentBlock::Text(text) => texts.push(text.text.as_str()),
++            _ => return None,
++        }
++    }
++    (!texts.is_empty()).then(|| texts.join("\n"))
++}
++
++/// Per-message queue controls, using the same queue operations as the
++/// desktop's Send Now, Steer, edit and remove buttons.
++fn update_queued_message(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
++    if !matches_instance(request, state) {
++        return error(&request.request_id, "INSTANCE_UNAVAILABLE");
++    }
++    let Some(thread_id) = request.params.get("thread_id").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(queue_entry_id) = request
++        .params
++        .get("queue_entry_id")
++        .and_then(Value::as_u64)
++        .and_then(|value| usize::try_from(value).ok())
++    else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some(action) = request.params.get("action").and_then(Value::as_str) else {
++        return error(&request.request_id, "INVALID_REQUEST");
++    };
++    let Some((_, view)) = exposed_thread_view(thread_id, state, cx) else {
++        return error(&request.request_id, "THREAD_NOT_EXPOSED");
++    };
++    let entry = view
++        .read(cx)
++        .message_queue
++        .iter()
++        .find(|entry| entry.id.as_usize() == queue_entry_id)
++        .map(|entry| (entry.id, entry.remote_request_id.clone()));
++    let Some((entry_id, remote_request_id)) = entry else {
++        return match action {
++            "send_now" | "steer" | "remove" | "edit" => {
++                success(&request.request_id, json!({"outcome": "not_queued"}))
++            }
++            _ => error(&request.request_id, "INVALID_REQUEST"),
++        };
++    };
++    let outcome = match action {
++        "remove" => {
++            let removed = view.update(cx, |view, cx| {
++                let removed = view.remove_from_queue(entry_id, cx).is_some();
++                cx.notify();
++                removed
++            });
++            if !removed {
++                "not_queued"
++            } else {
++                if let Some(remote_request_id) = remote_request_id
++                    && let Some(record) = state.submissions.borrow_mut().get_mut(&remote_request_id)
++                {
++                    record.outcome = "removed";
++                }
++                "removed"
++            }
++        }
++        "steer" => {
++            let Some(steer) = request.params.get("steer").and_then(Value::as_bool) else {
++                return error(&request.request_id, "INVALID_REQUEST");
++            };
++            view.update(cx, |view, cx| view.set_queue_entry_steer(entry_id, steer, cx));
++            "updated"
++        }
++        "edit" => {
++            let Some(text) = request
++                .params
++                .get("text")
++                .and_then(Value::as_str)
++                .filter(|text| !text.trim().is_empty() && text.len() <= 3000 && !text.contains('\0'))
++            else {
++                return error(&request.request_id, "INVALID_REQUEST");
++            };
++            let edited = cx.with_window(view.entity_id(), |window, cx| {
++                view.update(cx, |view, cx| {
++                    view.replace_queued_message_text(entry_id, text.to_string(), window, cx)
++                })
++            });
++            match edited {
++                Some(true) => "updated",
++                Some(false) => "rejected",
++                None => return error(&request.request_id, "INSTANCE_UNAVAILABLE"),
++            }
++        }
++        "send_now" => {
++            let sent = cx.with_window(view.entity_id(), |window, cx| {
++                view.update(cx, |view, cx| {
++                    view.send_queued_message_now(entry_id, window, cx);
++                    view.message_queue.entry_by_id(entry_id).is_none()
++                })
++            });
++            match sent {
++                Some(true) => "sent",
++                Some(false) => "rejected",
++                None => return error(&request.request_id, "INSTANCE_UNAVAILABLE"),
++            }
++        }
++        _ => return error(&request.request_id, "INVALID_REQUEST"),
++    };
++    success(
++        &request.request_id,
++        json!({"thread_id": thread_id, "queue_entry_id": queue_entry_id, "outcome": outcome}),
++    )
++}
++
+ fn remove_queued_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
+     if !matches_instance(request, state) {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+@@ -3032,7 +3494,7 @@ fn exposed_thread_for_request(
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return Err("THREAD_NOT_EXPOSED");
+     }
+-    loaded_threads(&state.project_roots, cx)
++    loaded_threads(&state.project_roots(), cx)
+         .into_iter()
+         .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+         .ok_or("THREAD_NOT_EXPOSED")
+@@ -3046,7 +3508,7 @@ fn exposed_worktree(
+     cx: &App,
+ ) -> std::result::Result<(Entity<worktree::Worktree>, PathBuf), &'static str> {
+     let thread = exposed_thread_for_request(request, state, cx)?;
+-    let project_root = thread_local_project_root(&thread, &state.project_roots, cx)?;
++    let project_root = thread_local_project_root(&thread, &state.project_roots(), cx)?;
+     let project = thread.read(cx).project().clone();
+     let worktree = project
+         .read(cx)
+@@ -3441,7 +3903,7 @@ fn changes_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         Ok(thread) => thread,
+         Err(code) => return error(&request.request_id, code),
+     };
+-    let project_root = match thread_local_project_root(&thread, &state.project_roots, cx) {
++    let project_root = match thread_local_project_root(&thread, &state.project_roots(), cx) {
+         Ok(project_root) => project_root,
+         Err(code) => return error(&request.request_id, code),
+     };
+@@ -3499,7 +3961,7 @@ fn changes_diff(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Val
+         Ok(thread) => thread,
+         Err(code) => return error(&request.request_id, code),
+     };
+-    if let Err(code) = thread_local_project_root(&thread, &state.project_roots, cx) {
++    if let Err(code) = thread_local_project_root(&thread, &state.project_roots(), cx) {
+         return error(&request.request_id, code);
+     }
+     let Some(expected_revision) = request.params.get("revision").and_then(Value::as_str) else {
+@@ -3633,7 +4095,7 @@ fn change_stage(request: &ProbeRequest, state: &ProbeState, stage: bool, cx: &mu
+     if path_values.is_empty() || path_values.len() > 100 {
+         return error(&request.request_id, "INVALID_REQUEST");
+     }
+-    let project_root = match thread_local_project_root(&thread, &state.project_roots, cx) {
++    let project_root = match thread_local_project_root(&thread, &state.project_roots(), cx) {
+         Ok(project_root) => project_root,
+         Err(code) => return error(&request.request_id, code),
+     };
+@@ -3857,7 +4319,7 @@ fn send_request(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Val
+     }
+     drop(submissions);
+ 
+-    let Some((thread, view)) = loaded_thread_views(&state.project_roots, cx)
++    let Some((thread, view)) = loaded_thread_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(thread, _)| thread.read(cx).session_id().to_string() == thread_id)
+     else {
+@@ -4150,10 +4612,10 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+     if !state.exposed_threads.borrow().contains(thread_id) {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     }
+-    let Some(project_root) = loaded_threads(&state.project_roots, cx)
++    let Some(project_root) = loaded_threads(&state.project_roots(), cx)
+         .iter()
+         .find(|thread| thread.read(cx).session_id().to_string() == thread_id)
+-        .and_then(|thread| thread_project_root(thread, &state.project_roots, cx))
++        .and_then(|thread| thread_project_root(thread, &state.project_roots(), cx))
+     else {
+         return error(&request.request_id, "THREAD_NOT_EXPOSED");
+     };
+@@ -4200,7 +4662,7 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         cx.update(|cx| {
+             let response = match created {
+                 Ok(terminal) => {
+-                    match loaded_terminal_views(&state.project_roots, cx)
++                    match loaded_terminal_views(&state.project_roots(), cx)
+                         .into_iter()
+                         .find(|view| view.read(cx).terminal().entity_id() == terminal.entity_id())
+                     {
+@@ -4223,7 +4685,7 @@ fn terminal_create(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+ }
+ 
+ fn terminal_list(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
+-    let terminals = loaded_terminal_views(&state.project_roots, cx)
++    let terminals = loaded_terminal_views(&state.project_roots(), cx)
+         .iter()
+         .map(|view| terminal_value(view, cx))
+         .collect::<Vec<_>>();
+@@ -4242,7 +4704,7 @@ fn terminal_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Va
+     let Some(id) = request.params.get("terminal_id").and_then(Value::as_str) else {
+         return error(&request.request_id, "INVALID_REQUEST");
+     };
+-    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4381,7 +4843,7 @@ fn terminal_input(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> V
+             error(&request.request_id, "REQUEST_ID_CONFLICT")
+         };
+     }
+-    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4446,7 +4908,7 @@ fn terminal_resize(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+             error(&request.request_id, "REQUEST_ID_CONFLICT")
+         };
+     }
+-    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4471,7 +4933,7 @@ fn terminal_resize(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+ }
+ 
+ fn task_list(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
+-    let tasks = loaded_terminal_views(&state.project_roots, cx)
++    let tasks = loaded_terminal_views(&state.project_roots(), cx)
+         .into_iter()
+         .filter_map(|view| {
+             let id = terminal_id(&view);
+@@ -4521,7 +4983,7 @@ fn task_stop(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value
+             error(&request.request_id, "REQUEST_ID_CONFLICT")
+         };
+     }
+-    let Some(view) = loaded_terminal_views(&state.project_roots, cx)
++    let Some(view) = loaded_terminal_views(&state.project_roots(), cx)
+         .into_iter()
+         .find(|view| terminal_id(view) == id)
+     else {
+@@ -4550,7 +5012,7 @@ fn task_catalog(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Value {
+     if !matches_instance(request, state) {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     }
+-    let tasks = configured_tasks(&state.project_roots, cx)
++    let tasks = configured_tasks(&state.project_roots(), cx)
+         .into_iter()
+         .map(|(_, source, task)| {
+             json!({
+@@ -4601,7 +5063,7 @@ fn task_run(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -> Value {
+     if state.terminal_operations.borrow().len() >= 256 {
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+-    let Some((workspace, source, task)) = configured_tasks(&state.project_roots, cx)
++    let Some((workspace, source, task)) = configured_tasks(&state.project_roots(), cx)
+         .into_iter()
+         .find(|(_, _, task)| task.id.0 == task_id)
+     else {
+@@ -4629,7 +5091,7 @@ fn debugger_catalog(request: &ProbeRequest, state: &ProbeState, cx: &App) -> Val
+     if !matches_instance(request, state) {
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     }
+-    let scenarios = configured_debug_scenarios(&state.project_roots, cx)
++    let scenarios = configured_debug_scenarios(&state.project_roots(), cx)
+         .into_iter()
+         .map(|(_, source, scenario, _)| {
+             json!({
+@@ -4682,7 +5144,7 @@ fn debugger_launch(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+     let Some((workspace, source, scenario, context)) =
+-        configured_debug_scenarios(&state.project_roots, cx)
++        configured_debug_scenarios(&state.project_roots(), cx)
+             .into_iter()
+             .find(|(_, source, scenario, _)| debug_scenario_id(source, scenario) == scenario_id)
+     else {
+@@ -4722,7 +5184,7 @@ fn debugger_snapshot(request: &ProbeRequest, state: &ProbeState, cx: &mut App) -
+         return error(&request.request_id, "INSTANCE_UNAVAILABLE");
+     }
+     let mut sessions = Vec::new();
+-    for panel in loaded_debug_panels(&state.project_roots, cx) {
++    for panel in loaded_debug_panels(&state.project_roots(), cx) {
+         let debug_sessions = panel.read(cx).sessions().collect::<Vec<_>>();
+         for debug_session in debug_sessions {
+             let session = debug_session.read(cx).session(cx);
+@@ -4826,7 +5288,7 @@ fn debugger_control(request: &ProbeRequest, state: &ProbeState, cx: &mut App) ->
+     if state.terminal_operations.borrow().len() >= 256 {
+         return error(&request.request_id, "RATE_LIMITED");
+     }
+-    let debug_session = loaded_debug_panels(&state.project_roots, cx)
++    let debug_session = loaded_debug_panels(&state.project_roots(), cx)
+         .into_iter()
+         .flat_map(|panel| panel.read(cx).sessions().collect::<Vec<_>>())
+         .find(|debug_session| {
+@@ -5140,6 +5602,15 @@ fn loaded_thread_views(
+     project_roots: &[ProjectRoot],
+     cx: &App,
+ ) -> Vec<(Entity<AcpThread>, Entity<ThreadView>)> {
++    all_root_thread_views(cx)
++        .into_iter()
++        .filter(|(thread, _)| thread_belongs_to_project(thread, project_roots, cx))
++        .collect()
++}
++
++/// Every top-level thread open in an Agent panel, whether or not its project
++/// is exposed. Callers must apply the project-root check themselves.
++fn all_root_thread_views(cx: &App) -> Vec<(Entity<AcpThread>, Entity<ThreadView>)> {
+     let workspaces = workspace::AppState::global(cx)
+         .workspace_store
+         .read(cx)
+@@ -5160,14 +5631,30 @@ fn loaded_thread_views(
+                 continue;
+             };
+             let thread = view.read(cx).thread.clone();
+-            if thread_belongs_to_project(&thread, project_roots, cx) {
+-                threads.push((thread, view));
+-            }
++            threads.push((thread, view));
+         }
+     }
+     threads
+ }
+ 
++/// The SSH host a thread is waiting for, when its window is an SSH project on
++/// a configured host whose folders haven't been loaded yet. Until then the
++/// folders can't be compared with the configured roots.
++fn ssh_waiting_host(
++    thread: &Entity<AcpThread>,
++    project_roots: &[ProjectRoot],
++    cx: &App,
++) -> Option<String> {
++    let project = thread.read(cx).project().read(cx);
++    if project.visible_worktrees(cx).next().is_some() {
++        return None;
++    }
++    project_roots
++        .iter()
++        .find(|root| root.matches_ssh_host(project, cx))
++        .and_then(|root| root.ssh_host.clone())
++}
++
+ fn thread_belongs_to_project(
+     thread: &Entity<AcpThread>,
+     project_roots: &[ProjectRoot],
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index b4fcc69..86e5343 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -376,6 +376,12 @@ pub struct ZedLinkSettingsContent {
+     /// gateway without duplicating route or TLS settings in Zed.
+     pub manager_path: Option<String>,
+ 
++    /// Allows paired devices to list Agent threads already open in a configured
++    /// project and connect to them without running /remote-control in Zed.
++    ///
++    /// Default: false
++    pub allow_remote_attach: Option<bool>,
++
+     /// Allows paired devices to create new native Agent sessions in the
+     /// configured project.
+     ///
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index 628b170..08d69b8 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -1350,9 +1350,31 @@ fn zedlink_page() -> SettingsPage {
+         ]
+     }
+ 
+-    fn access_section() -> [SettingsPageItem; 15] {
++    fn access_section() -> [SettingsPageItem; 16] {
+         [
+             SettingsPageItem::SectionHeader("Remote Permissions"),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Connect to Open Threads",
++                description: "Allow paired devices to list Agent threads already open in a configured project and connect to them without /remote-control.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("zedlink.allow_remote_attach"),
++                    pick: |settings_content| {
++                        settings_content
++                            .zedlink
++                            .as_ref()
++                            .and_then(|zedlink| zedlink.allow_remote_attach.as_ref())
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content
++                            .zedlink
++                            .get_or_insert_default()
++                            .allow_remote_attach = value
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Create Sessions",
+                 description: "Allow paired devices to create new native Agent sessions in this project. Every existing thread still requires /remote-control.",
+-- 
+2.54.0 (Apple Git-157)
+

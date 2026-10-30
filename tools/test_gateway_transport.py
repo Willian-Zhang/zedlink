@@ -72,6 +72,10 @@ class ProbeFixture:
         self.elicitations = []
         self.elicitation_responses = []
         self.queued_messages = []
+        self.queue_updates = []
+        self.attachable = []
+        self.attached_threads = []
+        self.attach_requests = []
         self.edit_review = None
         self.edit_review_responses = []
         self.approvals = []
@@ -160,10 +164,29 @@ class ProbeFixture:
                                                   if any(row.get("agent_id") == "codex-acp" for row in self.created_requests.values())
                                                   else {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}),
                                         "status": "Idle"})
+                    threads.extend(dict(thread) for thread in self.attached_threads)
                     if self.no_threads:
                         threads = []
                     result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                               "threads": threads}
+                elif method == "thread.attachable":
+                    result = {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
+                              "threads": [dict(row) for row in self.attachable]}
+                elif method == "thread.attach":
+                    self.attach_requests.append(request["request_id"])
+                    thread_id = params.get("thread_id")
+                    row = next((row for row in self.attachable if row["thread_id"] == thread_id), None)
+                    if any(thread["thread_id"] == thread_id for thread in self.attached_threads):
+                        result = {"thread_id": thread_id, "outcome": "already_attached"}
+                    elif row is None:
+                        error = {"code": "THREAD_UNAVAILABLE"}
+                    elif row.get("waiting"):
+                        row["pending"] = True
+                        result = {"thread_id": thread_id, "outcome": "pending"}
+                    else:
+                        self.attachable.remove(row)
+                        self.attached_threads.append({key: row[key] for key in ("thread_id", "title", "agent", "status", "activity", "project_group")})
+                        result = {"thread_id": thread_id, "outcome": "attached"}
                 elif method == "thread.create":
                     key = request["request_id"]
                     creation = {"title": params.get("title"), "agent_id": params.get("agent_id")}
@@ -296,6 +319,32 @@ class ProbeFixture:
                 elif method == "thread.queue.clear":
                     removed = len(self.queued_messages); self.queued_messages = []
                     result = {"thread_id": params["thread_id"], "outcome": "cleared", "removed": removed}
+                elif method == "thread.queue.update":
+                    self.queue_updates.append(dict(params))
+                    entry_id = params.get("queue_entry_id")
+                    action = params.get("action")
+                    entry = next((row for row in self.queued_messages if row.get("id") == entry_id), None)
+                    if type(entry_id) is not int or action not in ("send_now", "steer", "remove", "edit"):
+                        error = {"code": "INVALID_REQUEST"}
+                    elif action == "steer" and not isinstance(params.get("steer"), bool):
+                        error = {"code": "INVALID_REQUEST"}
+                    elif action == "edit" and not (isinstance(params.get("text"), str) and params["text"].strip()):
+                        error = {"code": "INVALID_REQUEST"}
+                    elif entry is None:
+                        result = {"outcome": "not_queued"}
+                    elif action == "edit" and not entry.get("editable"):
+                        result = {"outcome": "rejected"}
+                    elif action == "steer":
+                        entry["steer"] = params["steer"]
+                        result = {"outcome": "updated"}
+                    elif action == "edit":
+                        entry["text"] = params["text"]; entry["preview"] = params["text"][:80]
+                        result = {"outcome": "updated"}
+                    else:
+                        self.queued_messages = [row for row in self.queued_messages if row is not entry]
+                        for index, row in enumerate(self.queued_messages):
+                            row["index"] = index
+                        result = {"outcome": "sent" if action == "send_now" else "removed"}
                 elif method == "thread.edit_review":
                     result = {"thread_id": params["thread_id"], "pending": self.edit_review is not None,
                               **(self.edit_review or {"changed_files": 0, "lines_added": 0, "lines_removed": 0})}
@@ -550,6 +599,7 @@ class ProbeFixture:
                               "capabilities": ["thread.list", "thread.create", "thread.create.options", "thread.rename", "thread.unexpose", "thread.snapshot", "thread.history", "thread.events",
                                                "thread.commands", "thread.settings", "thread.settings.update",
                                                "thread.elicitations", "elicitation.respond", "thread.queue", "thread.queue.clear",
+                                               "thread.queue.update", "thread.attachable", "thread.attach",
                                                "thread.edit_review", "thread.edit_review.respond",
                                                "thread.send", "thread.attachments", "thread.cancel",
                                                "thread.subagents", "subagent.cancel",
@@ -897,6 +947,59 @@ def main():
             denied = dict(request, method="arbitrary.shell")
             status, _ = http(base, context, "/v1/rpc", "POST", denied, token1)
             assert status == 403
+            instance_params = {"instance_id": "fixture-instance", "epoch": "fixture-epoch"}
+            probe.attachable = [
+                {"thread_id": "fixture-open", "title": "Open desktop thread",
+                 "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}, "status": "Idle",
+                 "activity": {"phase": "idle", "label": "Ready", "detail": None},
+                 "project_group": {"id": "fixture-group", "label": "fixture-project", "other_folders": 0},
+                 "waiting": None, "pending": False},
+                {"thread_id": "fixture-ssh", "title": None,
+                 "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}, "status": "Idle",
+                 "activity": None, "project_group": None,
+                 "waiting": {"kind": "ssh_connection", "host": "gx10"}, "pending": False},
+            ]
+            status, attachable = http(base, context, "/v1/rpc", "POST", {
+                "version": 1, "request_id": "attachable", "method": "thread.attachable",
+                "params": instance_params}, token1)
+            assert status == 200 and [row["thread_id"] for row in attachable["result"]["threads"]] == ["fixture-open", "fixture-ssh"]
+            attach = {"version": 1, "request_id": "attach-open", "method": "thread.attach",
+                      "params": {**instance_params, "thread_id": "fixture-open"}}
+            status, attached = http(base, context, "/v1/rpc", "POST", attach, token1)
+            assert status == 200 and attached["result"]["outcome"] == "attached"
+            status, attached_again = http(base, context, "/v1/rpc", "POST", dict(attach, request_id="attach-open-again"), token1)
+            assert status == 200 and attached_again["result"]["outcome"] == "already_attached"
+            assert probe.attach_requests == ["attach-open", "attach-open-again"], "thread.attach must reach Zed without a device prefix"
+            status, listing = http(base, context, "/v1/rpc", "POST", dict(request, request_id="list-after-attach"), token1)
+            assert status == 200 and "fixture-open" in [row["thread_id"] for row in listing["result"]["threads"]]
+            status, waiting = http(base, context, "/v1/rpc", "POST", dict(attach, request_id="attach-ssh",
+                                   params={**instance_params, "thread_id": "fixture-ssh"}), token1)
+            assert status == 200 and waiting["result"]["outcome"] == "pending"
+            status, closed = http(base, context, "/v1/rpc", "POST", dict(attach, request_id="attach-closed",
+                                  params={**instance_params, "thread_id": "fixture-closed"}), token1)
+            assert status == 200 and closed["error"]["code"] == "THREAD_UNAVAILABLE"
+            probe.attachable = []
+            probe.attached_threads = []
+            probe.queued_messages = [{"index": 0, "id": 41, "preview": "Queued fixture", "steer": False,
+                                      "editable": True, "text": "Queued fixture", "remote": True}]
+            queue_update = {"version": 1, "request_id": "queue-steer", "method": "thread.queue.update",
+                            "params": {**instance_params, "thread_id": "fixture-thread", "queue_entry_id": 41,
+                                       "action": "steer", "steer": True}}
+            status, steered = http(base, context, "/v1/rpc", "POST", queue_update, token1)
+            assert status == 200 and steered["result"]["outcome"] == "updated" and probe.queued_messages[0]["steer"] is True
+            status, edited = http(base, context, "/v1/rpc", "POST", dict(queue_update, request_id="queue-edit", params={
+                **queue_update["params"], "action": "edit", "text": "Edited fixture"}), token1)
+            assert status == 200 and edited["result"]["outcome"] == "updated" and probe.queued_messages[0]["text"] == "Edited fixture"
+            status, invalid_edit = http(base, context, "/v1/rpc", "POST", dict(queue_update, request_id="queue-edit-empty", params={
+                **queue_update["params"], "action": "edit", "text": "  "}), token1)
+            assert status == 200 and invalid_edit["error"]["code"] == "INVALID_REQUEST"
+            status, removed = http(base, context, "/v1/rpc", "POST", dict(queue_update, request_id="queue-remove", params={
+                **queue_update["params"], "action": "remove"}), token1)
+            assert status == 200 and removed["result"]["outcome"] == "removed" and not probe.queued_messages
+            status, gone = http(base, context, "/v1/rpc", "POST", dict(queue_update, request_id="queue-send-gone", params={
+                **queue_update["params"], "action": "send_now"}), token1)
+            assert status == 200 and gone["result"]["outcome"] == "not_queued"
+            probe.queue_updates.clear()
             cancellation = {"version": 1, "request_id": "cancel-one", "method": "thread.cancel",
                             "params": {"instance_id": "fixture-instance", "epoch": "fixture-epoch",
                                        "thread_id": "fixture-thread", "turn_id": 9}}
@@ -1180,7 +1283,8 @@ def main():
                     "message": "Choose a release channel", "mode": "form",
                     "requestedSchema": {"type": "object", "required": ["channel"],
                                         "properties": {"channel": {"type": "string", "title": "Channel"}}}}}]
-                probe.queued_messages = [{"index": 0, "preview": "Run the follow-up checks", "steer": False}]
+                probe.queued_messages = [{"index": 0, "id": 7, "preview": "Run the follow-up checks", "steer": False,
+                                          "editable": True, "text": "Run the follow-up checks", "remote": False}]
                 probe.edit_review = {"changed_files": 2, "lines_added": 12, "lines_removed": 3}
                 wait.until(lambda driver: driver.find_element(By.ID, "elicitations").is_displayed())
                 field = browser.find_element(By.CSS_SELECTOR, "#elicitations input")
@@ -1196,7 +1300,11 @@ def main():
                 browser.find_element(By.CSS_SELECTOR, "#edit-review button.primary").click()
                 wait.until(lambda driver: probe.edit_review_responses == ["keep_all"])
                 wait.until(lambda driver: driver.find_element(By.ID, "queue-review").is_displayed())
-                browser.find_element(By.CSS_SELECTOR, "#queue-review button").click()
+                browser.find_element(By.CSS_SELECTOR, "#queue-review button.queue-steer").click()
+                wait.until(lambda driver: probe.queued_messages and probe.queued_messages[0]["steer"] is True)
+                wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, "#queue-review button.queue-steer").get_attribute("aria-pressed") == "true")
+                assert probe.queue_updates[-1]["queue_entry_id"] == 7 and probe.queue_updates[-1]["steer"] is True
+                browser.find_element(By.CSS_SELECTOR, "#queue-review button.queue-clear").click()
                 wait.until(lambda driver: not probe.queued_messages)
                 browser.find_element(By.ID, "open-settings").click()
                 wait.until(lambda driver: "Local GLM fixture" in Select(driver.find_element(By.ID, "zed-model")).first_selected_option.text)

@@ -107,6 +107,7 @@ def sync_zed_settings(data: dict) -> bool:
         "project_root": data["project_root"],
         "start_gateway_on_launch": existing_zedlink.get("start_gateway_on_launch", True),
         "manager_path": str(Path(__file__).resolve()),
+        "allow_remote_attach": existing_zedlink.get("allow_remote_attach", False),
         "allow_session_creation": existing_zedlink.get("allow_session_creation", True),
         "allow_attachments": existing_zedlink.get("allow_attachments", True),
         "allow_project_context": existing_zedlink.get("allow_project_context", True),
