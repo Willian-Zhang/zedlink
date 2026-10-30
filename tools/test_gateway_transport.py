@@ -180,7 +180,8 @@ class ProbeFixture:
                         result = {"thread_id": thread_id, "outcome": "already_attached"}
                     elif row is None:
                         error = {"code": "THREAD_UNAVAILABLE"}
-                    elif row.get("waiting"):
+                    elif row.get("waiting") or row.get("loaded") is False:
+                        # SSH windows finish once connected; history threads load in the background.
                         row["pending"] = True
                         result = {"thread_id": thread_id, "outcome": "pending"}
                     else:
@@ -618,6 +619,16 @@ class ProbeFixture:
                 response["error" if error else "result"] = error or result
                 connection.sendall(json.dumps(response).encode() + b"\n")
 
+    def finish_background_attach(self, thread_id, succeeded=True):
+        row = next(row for row in self.attachable if row["thread_id"] == thread_id)
+        if not succeeded:
+            row["pending"] = False
+            return
+        self.attachable.remove(row)
+        self.attached_threads.append({"thread_id": thread_id, "title": row["title"], "agent": row["agent"],
+                                      "status": "Idle", "activity": {"phase": "idle", "label": "Ready", "detail": None},
+                                      "project_group": row["project_group"]})
+
     def close(self):
         self.stopped = True
         self.listener.close()
@@ -952,17 +963,27 @@ def main():
                 {"thread_id": "fixture-open", "title": "Open desktop thread",
                  "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}, "status": "Idle",
                  "activity": {"phase": "idle", "label": "Ready", "detail": None},
-                 "project_group": {"id": "fixture-group", "label": "fixture-project", "other_folders": 0},
-                 "waiting": None, "pending": False},
+                 "project_group": {"id": "fixture-group", "label": "fixture-project", "other_folders": 2,
+                                   "exposed_folders": ["fixture-project"], "other_folder_names": ["docs", "scratch"]},
+                 "waiting": None, "pending": False, "loaded": True, "updated_at": "2026-10-30T09:00:00Z"},
                 {"thread_id": "fixture-ssh", "title": None,
                  "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}, "status": "Idle",
                  "activity": None, "project_group": None,
-                 "waiting": {"kind": "ssh_connection", "host": "gx10"}, "pending": False},
+                 "waiting": {"kind": "ssh_connection", "host": "gx10"}, "pending": False, "loaded": True, "updated_at": None},
+                {"thread_id": "fixture-history", "title": "Earlier fixture thread",
+                 "agent": {"id": "zed-agent", "name": "Zed Agent", "kind": "zed"}, "status": "Unloaded",
+                 "activity": None,
+                 "project_group": {"id": "fixture-group", "label": "fixture-project", "other_folders": 2,
+                                   "exposed_folders": ["fixture-project"], "other_folder_names": ["docs", "scratch"]},
+                 "waiting": None, "pending": False, "loaded": False, "updated_at": "2026-10-20T08:30:00Z"},
             ]
             status, attachable = http(base, context, "/v1/rpc", "POST", {
                 "version": 1, "request_id": "attachable", "method": "thread.attachable",
                 "params": instance_params}, token1)
-            assert status == 200 and [row["thread_id"] for row in attachable["result"]["threads"]] == ["fixture-open", "fixture-ssh"]
+            assert status == 200 and [row["thread_id"] for row in attachable["result"]["threads"]] == ["fixture-open", "fixture-ssh", "fixture-history"]
+            history_row = attachable["result"]["threads"][2]
+            assert history_row["loaded"] is False and history_row["status"] == "Unloaded" and history_row["updated_at"] == "2026-10-20T08:30:00Z"
+            assert history_row["project_group"]["other_folder_names"] == ["docs", "scratch"], "gateway must forward folder names unchanged"
             attach = {"version": 1, "request_id": "attach-open", "method": "thread.attach",
                       "params": {**instance_params, "thread_id": "fixture-open"}}
             status, attached = http(base, context, "/v1/rpc", "POST", attach, token1)
@@ -978,6 +999,24 @@ def main():
             status, closed = http(base, context, "/v1/rpc", "POST", dict(attach, request_id="attach-closed",
                                   params={**instance_params, "thread_id": "fixture-closed"}), token1)
             assert status == 200 and closed["error"]["code"] == "THREAD_UNAVAILABLE"
+            history_attach = dict(attach, request_id="attach-history", params={**instance_params, "thread_id": "fixture-history"})
+            status, opening = http(base, context, "/v1/rpc", "POST", history_attach, token1)
+            assert status == 200 and opening["result"]["outcome"] == "pending"
+            status, attachable = http(base, context, "/v1/rpc", "POST", {
+                "version": 1, "request_id": "attachable-opening", "method": "thread.attachable", "params": instance_params}, token1)
+            assert status == 200 and next(row for row in attachable["result"]["threads"] if row["thread_id"] == "fixture-history")["pending"] is True
+            probe.finish_background_attach("fixture-history", succeeded=False)
+            status, attachable = http(base, context, "/v1/rpc", "POST", {
+                "version": 1, "request_id": "attachable-failed", "method": "thread.attachable", "params": instance_params}, token1)
+            assert status == 200 and next(row for row in attachable["result"]["threads"] if row["thread_id"] == "fixture-history")["pending"] is False
+            status, opening = http(base, context, "/v1/rpc", "POST", dict(history_attach, request_id="attach-history-retry"), token1)
+            assert status == 200 and opening["result"]["outcome"] == "pending"
+            probe.finish_background_attach("fixture-history")
+            status, listing = http(base, context, "/v1/rpc", "POST", dict(request, request_id="list-after-history"), token1)
+            assert status == 200 and "fixture-history" in [row["thread_id"] for row in listing["result"]["threads"]]
+            status, attachable = http(base, context, "/v1/rpc", "POST", {
+                "version": 1, "request_id": "attachable-loaded", "method": "thread.attachable", "params": instance_params}, token1)
+            assert status == 200 and "fixture-history" not in [row["thread_id"] for row in attachable["result"]["threads"]]
             probe.attachable = []
             probe.attached_threads = []
             probe.queued_messages = [{"index": 0, "id": 41, "preview": "Queued fixture", "steer": False,

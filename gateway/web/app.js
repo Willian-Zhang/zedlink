@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const UI_BUILD = "2026.10.29.1";
+const UI_BUILD = "2026.10.30.1";
 const DELEGATE_TASK_TEMPLATE = "Use the native spawn_agent tool to delegate the following task to a child Zed Agent. Keep the child scoped to this project and return its result in this conversation:\n\nTask: ";
 const state = {
   gatewayId: null,
@@ -104,7 +104,7 @@ const state = {
   queue: null,
   rewindPoints: [],
 };
-const attachState = { open: false, timer: null, loading: false, rows: null, error: "", signature: "", scope: "", pending: new Set(), tapped: null, busy: new Set() };
+const attachState = { open: false, timer: null, loading: false, rows: null, error: "", signature: "", scope: "", pending: new Map(), tapped: null, busy: new Set() };
 const queueUi = { busy: false, editing: null, signature: "" };
 function resetTranscriptObservation() {
   state.threadActivity = null;
@@ -314,17 +314,80 @@ function projectGroupLabel(group) {
   return others ? `${group.label} + ${others} other folder${others === 1 ? "" : "s"}` : group.label;
 }
 
+// Older Zed builds send only the folder count, so there is nothing to disclose.
+function projectGroupFolders(group) {
+  if (!group || typeof group !== "object") return null;
+  const names = (value) => Array.isArray(value) ? value.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim()) : null;
+  const others = Number.isInteger(group.other_folders) && group.other_folders > 0 ? group.other_folders : 0;
+  const otherNames = names(group.other_folder_names);
+  if (!others || !otherNames?.length) return null;
+  const exposed = names(group.exposed_folders) || (typeof group.label === "string" && group.label ? [group.label] : []);
+  return { exposed, others: otherNames.slice(0, others), more: Math.max(0, others - otherNames.length) };
+}
+function projectFolderSummary(group) {
+  const folders = projectGroupFolders(group);
+  if (!folders) return "";
+  return [...folders.exposed, ...folders.others].join(", ") + (folders.more ? `, and ${folders.more} more` : "");
+}
+const expandedFolderLists = new Set();
+let folderListSerial = 0;
+// Renders "label + N other folders" with the count as a disclosure for the full list.
+function renderProjectGroup(container, list, group, key, before = "", after = "") {
+  const folders = projectGroupFolders(group);
+  const expanded = !!folders && expandedFolderLists.has(key);
+  const signature = JSON.stringify([before, after, projectGroupLabel(group), folders, expanded]);
+  if (container.dataset.folderSignature === signature) return;
+  container.dataset.folderSignature = signature;
+  if (!folders) {
+    container.replaceChildren(`${before}${projectGroupLabel(group)}${after}`);
+    list.replaceChildren();
+    list.classList.add("hidden");
+    return;
+  }
+  if (!list.id) list.id = `folder-list-${++folderListSerial}`;
+  const count = folders.others.length + folders.more;
+  const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "folder-disclosure";
+  toggle.textContent = `+ ${count} other folder${count === 1 ? "" : "s"}`;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-controls", list.id);
+  toggle.title = expanded ? "Hide folders in this Zed window" : "Show folders in this Zed window";
+  toggle.addEventListener("click", () => {
+    if (expandedFolderLists.has(key)) expandedFolderLists.delete(key); else expandedFolderLists.add(key);
+    delete container.dataset.folderSignature;
+    renderProjectGroup(container, list, group, key, before, after);
+    container.querySelector(".folder-disclosure")?.focus();
+  });
+  container.replaceChildren(`${before}${group.label} `, toggle, after);
+  list.replaceChildren();
+  for (const name of folders.exposed) {
+    const item = document.createElement("li"); item.className = "exposed"; item.textContent = name;
+    const tag = document.createElement("span"); tag.className = "folder-tag"; tag.textContent = "exposed";
+    item.append(" ", tag); list.append(item);
+  }
+  for (const name of folders.others) { const item = document.createElement("li"); item.textContent = name; list.append(item); }
+  if (folders.more) { const item = document.createElement("li"); item.className = "more"; item.textContent = `and ${folders.more} more`; list.append(item); }
+  list.classList.toggle("hidden", !expanded);
+}
+
 function renderSelectedProject() {
   const selected = state.threads.find((item) => item.thread_id === state.threadId);
-  const label = selected ? projectGroupLabel(selected.project_group) : "";
-  if ($("thread-project").textContent !== (label ? `Project · ${label}` : "")) {
-    $("thread-project").textContent = label ? `Project · ${label}` : "";
+  const group = selected?.project_group;
+  const label = selected ? projectGroupLabel(group) : "";
+  const header = $("thread-project");
+  let line = header.querySelector(".thread-project-line");
+  let list = header.querySelector(".folder-list");
+  if (!line) {
+    line = document.createElement("span"); line.className = "thread-project-line";
+    list = document.createElement("ul"); list.className = "folder-list hidden"; list.setAttribute("aria-label", "Folders in this Zed window");
+    header.replaceChildren(line, list);
   }
-  $("thread-project").title = label;
-  $("thread-project").classList.toggle("hidden", !label);
+  if (label) renderProjectGroup(line, list, group, `header:${typeof group?.id === "string" ? group.id : label}`, "Project · ");
+  const summary = projectFolderSummary(group);
+  line.title = summary ? `Folders: ${summary}` : label;
+  header.classList.toggle("hidden", !label);
   const context = label || state.instanceProject || "Selected Zed project";
   $("context-project").textContent = context;
-  $("context-project").title = context;
+  $("context-project").title = summary ? `${context} — folders: ${summary}` : context;
 }
 
 function renderSelectedAgent() {
@@ -1441,7 +1504,10 @@ async function loadCreateOptions() {
   for (const group of groups) {
     const label = projectGroupLabel(group);
     if (typeof group.id !== "string" || !label) continue;
-    projectSelect.append(new Option(label, group.id));
+    const option = new Option(label, group.id);
+    const summary = projectFolderSummary(group);
+    if (summary) option.title = `Folders: ${summary}`;
+    projectSelect.append(option);
   }
   if ([...projectSelect.options].some((option) => option.value === result.default_project_group_id)) {
     projectSelect.value = result.default_project_group_id;
@@ -1452,7 +1518,16 @@ async function loadCreateOptions() {
 
 function renderCreateProjectHelp() {
   const option = $("new-session-project").selectedOptions[0];
+  const groups = Array.isArray(state.createOptions?.project_groups) ? state.createOptions.project_groups : [];
+  const group = option ? groups.find((item) => item?.id === option.value) : null;
+  if (group && projectGroupLabel(group)) {
+    renderProjectGroup($("new-session-help"), $("new-session-folders"), group, `create:${group.id}`, "Project ", " · configuration remains in the selected agent.");
+    return;
+  }
   const project = option?.textContent || state.createOptions?.project || "approved in Zed";
+  delete $("new-session-help").dataset.folderSignature;
+  $("new-session-folders").replaceChildren();
+  $("new-session-folders").classList.add("hidden");
   $("new-session-help").textContent = `Project ${project} · configuration remains in the selected agent.`;
 }
 $("new-session-project").addEventListener("change", renderCreateProjectHelp);
@@ -1501,7 +1576,17 @@ async function pollAttachable() {
     attachState.rows = result.threads.filter((row) => row && typeof row.thread_id === "string");
     attachState.error = "";
     const listed = new Set(attachState.rows.map((row) => row.thread_id));
-    const settled = [...attachState.pending].filter((id) => !listed.has(id));
+    for (const row of attachState.rows) {
+      const local = attachState.pending.get(row.thread_id);
+      if (!local) continue;
+      if (row.pending) { local.confirmed = true; continue; }
+      // Zed clears `pending` when a background load fails or times out.
+      if (!local.confirmed && Date.now() - local.since < 5000) continue;
+      attachState.pending.delete(row.thread_id);
+      if (attachState.tapped === row.thread_id) attachState.tapped = null;
+      notice(`Zed could not open “${attachableTitle(row)}”. Try again, or open it in desktop Zed.`);
+    }
+    const settled = [...attachState.pending.keys()].filter((id) => !listed.has(id));
     if (settled.length) {
       // A pending thread leaves this list once Zed exposes it (or the desktop closes it).
       await loadThreads();
@@ -1538,18 +1623,34 @@ function attachableGroupLabel(row) {
   if (row.waiting && typeof row.waiting.host === "string" && row.waiting.host) return `${row.waiting.host} · connecting`;
   return projectGroupLabel(row.project_group) || "Other project";
 }
+function attachableTitle(row) { return typeof row.title === "string" && row.title.trim() ? row.title : "Untitled Agent thread"; }
+// History rows can be weeks old, so extend relativeTime past minutes.
+function relativeUpdate(value) {
+  const at = typeof value === "string" ? Date.parse(value) : NaN;
+  if (!Number.isFinite(at)) return "";
+  const seconds = (Date.now() - at) / 1000;
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return relativeTime(at);
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 7 * 86400) return `${Math.floor(seconds / 86400)}d ago`;
+  const date = new Date(at);
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(date.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
+}
 function attachableStatus(row) {
   if (attachState.busy.has(row.thread_id)) return "Connecting…";
   const host = typeof row.waiting?.host === "string" && row.waiting.host ? row.waiting.host : "host";
-  if (row.pending || attachState.pending.has(row.thread_id)) return row.waiting ? `Will connect when ${host} is ready` : "Connecting when Zed is ready";
-  if (row.waiting) return `Waiting for SSH connection (${host})`;
+  const pending = row.pending || attachState.pending.has(row.thread_id);
+  if (row.waiting) return pending ? `Will connect when ${host} is ready` : `Waiting for SSH connection (${host})`;
+  if (pending) return "Opening in Zed…";
+  if (row.loaded === false) { const updated = relativeUpdate(row.updated_at); return updated ? `Not open · updated ${updated}` : "Not open"; }
   if (typeof row.activity?.label === "string" && row.activity.label) return row.activity.label;
   return row.status === "Idle" ? "Ready" : typeof row.status === "string" && row.status ? row.status : "Unknown";
 }
 function renderAttachable() {
   const list = $("attachable-list");
   const rows = attachState.rows;
-  const signature = JSON.stringify([rows && rows.map((row) => [row.thread_id, row.title, normalizeAgent(row.agent).name, attachableGroupLabel(row), attachableStatus(row)]), attachState.error]);
+  const signature = JSON.stringify([rows && rows.map((row) => [row.thread_id, row.title, normalizeAgent(row.agent).name, attachableGroupLabel(row), projectGroupFolders(row.project_group), attachableStatus(row)]), attachState.error]);
+  $("connect-history-note").classList.toggle("hidden", !rows?.some((row) => row.loaded === false));
   if (signature === attachState.signature && list.childElementCount) return;
   attachState.signature = signature;
   const focused = list.contains(document.activeElement) ? document.activeElement.dataset.threadId : null;
@@ -1563,27 +1664,34 @@ function renderAttachable() {
     return;
   }
   if (!rows.length) {
-    const empty = document.createElement("p"); empty.textContent = "No other open threads in exposed projects.";
+    const empty = document.createElement("p"); empty.textContent = "No other threads in exposed projects.";
     list.append(empty);
     return;
   }
   const groups = new Map();
   for (const row of rows) {
     const label = attachableGroupLabel(row);
-    if (!groups.has(label)) groups.set(label, { waiting: !!row.waiting, rows: [] });
+    if (!groups.has(label)) groups.set(label, { waiting: !!row.waiting, project: row.waiting ? null : row.project_group, rows: [] });
     groups.get(label).rows.push(row);
   }
   const ordered = [...groups].sort(([a, first], [b, second]) => Number(first.waiting) - Number(second.waiting) || a.localeCompare(b));
   for (const [label, group] of ordered) {
-    const heading = document.createElement("h3"); heading.className = "attachable-group"; heading.textContent = `${label} · ${group.rows.length}`;
-    list.append(heading);
+    const heading = document.createElement("h3"); heading.className = "attachable-group";
+    const folders = document.createElement("ul"); folders.className = "folder-list hidden"; folders.setAttribute("aria-label", `Folders in ${label}`);
+    if (group.project && projectGroupLabel(group.project)) {
+      renderProjectGroup(heading, folders, group.project, `connect:${typeof group.project.id === "string" ? group.project.id : label}`, "", ` · ${group.rows.length}`);
+    } else heading.textContent = `${label} · ${group.rows.length}`;
+    list.append(heading, folders);
+    // Zed sorts loaded threads first overall; keep that order inside each project.
+    group.rows.sort((first, second) => Number(first.loaded === false) - Number(second.loaded === false));
     for (const row of group.rows) {
-      const title = typeof row.title === "string" && row.title.trim() ? row.title : "Untitled Agent thread";
+      const title = attachableTitle(row);
       const agent = normalizeAgent(row.agent).name;
       const status = attachableStatus(row);
       const button = document.createElement("button"); button.type = "button"; button.className = "attachable-row";
       button.dataset.threadId = row.thread_id;
       button.classList.toggle("waiting", !!row.waiting);
+      button.classList.toggle("unloaded", row.loaded === false && !row.waiting);
       button.disabled = attachState.busy.has(row.thread_id);
       button.setAttribute("aria-label", `Connect ${title}, ${agent}, ${status}`);
       const name = document.createElement("strong"); name.textContent = title;
@@ -1595,6 +1703,7 @@ function renderAttachable() {
   }
   if (focused) list.querySelector(`button[data-thread-id="${CSS.escape(focused)}"]`)?.focus();
 }
+
 async function attachThread(row) {
   if (attachState.busy.has(row.thread_id) || !canAttachThreads()) return;
   const scope = attachScope();
@@ -1613,7 +1722,7 @@ async function attachThread(row) {
       return;
     }
     if (result.outcome === "pending") {
-      attachState.pending.add(row.thread_id);
+      attachState.pending.set(row.thread_id, { since: Date.now(), confirmed: false });
       attachState.tapped = row.thread_id;
       return;
     }
@@ -1792,7 +1901,7 @@ function clearSessionSearch() {
   $("session-search").focus();
 }
 function renderThreads() {
-  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count, projectGroupLabel(thread.project_group)]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated], sessionGroupBy(), collapsedGroups(), canAttachThreads()]);
+  const signature = JSON.stringify([state.threads.map((thread) => [thread.thread_id, thread.title, thread.agent, thread.status, thread.current_turn_id, thread.had_error, thread.agent_error, thread.retry_status, thread.approval_count, thread.input_count, projectGroupLabel(thread.project_group), projectFolderSummary(thread.project_group)]), state.threadId, state.live, sessionFilter, $("session-search").value, $("session-tag-filter").value, [...sessionPins()], sessionTags(), sessionSeen(), [...sessionUpdated], sessionGroupBy(), collapsedGroups(), canAttachThreads()]);
   if (signature === threadsRenderSignature) return;
   threadsRenderSignature = signature;
   const list = $("thread-list"); const scrollTop = list.scrollTop;
@@ -1849,7 +1958,7 @@ function renderThreads() {
     label: group,
     sessions: visible.filter((thread) => groupOf(thread) === group).map((thread) => {
       const activity = sessionActivity(thread);
-      return { id: thread.thread_id, title: thread.title || "Untitled Agent thread", agent: normalizeAgent(thread.agent).name.toLocaleUpperCase(), project: projectGroupLabel(thread.project_group),
+      return { id: thread.thread_id, title: thread.title || "Untitled Agent thread", agent: normalizeAgent(thread.agent).name.toLocaleUpperCase(), project: projectGroupLabel(thread.project_group), projectFolders: projectFolderSummary(thread.project_group),
         status: `${state.live ? "" : "Last known: "}${activity.label}`, running: !!(activity.running && state.live), attention: !!activity.attention,
         active: thread.thread_id === state.threadId, pinned: pins.has(thread.thread_id), updated: sessionUpdated.has(sessionKey(thread)) };
     }),

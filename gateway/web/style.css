@@ -1460,26 +1460,61 @@ body[data-reading-code-wrap="true"] .tool-output pre { white-space: pre-wrap; ov
 #show-context .context-icon svg { display: block; width: 20px; height: 20px; }
 @media (max-width: 760px) { #desktop-session-filter { display: none; } }
 
-/* Connect sits beside New session only while desktop Zed allows remote attach. */
-#sessions-panel .sidebar-primary { display: flex; gap: 6px; }
-#sessions-panel .sidebar-primary > button { flex: 1 1 0; min-width: 0; }
-#sessions-panel #connect-session { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-height: 40px; padding: 0 12px; border: 0; border-radius: 6px; background: #222427; color: var(--ink); font-size: .84rem; font-weight: 650; text-align: left; }
-#sessions-panel #connect-session:hover:not(:disabled) { background: #303236; }
-#sessions-panel .sidebar-primary > button[aria-expanded="true"] { background: #303236; box-shadow: inset 0 0 0 1px #4a4d52; }
-#connect-session .nav-icon { color: var(--ink); font-size: 1.1rem; }
-.sidebar-primary.has-connect .sidebar-new-long { display: none; }
+/* One toolbar row: session search takes the free width; message search, Connect (only while
+   desktop Zed allows remote attach) and New stay compact. Labels appear only in a wide rail. */
+#sessions-panel .sidebar-toolbar { display: flex; flex: none; align-items: center; gap: 3px; margin: 9px 0 3px; container-type: inline-size; }
+#sessions-panel .sidebar-toolbar .session-search-actions { display: flex; flex: 1 1 auto; align-items: center; gap: 4px; min-width: 0; margin: 0; }
+#sessions-panel .sidebar-toolbar .session-search-field { flex: 1 1 auto; min-width: 0; margin: 0; border-radius: 6px; }
+#sessions-panel .sidebar-toolbar #session-search { min-height: 38px; margin: 0; padding: 7px 52px 7px 27px; font-size: .78rem; }
+#sessions-panel .sidebar-toolbar .session-search-field svg { left: 7px; width: 15px; height: 15px; }
+#sessions-panel .sidebar-toolbar .sidebar-search-action { flex: none; justify-content: center; width: 36px; min-height: 38px; padding: 0; border-radius: 6px; }
+#sessions-panel .sidebar-toolbar .sidebar-search-action > span:last-child { display: none; }
+#sessions-panel .sidebar-toolbar .nav-icon { width: 22px; height: 22px; margin: 0; color: var(--ink); }
+#sessions-panel .sidebar-toolbar .nav-icon svg { display: block; width: 19px; height: 19px; }
+#sessions-panel .sidebar-toolbar .sidebar-primary { display: flex; flex: none; gap: 4px; margin: 0; }
+#sessions-panel .sidebar-toolbar :is(#connect-session, #new-session) { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; width: 36px; min-width: 0; min-height: 38px; padding: 0; border: 0; border-radius: 6px; background: #222427; color: var(--ink); font-size: .8rem; font-weight: 650; white-space: nowrap; }
+#sessions-panel .sidebar-toolbar :is(#connect-session, #new-session):hover:not(:disabled) { background: #303236; }
+#sessions-panel .sidebar-toolbar :is(#connect-session, #new-session)[aria-expanded="true"] { background: #303236; box-shadow: inset 0 0 0 1px #4a4d52; }
+#sessions-panel .sidebar-toolbar .toolbar-label { display: none; }
+@container (max-width: 359px) {
+  #sessions-panel .sidebar-toolbar .session-search-field kbd { display: none; }
+  #sessions-panel .sidebar-toolbar #session-search { padding-right: 6px; }
+}
+@container (min-width: 430px) {
+  #sessions-panel .sidebar-toolbar :is(#connect-session, #new-session) { width: auto; padding: 0 11px 0 8px; }
+  #sessions-panel .sidebar-toolbar .toolbar-label { display: inline; }
+}
 .connect-session-panel { flex: none; margin: 10px 0 0; padding: 12px 4px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .connect-session-panel h2 { margin: 0; color: var(--ink); font-size: .84rem; font-weight: 650; }
 .connect-session-panel > p { margin: 5px 0 8px; color: var(--subtle); font-size: .69rem; line-height: 1.4; }
-.attachable-list { display: grid; gap: 2px; max-height: min(40vh, 300px); overflow-y: auto; overscroll-behavior: contain; }
+.attachable-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-height: min(40vh, 300px); overflow-y: auto; overscroll-behavior: contain; }
 .attachable-list > p { margin: 6px 4px; color: var(--muted); font-size: .76rem; line-height: 1.4; }
 .attachable-list > .attachable-error { color: var(--warning); }
 .attachable-group { margin: 10px 6px 3px; color: #a7abb1; font: 600 .64rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase; }
 .attachable-row { display: block; width: 100%; min-height: 48px; padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; }
 .attachable-row:hover:not(:disabled) { background: #1e2023; }
 .attachable-row strong { display: block; overflow: hidden; font-size: .81rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.attachable-row small { display: block; margin-top: 3px; color: var(--muted); font-size: .7rem; }
+.attachable-row small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .attachable-row.waiting small { color: var(--warning); }
+.attachable-row.unloaded strong { color: #c9cbce; font-weight: 550; }
+.attachable-row.unloaded small { color: var(--subtle); }
+.connect-session-panel > .connect-history-note { margin-top: -3px; }
+
+/* "+ N other folders" discloses the folders of that desktop Zed window. */
+.folder-disclosure { position: relative; display: inline; min-height: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-decoration: underline dotted; text-underline-offset: 3px; text-transform: inherit; cursor: pointer; }
+.folder-disclosure::after { position: absolute; inset: -9px -4px; content: ""; }
+@media (max-width: 760px) { .folder-disclosure::after { inset: -13px -6px; } }
+.folder-disclosure:hover { color: var(--ink); }
+.folder-disclosure[aria-expanded="true"] { color: var(--ink); text-decoration-style: solid; }
+.folder-list { display: flex; flex-wrap: wrap; gap: 3px 12px; max-height: 30vh; overflow-y: auto; margin: 5px 0 4px; padding: 4px 0 4px 9px; border-left: 2px solid var(--line-strong); color: var(--muted); font: .72rem/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; list-style: none; text-transform: none; white-space: normal; }
+.folder-list li { overflow-wrap: anywhere; }
+.folder-list li.exposed { color: var(--ink); }
+.folder-list li.more { color: var(--subtle); font-style: italic; }
+.folder-tag { padding: 0 5px; border-radius: 4px; background: #26282b; color: var(--muted); font-size: .62rem; }
+.thread-project { overflow: visible; white-space: normal; }
+.thread-project-line { display: block; overflow-wrap: anywhere; }
+.attachable-list > .folder-list { margin: 0 6px 6px; }
+.new-session-form .folder-list { margin: 6px 0 0; }
 
 .session-group-by { display: inline-flex; flex: none; margin-left: auto; padding: 2px; border-radius: 6px; background: #1b1d20; }
 .session-group-by button { min-height: 30px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: 500 .72rem Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; text-transform: none; }
@@ -1499,9 +1534,13 @@ body[data-reading-code-wrap="true"] .tool-output pre { white-space: pre-wrap; ov
   #sessions-panel .session-group-by button { flex: 1; }
 }
 @media (max-width: 760px) {
-  #sessions-panel #connect-session { min-height: 44px; border-radius: 9px; }
+  #sessions-panel .sidebar-toolbar { gap: 4px; margin: 8px 0 4px; }
+  #sessions-panel .sidebar-toolbar #session-search { min-height: 44px; padding-left: 32px; font-size: 16px; }
+  #sessions-panel .sidebar-toolbar .session-search-field, #sessions-panel .sidebar-toolbar .session-search-field:hover { border-radius: 0; }
+  #sessions-panel .sidebar-toolbar .sidebar-search-action { width: 44px; min-height: 44px; }
+  #sessions-panel .sidebar-toolbar :is(#connect-session, #new-session) { min-width: 44px; min-height: 44px; border-radius: 9px; }
   #sessions-panel .list-label { align-items: center; }
-  .attachable-list { max-height: none; }
+  .attachable-list { max-height: 55vh; }
   .attachable-row { min-height: 56px; }
   .session-group-by button { min-height: 40px; padding: 0 12px; font-size: .8rem; }
   .session-group-toggle { min-height: 44px; }

@@ -14,6 +14,7 @@ type Session = {
   updated: boolean;
   tag: string;
   project: string;
+  projectFolders: string;
   seenAt: number;
 };
 
@@ -52,7 +53,7 @@ function SessionList({ groups, emptyMessage, canClear, collapsed, onToggleGroup,
       <button type="button" data-thread-id={session.id}
         className={`thread-item ${session.active ? "active" : ""} ${session.running ? "running" : ""} ${session.attention ? "error" : ""} ${session.updated ? "updated" : ""}`}
         aria-current={session.active ? "page" : undefined}
-        aria-label={`${session.title}, ${session.agent}${session.project ? `, ${session.project}` : ""}, ${session.status}${session.updated ? ", new activity" : ""}`}
+        aria-label={`${session.title}, ${session.agent}${session.project ? `, ${session.project}` : ""}${session.projectFolders ? ` (folders: ${session.projectFolders})` : ""}, ${session.status}${session.updated ? ", new activity" : ""}`}
         onClick={() => onSelect(session.id)}>
         <span className="thread-badge">{session.agent}</span>
         <span className={`thread-status ${session.running ? "busy" : ""} ${session.attention ? "error" : ""}`}>
@@ -60,7 +61,7 @@ function SessionList({ groups, emptyMessage, canClear, collapsed, onToggleGroup,
           <span>{session.status}</span>
         </span>
         <strong>{session.updated && <span className="unread-dot" aria-hidden="true"/>}{session.title}</strong>
-        {session.project && <small className="session-project">{session.project}</small>}
+        {session.project && <small className="session-project" title={session.projectFolders ? `Folders: ${session.projectFolders}` : session.project}>{session.project}</small>}
         {session.tag && <small className="session-tag">{session.tag}</small>}
       </button>
       <button type="button" className="session-pin" aria-label={`${session.pinned ? "Unpin" : "Pin"} ${session.title}`}

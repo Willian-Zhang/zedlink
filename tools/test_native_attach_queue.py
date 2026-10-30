@@ -211,6 +211,48 @@ def main():
             assert 'queued two' not in snapshot, 'removed queue entry was sent'
             assert 'queued one' not in snapshot, 'pre-edit text was sent'
             print('PASS: queue edit, set-steer, remove (with request.status), send now interrupting the turn, retries are no-ops')
+
+            # History: let Zed unload idle threads immediately, then connect to one that
+            # was unloaded.
+            settings['agent']['max_idle_retained_threads'] = 0
+            write_settings()
+            time.sleep(1)
+            hidden = {**base, 'thread_id': hidden_id}
+
+            def idle(params):
+                return rpc(socket_path, 'thread.snapshot', params)['status'] == 'Idle'
+            history_marker = 'history ' + uuid.uuid4().hex
+            rpc(socket_path, 'thread.send', {**hidden, 'text': 'ZEDLINK_FIXTURE_STREAM ' + history_marker})
+            until(lambda: history_marker in json.dumps(rpc(socket_path, 'thread.snapshot', {**hidden, 'tail_entry_count': 16}))
+                  and idle(hidden), timeout=40)
+            # Exposed and idle: the turn just ended, which runs Zed's unload check.
+            assert hidden_id in {thread['thread_id'] for thread in rpc(socket_path, 'thread.list', {})['threads']}, \
+                'an exposed idle thread was unloaded'
+            assert rpc(socket_path, 'thread.unexpose', hidden)['outcome'] == 'unexposed'
+            rpc(socket_path, 'thread.send', {**identity, 'text': 'ZEDLINK_FIXTURE_STREAM trigger unload'})
+            until(lambda: idle(identity), timeout=40)
+
+            def unloaded_row():
+                rows = rpc(socket_path, 'thread.attachable', base)['threads']
+                return next((row for row in rows if row['thread_id'] == hidden_id and not row['loaded']), None)
+            row = until(unloaded_row, timeout=30, message='the unexposed idle thread was not offered from history')
+            assert row['status'] == 'Unloaded' and row['updated_at'] and row['title'] == 'Hidden fixture', row
+            assert row['agent']['kind'] == 'zed' and row['project_group']['label'] == first.name, row
+            assert exposed_id in {thread['thread_id'] for thread in rpc(socket_path, 'thread.list', {})['threads']}, \
+                'the exposed thread was unloaded'
+            assert rpc(socket_path, 'thread.attach', hidden)['outcome'] == 'pending'
+            until(lambda: hidden_id in {thread['thread_id'] for thread in rpc(socket_path, 'thread.list', {})['threads']},
+                  timeout=60, message='the history thread was not exposed after loading')
+            assert rpc(socket_path, 'thread.attach', hidden)['outcome'] == 'already_attached'
+            until(lambda: history_marker in json.dumps(rpc(socket_path, 'thread.snapshot', {**hidden, 'tail_entry_count': 16})),
+                  timeout=30, message='the reloaded thread lost its transcript')
+            assert hidden_id not in {row['thread_id'] for row in rpc(socket_path, 'thread.attachable', base)['threads']}
+            rpc(socket_path, 'thread.send', {**identity, 'text': 'ZEDLINK_FIXTURE_STREAM trigger unload again'})
+            until(lambda: idle(identity), timeout=40)
+            time.sleep(1)
+            assert hidden_id in {thread['thread_id'] for thread in rpc(socket_path, 'thread.list', {})['threads']}, \
+                'the reconnected thread was unloaded while exposed'
+            print('PASS: unloaded history threads are listed, load in the background on attach, and exposed threads stay loaded')
     finally:
         if process and process.poll() is None:
             process.terminate()
